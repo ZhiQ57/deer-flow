@@ -356,6 +356,10 @@ For HTTP/SSE MCP servers, OAuth token flows are supported (`client_credentials`,
 For stdio MCP servers, per-tool call timeouts can be configured with `tool_call_timeout`.
 MCP routing hints can also prefer a specific MCP tool for matching requests without changing tool binding; when `tool_search` defers MCP schemas, the hint directs the agent to fetch the tool first.
 See the [MCP Server Guide](backend/docs/MCP_SERVER.md) for detailed instructions.
+The default `extensions_config.example.json` also includes a disabled `tablerag`
+stdio server entry for the DataAgent Text2SQL workflow. See
+[DataAgent Text2SQL](docs/agents/data-agent/README.md) before enabling it with
+your own TableRAG config and DSNs.
 
 #### IM Channels
 

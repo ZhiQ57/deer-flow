@@ -12,7 +12,57 @@ guide rather than expecting full detail here:
 - **[frontend/AGENTS.md](frontend/AGENTS.md)** — frontend depth: Next.js App Router layout,
   thread/streaming data flow, code style, commands.
 
-## What is DeerFlow
+# 开发规定
+DO NOT send optional commentary
+## 开发环境
+
+1. 开发系统环境：Windows-11 系统，必须使用 Windows PowerShell 指令执行命令;
+2. Python 环境：在项目内 uv 创建环境，默认采用 python=3.11。
+3. Git/Docker 环境：开发默认遵守 Git 规范，系统已安装 Docker Desktop；假设无法使用 Docker，请呼叫人类开启 Docker 环境，不要自己下载 Docker、不要陷入死循环持续执行 Docker 命令。
+4. 始终遵守全文文件编码: UTF-8
+5. 始终在任务执行前回复: "大哥"
+
+
+## 注意事项
+
+1. 新需求规范：当接收到新需求时，必须仔细阅读现有代码，思考新需求的可行性，先制定完成新需求的计划步骤 Todo。
+2. 计划文档规范：先划分大步骤（1、2、...），再划分子步骤（1.1、1.2、...），打上 `- [ ]` 标记；每完成一步，则打上 `- [X]`。
+3. 开发文档规范：所有文档写在 `docs/*`，例如：`docs/plan`、`docs/review`、`docs/bug`。
+4. 开发顺序：需求 -> git 新分支 -> 开发 -> 测试 -> review -> debugger -> 测试 -> ... -> 测试通过 -> 合并 git 分支。
+5. 修改目录结构、公共 API 或模块边界时，必须同步更新 `docs/guide/used-api.md` 和对应 `docs/plans/*`、`docs/reviews/*` 文档。
+6. 公共 API 重构时不保留旧类名、旧函数、旧配置字段或旧导入路径兼容层；旧入口应直接删除，测试和文档同步迁移到当前目标 API。
+
+## 注释规范
+
+新开发的代码，代码注释全部采用中文。
+
+- 函数定义：注释写出函数作用标题、描述作用、Args参数说明、Return返回值。
+- 抽象基类：标明类作用。
+- 实现类：写明具体实现类的作用和类参数、类方法等。
+- 行内代码：写出关键步骤的代码注释。
+
+## Git 规范
+
+- 本项目 fork 仓库（origin）：`https://github.com/ZhiQ57/deer-flow.git`
+- 原始上游仓库（upstream）：`https://github.com/bytedance/deer-flow.git`
+- 本地开发目录：`D:\A-PythonWork\AOpenGithub\deer-flow`
+
+分支模型：`main` 保持为追踪 `upstream/main` 的干净基线；`dev` 是长期二次开发集成分支并推送到 `origin/dev`；每个具体需求从最新 `dev` 新建 `feat|fix|docs|refactor|test|chore|build|ci/...` 分支。
+
+- Git提交信息使用规范前缀：`feat|fix|docs|refactor|test|chore|build|ci|...`。
+
+- 禁止使用 `codex/xx` 创建和提交分支名称.
+
+- Git提交备注要采用中文, 说明“做了什么、为什么做、验证了什么”，方便后续查阅。
+
+- 新功能/修改 BUG 必须从 `dev` 新建 `feat|fix|...` 分支，开发完成并测试通过后合并回 `dev`，再推送到 `origin/dev`。
+
+- 同步上游更新时：先更新 `main`（合并或快进 `upstream/main`），再将 `main` 合并进 `dev` 并解决冲突；不要直接在 `main` 放二次开发代码。
+
+- 不要把生成物、缓存、真实凭据、临时日志提交进仓库。
+
+
+# What is DeerFlow
 
 DeerFlow is a LangGraph-based AI super-agent system with a full-stack architecture. The
 backend runs a "super agent" with sandboxed execution, persistent memory, subagent

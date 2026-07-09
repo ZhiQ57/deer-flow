@@ -36,6 +36,16 @@ test.describe("Agent chat", () => {
     await expect(textarea).toBeVisible({ timeout: 15_000 });
   });
 
+  test("agent root page redirects to a new chat", async ({ page }) => {
+    mockLangGraphAPI(page, { agents: MOCK_AGENTS });
+
+    await page.goto("/workspace/agents/test-agent");
+
+    await page.waitForURL("**/workspace/agents/test-agent/chats/new");
+    const textarea = page.getByPlaceholder(/how can i assist you/i);
+    await expect(textarea).toBeVisible({ timeout: 15_000 });
+  });
+
   test("agent chat page shows agent badge", async ({ page }) => {
     mockLangGraphAPI(page, { agents: MOCK_AGENTS });
 

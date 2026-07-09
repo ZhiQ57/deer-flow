@@ -1,0 +1,11 @@
+interface:
+  display_name: "TableRAG Agent"
+  short_description: "Use TableRAG MCP for NL2SQL context"
+  default_prompt: "Use $table-rag-agent to retrieve schema context before generating SQL."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "table-rag"
+      description: "TableRAG MCP server for NL2SQL schema, Evidence, value, and Join Graph retrieval"
+      transport: "stdio"
