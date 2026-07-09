@@ -28,30 +28,31 @@ deer-flow/
 │   ├── packages/
 │   │   └── harness/           # deerflow-harness package (import: deerflow.*)
 │   │       ├── pyproject.toml
-│   │       └── deerflow/
-│   │           ├── agents/            # LangGraph agent system
-│   │           │   ├── lead_agent/    # Main agent (factory + system prompt)
-│   │           │   ├── middlewares/   # middleware components (see Middleware Chain section)
-│   │           │   ├── memory/        # Memory extraction, queue, prompts
-│   │           │   └── thread_state.py # ThreadState schema
-│   │           ├── sandbox/           # Sandbox execution system
-│   │           │   ├── local/         # Local filesystem provider
-│   │           │   ├── sandbox.py     # Abstract Sandbox interface
-│   │           │   ├── tools.py       # bash, ls, read/write/str_replace
-│   │           │   └── middleware.py  # Sandbox lifecycle management
-│   │           ├── subagents/         # Subagent delegation system
-│   │           │   ├── builtins/      # general-purpose, bash agents
-│   │           │   ├── executor.py    # Background execution engine
-│   │           │   └── registry.py    # Agent registry
-│   │           ├── tools/builtins/    # Built-in tools (present_files, ask_clarification, view_image)
-│   │           ├── mcp/               # MCP integration (tools, cache, client)
-│   │           ├── models/            # Model factory with thinking/vision support
-│   │           ├── skills/            # Skills discovery, loading, parsing
-│   │           ├── config/            # Configuration system (app, model, sandbox, tool, etc.)
-│   │           ├── community/         # Community tools (search/fetch/scrape, image search, AIO sandbox)
-│   │           ├── reflection/        # Dynamic module loading (resolve_variable, resolve_class)
-│   │           ├── utils/             # Utilities (network, readability)
-│   │           └── client.py          # Embedded Python client (DeerFlowClient)
+│   │       ├── deerflow/
+│   │       │   ├── agents/            # LangGraph agent system
+│   │       │   │   ├── lead_agent/    # Main agent (factory + system prompt)
+│   │       │   │   ├── middlewares/   # middleware components (see Middleware Chain section)
+│   │       │   │   ├── memory/        # Memory extraction, queue, prompts
+│   │       │   │   └── thread_state.py # ThreadState schema
+│   │       │   ├── sandbox/           # Sandbox execution system
+│   │       │   │   ├── local/         # Local filesystem provider
+│   │       │   │   ├── sandbox.py     # Abstract Sandbox interface
+│   │       │   │   ├── tools.py       # bash, ls, read/write/str_replace
+│   │       │   │   └── middleware.py  # Sandbox lifecycle management
+│   │       │   ├── subagents/         # Subagent delegation system
+│   │       │   │   ├── builtins/      # general-purpose, bash agents
+│   │       │   │   ├── executor.py    # Background execution engine
+│   │       │   │   └── registry.py    # Agent registry
+│   │       │   ├── tools/builtins/    # Built-in tools (present_files, ask_clarification, view_image)
+│   │       │   ├── mcp/               # MCP integration (tools, cache, client)
+│   │       │   ├── models/            # Model factory with thinking/vision support
+│   │       │   ├── skills/            # Skills discovery, loading, parsing
+│   │       │   ├── config/            # Configuration system (app, model, sandbox, tool, etc.)
+│   │       │   ├── community/         # Community tools (search/fetch/scrape, image search, AIO sandbox)
+│   │       │   ├── reflection/        # Dynamic module loading (resolve_variable, resolve_class)
+│   │       │   ├── utils/             # Utilities (network, readability)
+│   │       │   └── client.py          # Embedded Python client (DeerFlowClient)
+│   │       └── table_rag/             # TableRAG SDK + MCP server used by DataAgent Text2SQL flows
 │   ├── app/                   # Application layer (import: app.*)
 │   │   ├── gateway/           # FastAPI Gateway API
 │   │   │   ├── app.py         # FastAPI application

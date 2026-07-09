@@ -1,7 +1,5 @@
 {
-  "mcpInterceptors": [
-    "my_package.mcp.auth:build_auth_interceptor"
-  ],
+  "mcpInterceptors": [],
   "mcpServers": {
     "github": {
       "enabled": false,
@@ -28,6 +26,24 @@
       ],
       "env": {},
       "description": "PostgreSQL database access"
+    },
+    "tablerag": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "-m",
+        "table_rag.mcp",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "TABLERAG_MCP_CONFIG": "$TABLERAG_CONFIG",
+        "TABLERAG_MCP_ALLOW_INITIALIZE": "false",
+        "TABLERAG_MCP_ALLOW_SYNC_VALUES": "false"
+      },
+      "tool_call_timeout": 60,
+      "description": "TableRAG MCP server for DataAgent Text2SQL context retrieval"
     }
   },
   "skills": {}

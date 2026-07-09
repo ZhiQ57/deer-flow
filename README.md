@@ -355,6 +355,10 @@ DeerFlow supports configurable MCP servers and skills to extend its capabilities
 For HTTP/SSE MCP servers, OAuth token flows are supported (`client_credentials`, `refresh_token`).
 For stdio MCP servers, per-tool call timeouts can be configured with `tool_call_timeout`.
 See the [MCP Server Guide](backend/docs/MCP_SERVER.md) for detailed instructions.
+The default `extensions_config.example.json` also includes a disabled `tablerag`
+stdio server entry for the DataAgent Text2SQL workflow. See
+[DataAgent Text2SQL](docs/agents/data-agent/README.md) before enabling it with
+your own TableRAG config and DSNs.
 
 #### IM Channels
 
