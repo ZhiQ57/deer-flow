@@ -68,3 +68,8 @@ config.yaml.bak
 .worktrees
 /code-guide/
 /tabelrag.yaml
+
+# Local DataAgent business datasets
+/backend/tests/service_agent/test-data-agent/*.csv
+/backend/tests/service_agent/test-data-agent/logs/
+/backend/tests/service_agent/test-data-agent/log_*.txt

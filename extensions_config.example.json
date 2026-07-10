@@ -63,6 +63,8 @@
       ],
       "env": {
         "TABLERAG_MCP_CONFIG": "$TABLERAG_CONFIG",
+        "TABLERAG_MCP_INDEX_DSN": "$TABLERAG_MCP_INDEX_DSN",
+        "TABLERAG_MCP_SOURCE_DSN": "$TABLERAG_MCP_SOURCE_DSN",
         "TABLERAG_MCP_ALLOW_INITIALIZE": "false",
         "TABLERAG_MCP_ALLOW_SYNC_VALUES": "false"
       },

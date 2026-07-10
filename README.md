@@ -360,6 +360,21 @@ The default `extensions_config.example.json` also includes a disabled `tablerag`
 stdio server entry for the DataAgent Text2SQL workflow. See
 [DataAgent Text2SQL](docs/agents/data-agent/README.md) before enabling it with
 your own TableRAG config and DSNs.
+For local prototype runs without adding a Gateway route, use
+`python backend\tests\service_agent\test-data-agent\run_data_agent_stream.py "your data question"` to
+stream the experimental DataAgent (`backend/packages/harness/deerflow-dev/agents/data_agent`).
+Use `--log-path <directory-or-log.txt>` to create a timestamped, credential-redacted
+`log_YYYYMMDD_HHMMSS_mmm.txt` containing runtime variables, stream events, tool/stage
+output, and Python dependency logs.
+For a more readable local workflow, run
+`python backend\tests\service_agent\test-data-agent\run_data_agent_web.py`.
+It opens a loopback-only browser UI with chat, execution stages, QueryContext labels,
+TableRAG retrieval, validated SQL, result tables, ChartSpec previews, tool events, and
+the per-run log path. This is a standalone debugging app, not a production Gateway route.
+The experimental graph enforces read-only TableRAG retrieval, validated single-statement
+MySQL queries, bounded execution, and optional ChartSpec generation. It is not yet the
+same graph used by the native custom-agent UI; configure credentials through environment
+variables and use a database-level read-only MySQL account.
 
 #### IM Channels
 

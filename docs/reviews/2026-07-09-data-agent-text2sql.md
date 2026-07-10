@@ -6,13 +6,13 @@
 - 已把模板复制到本地 DeerFlow 原生运行时目录：`.deer-flow/users/default/agents/data-agent/`。
 - 在 `extensions_config.example.json` 中新增默认关闭的 `tablerag` stdio MCP Server 示例。
 - `backend/packages/harness/pyproject.toml` 已声明 `table_rag` 需要进入 `deerflow-harness` wheel packages；该声明需要真实 `backend/packages/harness/table_rag` SDK 文件存在后才能完成端到端打包验证。
-- 新增 `backend/tests/test_data_agent_config.py`，覆盖 DataAgent 配置、Skill 白名单、TableRAG MCP 示例和打包边界。
+- 新增 `backend/tests/service_agent/test-data-agent/test_data_agent_config.py`，覆盖 DataAgent 配置、Skill 白名单、TableRAG MCP 示例和打包边界。
 - 更新 `README.md`、`README_zh.md`、`backend/AGENTS.md`、`docs/guide/used-api.md`。
 
 ## 2、验证结果
 
-- [X] `cd backend; uvx ruff check tests/test_data_agent_config.py`：All checks passed。
-- [X] `cd backend; uv run python -m py_compile tests/test_data_agent_config.py`：编译通过。
+- [X] `cd backend; uvx ruff check tests/service_agent/test-data-agent/test_data_agent_config.py`：All checks passed。
+- [X] `cd backend; uv run python -m py_compile tests/service_agent/test-data-agent/test_data_agent_config.py`：编译通过。
 - [X] 安全复核后，直接执行不导入 `deerflow.skills.skillscan` 的 DataAgent 配置校验脚本：输出 `SAFE_DATA_AGENT_VALIDATION_OK`。
 - [X] 使用 `DEER_FLOW_PROJECT_ROOT` 指向仓库根目录后，`load_agent_config('data-agent', user_id='default')` 与 `load_agent_soul('data-agent', user_id='default')` 可读取本地运行时文件，输出 `LOCAL_DATA_AGENT_RUNTIME_OK`。
 - [ ] 待恢复真实 `backend/packages/harness/table_rag` SDK 文件后，再执行 `cd backend; uv run python -m table_rag.mcp --help` 和 TableRAG MCP 端到端检索验证。

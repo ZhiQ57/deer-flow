@@ -30,6 +30,7 @@ dependencies = [
 postgres = ["deerflow-harness[postgres]"]
 redis = ["deerflow-harness[redis]"]
 discord = ["discord.py>=2.7.0"]
+data-agent = ["deerflow-harness[data-agent]"]
 
 [dependency-groups]
 dev = [

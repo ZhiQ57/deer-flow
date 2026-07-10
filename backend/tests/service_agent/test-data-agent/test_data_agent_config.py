@@ -9,7 +9,23 @@ import yaml
 from deerflow.config.agents_config import AgentConfig
 from deerflow.config.extensions_config import ExtensionsConfig
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def _repo_root() -> Path:
+    """从移动后的测试目录定位仓库根目录。
+
+    Args:
+        无。
+
+    Return:
+        DeerFlow 仓库根目录。
+    """
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "AGENTS.md").is_file() and (candidate / "backend" / "pyproject.toml").is_file():
+            return candidate
+    raise RuntimeError("无法定位 DeerFlow 仓库根目录。")
+
+
+REPO_ROOT = _repo_root()
 DATA_AGENT_DOCS_DIR = REPO_ROOT / "docs" / "agents" / "data-agent"
 
 
@@ -28,7 +44,7 @@ def test_data_agent_template_matches_custom_agent_schema() -> None:
 
     assert agent_config.name == "data-agent"
     assert agent_config.model == "Qwen3.6-plus"
-    assert agent_config.tool_groups == ["web", "file:read", "file:write", "bash"]
+    assert agent_config.tool_groups == ["file:read"]
     assert agent_config.skills == ["table-rag-agent", "data-analysis", "chart-visualization"]
 
 
@@ -77,8 +93,8 @@ def test_extensions_example_contains_disabled_tablerag_mcp_server() -> None:
     assert tablerag.command == "python"
     assert tablerag.args == ["-m", "table_rag.mcp", "--transport", "stdio"]
     assert tablerag.env["TABLERAG_MCP_CONFIG"] == "$TABLERAG_CONFIG"
-    assert "TABLERAG_MCP_INDEX_DSN" not in tablerag.env
-    assert "TABLERAG_MCP_SOURCE_DSN" not in tablerag.env
+    assert tablerag.env["TABLERAG_MCP_INDEX_DSN"] == "$TABLERAG_MCP_INDEX_DSN"
+    assert tablerag.env["TABLERAG_MCP_SOURCE_DSN"] == "$TABLERAG_MCP_SOURCE_DSN"
     assert tablerag.env["TABLERAG_MCP_ALLOW_INITIALIZE"] == "false"
     assert tablerag.env["TABLERAG_MCP_ALLOW_SYNC_VALUES"] == "false"
 

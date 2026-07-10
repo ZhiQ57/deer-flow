@@ -103,7 +103,7 @@ git push origin dev
 
 ```powershell
 cd D:\A-PythonWork\AOpenGithub\deer-flow\backend
-uv run pytest tests/test_data_agent_config.py -q
+uv run pytest tests/service_agent/test-data-agent/test_data_agent_config.py -q
 ```
 
 TableRAG MCP 导入验证：
