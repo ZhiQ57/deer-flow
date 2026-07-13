@@ -66,8 +66,8 @@ config.yaml.bak
 /frontend/playwright-report/
 .gstack/
 .worktrees
-/code-guide/
-/tabelrag.yaml
+# /code-guide/
+# /tabelrag.yaml
 
 # Local DataAgent business datasets
 /backend/tests/service_agent/test-data-agent/*.csv

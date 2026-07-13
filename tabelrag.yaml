@@ -1,0 +1,79 @@
+# TableQA 本地 PostgreSQL + TableRAG 检索测试配置
+
+database_type: "pg"
+
+index_database:
+  dsn: "postgresql://postgres:postgres@127.0.0.1:55433/text2sql?connect_timeout=10"
+
+source_database:
+  dsn: "postgresql://postgres:postgres@127.0.0.1:55433/text2sql?connect_timeout=10"
+
+index_store:
+  tables:
+    evidence: "nl2sql_evidence_index"
+    evidence_embeddings: "nl2sql_evidence_embedding"
+    table_schema: "nl2sql_table_index"
+    column_schema: "nl2sql_column_index"
+    join_edges: "nl2sql_schema_join_edges"
+    field_values: "nl2sql_field_value_index"
+    field_value_embeddings: "nl2sql_field_value_embedding"
+
+  postgres:
+    enable_bm25: true
+    enable_pg_trgm: true
+
+  embedding:
+    default_dimension: 1024
+    batch_size: 10
+    cache_size: 10000
+    table:
+      enabled: true
+      dimension: 1024
+    column:
+      enabled: true
+      dimension: 1024
+    evidence:
+      enabled: false
+      dimension: 1024
+    field_value:
+      enabled: false
+      dimension: 1024
+
+retrieval:
+  evidence:
+    bm25_weight: 0.55
+    fuzzy_weight: 0.15
+    vector_weight: 0.0
+
+  table:
+    bm25_weight: 0.50
+    fuzzy_weight: 0.20
+    vector_weight: 0.30
+
+  column:
+    bm25_weight: 0.50
+    fuzzy_weight: 0.20
+    vector_weight: 0.30
+
+  hybrid:
+    column_table_boost: 0.25
+    value_table_boost: 0.25
+
+  join_graph:
+    max_edges: 5000
+
+  reranker:
+    enabled: true
+    type: "weighted_schema"
+    rrf_k: 60
+    weights:
+      entity_boost: 0.12
+      exact_alias_hit: 0.2
+      metric_role_match: 0.2
+      dimension_role_match: 0.15
+      business_domain_prior: 0.1
+
+field_value_sync:
+  interval_seconds: 3600
+  batch_size: 1000
+  targets: []
