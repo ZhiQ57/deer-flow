@@ -144,6 +144,26 @@ uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
 DeerFlow 内部代码。配置没有启用 `--reload`，避免热重载子进程影响断点稳定性；
 修改代码后可停止调试并再次按 `F5`。
 
+如果调试终端的第一段命令仍显示系统解释器，例如：
+
+```text
+C:\Users\<用户名>\AppData\Local\Programs\Python\Python311\python.exe
+```
+
+说明 VS Code Python 扩展仍在使用之前缓存的全局解释器。仓库配置已经同时固定
+目标进程、Debug Adapter 和 Debug Launcher 使用
+`backend\.venv\Scripts\python.exe`。停止当前调试后，执行一次：
+
+1. `Ctrl+Shift+P` 打开命令面板。
+2. 执行 `Developer: Reload Window`。
+3. 重新选择 `DeerFlow: 调试 Gateway` 并按 `F5`。
+
+正常情况下，调试终端命令开头应为：
+
+```text
+D:\A-PythonWork\AOpenGithub\deer-flow\backend\.venv\Scripts\python.exe
+```
+
 ## 4. 启动前端 Frontend（宿主机控制台）
 
 再新开一个 PowerShell 窗口，执行：

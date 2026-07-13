@@ -38,6 +38,7 @@ extensions_config.json
 .idea/
 .vscode/*
 !.vscode/launch.json
+!.vscode/settings.json
 
 # Coverage report
 coverage.xml

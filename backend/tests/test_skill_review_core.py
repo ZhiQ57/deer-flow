@@ -12,8 +12,16 @@ from deerflow.skills.review.cli import main as review_cli_main
 from deerflow.skills.review.models import PackageLimits, normalize_relative_path
 from deerflow.skills.review.readers import ArchivePackageReader, parse_skill_uri
 from deerflow.skills.review.renderer import build_static_report, render_report_markdown
+from deerflow.skills.skillscan import scan_skill_dir as package_scan_skill_dir
 
 CONTRACTS_DIR = Path(__file__).resolve().parents[2] / "contracts" / "skill_review"
+
+
+def test_skill_review_uses_package_level_skillscan_fallback() -> None:
+    """验证 Skill Review 不依赖可能被终端安全软件隔离的实现模块。"""
+    from deerflow.skills.review import analyzer
+
+    assert analyzer.scan_skill_dir is package_scan_skill_dir
 
 
 def _write(path: Path, text: str) -> None:

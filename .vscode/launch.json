@@ -6,6 +6,8 @@
       "type": "debugpy",
       "request": "launch",
       "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "debugAdapterPython": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "debugLauncherPython": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
       "module": "uvicorn",
       "args": [
         "app.gateway.app:app",
