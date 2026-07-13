@@ -37,7 +37,6 @@ DEV_PATH = REPO_ROOT / "backend" / "packages" / "harness" / "deerflow-dev"
 if str(DEV_PATH) not in sys.path:
     sys.path.insert(0, str(DEV_PATH))
 
-from agents.data_agent import DataAgentOrchestrationMiddleware, QueryContextMiddleware  # noqa: E402
 from agents.data_agent.agent import (  # noqa: E402
     _filter_data_agent_tools,
     _insert_data_middlewares,
@@ -47,8 +46,10 @@ from agents.data_agent.agent import (  # noqa: E402
     build_data_agent,
 )
 from agents.data_agent.constants import DATA_AGENT_NAME, DATA_AGENT_SKILLS, DATA_AGENT_TOOL_GROUPS  # noqa: E402
-from agents.data_agent.sql_validation import sql_sha256  # noqa: E402
-from agents.data_agent.state import DataAgentState, merge_retrieval_context  # noqa: E402
+from agents.middlewares.data_agent_orchestration_middleware import DataAgentOrchestrationMiddleware  # noqa: E402
+from agents.middlewares.query_context_middleware import QueryContextMiddleware  # noqa: E402
+from agents.thread_state import DataAgentState, merge_retrieval_context  # noqa: E402
+from tools.sql_validation import sql_sha256  # noqa: E402
 
 from deerflow.tools.mcp_metadata import tag_mcp_tool  # noqa: E402
 

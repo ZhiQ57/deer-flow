@@ -1,0 +1,34 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "DeerFlow: 调试 Gateway",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "module": "uvicorn",
+      "args": [
+        "app.gateway.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8001"
+      ],
+      "cwd": "${workspaceFolder}/backend",
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+        "PYTHONPATH": ".",
+        "DEER_FLOW_PROJECT_ROOT": "${workspaceFolder}",
+        "DEER_FLOW_HOME": "${workspaceFolder}/backend/.deer-flow",
+        "DEER_FLOW_CONFIG_PATH": "${workspaceFolder}/config.yaml",
+        "DEER_FLOW_EXTENSIONS_CONFIG_PATH": "${workspaceFolder}/extensions_config.json",
+        "DEER_FLOW_STREAM_BRIDGE_REDIS_URL": "redis://localhost:6379/0",
+        "GATEWAY_CORS_ORIGINS": "http://localhost:3000,http://127.0.0.1:3000"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": true
+    }
+  ]
+}

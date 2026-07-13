@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from datetime import date, datetime
 from decimal import Decimal
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -28,10 +29,12 @@ DEV_PATH = REPO_ROOT / "backend" / "packages" / "harness" / "deerflow-dev"
 if str(DEV_PATH) not in sys.path:
     sys.path.insert(0, str(DEV_PATH))
 
-from agents.data_agent.chart import build_chart_spec  # noqa: E402
-from agents.data_agent.database import MySQLExecutionSettings, execute_readonly_sql, format_safe_database_error  # noqa: E402
-from agents.data_agent.sql_validation import SQLValidationError, sql_sha256, validate_readonly_sql  # noqa: E402
-from agents.data_agent.tools import _normalize_chart_y, data_execute_sql_tool, data_validate_sql_tool  # noqa: E402
+from tools.builtins.chart_spec_tool import normalize_chart_y  # noqa: E402
+from tools.builtins.data_execute_sql_tool import data_execute_sql_tool  # noqa: E402
+from tools.builtins.data_validate_sql_tool import data_validate_sql_tool  # noqa: E402
+from tools.chart_spec import build_chart_spec  # noqa: E402
+from tools.database import MySQLExecutionSettings, execute_readonly_sql, format_safe_database_error  # noqa: E402
+from tools.sql_validation import SQLValidationError, sql_sha256, validate_readonly_sql  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -202,7 +205,7 @@ def test_sql_execution_failure_preserves_last_successful_result(monkeypatch) -> 
     Return:
         None。
     """
-    from agents.data_agent import tools as tools_module
+    tools_module = import_module("tools.builtins.data_execute_sql_tool")
 
     monkeypatch.setenv("DATA_AGENT_MYSQL_HOST", "db.internal")
     monkeypatch.setenv("DATA_AGENT_MYSQL_USER", "reporter")
@@ -266,7 +269,7 @@ def test_sql_execution_success_updates_last_successful_result(monkeypatch) -> No
     Return:
         None。
     """
-    from agents.data_agent import tools as tools_module
+    tools_module = import_module("tools.builtins.data_execute_sql_tool")
 
     monkeypatch.setenv("DATA_AGENT_MYSQL_HOST", "db.internal")
     monkeypatch.setenv("DATA_AGENT_MYSQL_USER", "reporter")
@@ -459,8 +462,8 @@ def test_chart_tool_normalizes_json_string_y_fields() -> None:
     Return:
         None。
     """
-    assert _normalize_chart_y('["count", "amount"]') == ["count", "amount"]
-    assert _normalize_chart_y("count, amount") == ["count", "amount"]
+    assert normalize_chart_y('["count", "amount"]') == ["count", "amount"]
+    assert normalize_chart_y("count, amount") == ["count", "amount"]
 
 
 def test_execute_readonly_sql_enforces_total_result_budget_on_first_row() -> None:

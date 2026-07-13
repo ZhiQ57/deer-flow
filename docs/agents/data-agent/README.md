@@ -3,7 +3,7 @@
 DataAgent 当前包含两条用途不同的路径：
 
 1. `docs/agents/data-agent/config.yaml` 与 `SOUL.md` 是 DeerFlow 原生 custom-agent 模板，可复制到 `.deer-flow/users/{user_id}/agents/data-agent/`。
-2. `backend/packages/harness/deerflow-dev/agents/data_agent/` 是实验性、阶段门禁化的 DataAgent 运行层，通过 `create_deerflow_agent(...)` 重新创建图；当前只由控制台脚本直接启动，不新增 Gateway 路由。
+2. `backend/packages/harness/deerflow-dev/` 是实验性、阶段门禁化的 DataAgent 运行层，按照 DeerFlow SDK 的 `agents`、`agents/middlewares`、`tools/builtins`、`subagents` 边界组织，并通过 `create_deerflow_agent(...)` 重新创建图；当前只由测试执行脚本直接启动，不新增 Gateway 路由。
 
 只有第 2 条实验性路径包含本文所述的 QueryContext、只读 SQL 校验/执行、ChartSpec 和调用预算门禁。原生 UI custom-agent 路径仍使用 lead-agent，不会自动切换到该实验图。
 
@@ -102,6 +102,27 @@ $env:DATA_AGENT_MYSQL_DATABASE="<business_database>"
 - `data_validate_sql`：只允许单条 MySQL `SELECT/WITH`，拒绝 DDL/DML、多语句、锁、文件写出、危险函数、优化器 Hint、占位符、跨业务库和系统库访问，并自动收紧 `LIMIT`。
 - `data_execute_sql`：只执行最近校验返回的同一条 `executable_sql`；使用只读事务、连接/读取/查询超时、行数、单元格和结果总字符预算。
 - `data_build_chart_spec`：只消费成功 SQL 结果，并校验图表字段和数值轴。
+
+当前代码目录：
+
+```text
+deerflow-dev/
+├── agents/
+│   ├── data_agent/                 # 图工厂、prompt、Agent 常量
+│   ├── middlewares/                # QueryContext 与流程编排 middleware
+│   └── thread_state.py             # DataAgentState 与 reducer
+├── tools/
+│   ├── builtins/                   # 三个模型可调用工具
+│   ├── sql_validation.py           # SQL AST 校验
+│   ├── database.py                 # MySQL 只读执行
+│   └── chart_spec.py               # ChartSpec 构造
+└── subagents/
+    └── builtins/                   # 后续内置垂直子代理配置边界
+```
+
+图入口使用 `from agents import build_data_agent, make_data_agent`。旧的
+`agents.data_agent.middleware`、`agents.data_agent.state`、
+`agents.data_agent.tools` 等导入路径已经删除，不提供兼容层。
 
 默认工具面只保留：
 
@@ -256,7 +277,7 @@ query_context
 
 ## 8. 当前限制
 
-- 该包位于 `deerflow-dev`，不是稳定 `deerflow.*` 公共 API，也没有注册独立 Gateway 图路由。
+- 该运行层位于 `deerflow-dev`，不是稳定 `deerflow.*` 公共 API，也没有注册独立 Gateway 图路由。
 - 当前主要是主代理内的工具编排，尚未交付可独立训练的 TableRAG 子代理和 NL2SQL 子代理。
 - ChartSpec 已进入状态和控制台流，但前端图表渲染协议尚未接入。
 - CSV 中的参考 SQL 目前只作为人工对照数据，未自动参与生成 SQL 的等价性评测。

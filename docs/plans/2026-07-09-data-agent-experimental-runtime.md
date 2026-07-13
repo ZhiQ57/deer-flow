@@ -8,7 +8,7 @@
 
 ## 2、实验性 DataAgent 运行层设计
 
-- [X] 2.1 在 `backend/packages/harness/deerflow-dev/agents/data_agent` 下建立实验性 DataAgent 包，避免污染 `deerflow.*` 稳定公共 API。
+- [X] 2.1 在 `backend/packages/harness/deerflow-dev` 下建立实验性 DataAgent 运行层，避免污染 `deerflow.*` 稳定公共 API；当前已按 SDK 边界拆分为 `agents`、`agents/middlewares`、`tools/builtins`、`subagents`。
 - [X] 2.2 定义 DataAgent 常量、状态结构和系统提示片段，默认绑定 `data-agent`、TableRAG Skill 白名单和 `tablerag_*` MCP 使用约束。
 - [X] 2.3 通过 `create_deerflow_agent(...)` 重新创建图，同时复用 lead-agent 的模型、工具、prompt、deferred tool、skill 和 middleware 组装逻辑。
 
@@ -61,3 +61,11 @@
 - [X] 8.3 复用现有时间戳日志和凭据脱敏能力，限制输入、并发与本地监听边界。
 - [X] 8.4 增加页面、请求校验和流事件转换测试。
 - [X] 8.5 执行 Ruff、pytest、页面启动和浏览器冒烟验证，并同步 README、API 指南和 review 文档。
+
+## 9、SDK 目录重构
+
+- [X] 9.1 将 `agents/data_agent` 收敛为图工厂、prompt 和 Agent 常量。
+- [X] 9.2 将 QueryContext 与流程编排拆分到 `agents/middlewares` 独立模块。
+- [X] 9.3 将 `DataAgentState` 迁移到 `agents/thread_state.py`。
+- [X] 9.4 将 SQL 校验、MySQL 执行、ChartSpec 和模型可调用工具迁移到 `tools` / `tools/builtins`。
+- [X] 9.5 删除旧导入路径，不保留兼容层，并增加 SDK 目录边界回归测试。

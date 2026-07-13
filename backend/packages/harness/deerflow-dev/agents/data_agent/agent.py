@@ -8,7 +8,15 @@ from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.runnables import RunnableConfig
+from tools.builtins import get_data_agent_tools
+from tools.constants import (
+    is_readonly_tablerag_tool_name,
+    is_tablerag_retrieval_tool_name,
+)
 
+from agents.middlewares.data_agent_orchestration_middleware import DataAgentOrchestrationMiddleware
+from agents.middlewares.query_context_middleware import QueryContextMiddleware
+from agents.thread_state import DataAgentState
 from deerflow.agents.factory import create_deerflow_agent
 from deerflow.agents.lead_agent.agent import (
     _get_runtime_config,
@@ -24,7 +32,7 @@ from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.models import create_chat_model
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.describe import build_skill_search_setup
-from deerflow.skills.tool_policy import SKILL_LOADING_TOOL_NAMES, filter_tools_by_skill_allowed_tools
+from deerflow.skills.tool_policy import ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES, filter_tools_by_skill_allowed_tools
 from deerflow.tools.mcp_metadata import is_mcp_tool
 from deerflow.tracing import build_tracing_callbacks
 
@@ -33,13 +41,8 @@ from .constants import (
     DATA_AGENT_SAFE_LOCAL_TOOL_NAMES,
     DATA_AGENT_SKILLS,
     DATA_AGENT_TOOL_GROUPS,
-    is_readonly_tablerag_tool_name,
-    is_tablerag_retrieval_tool_name,
 )
-from .middleware import DataAgentOrchestrationMiddleware, QueryContextMiddleware
 from .prompt import build_data_agent_prompt_appendix
-from .state import DataAgentState
-from .tools import build_data_agent_runtime_tools
 
 logger = logging.getLogger(__name__)
 
@@ -440,11 +443,11 @@ def build_data_agent(
     filtered_tools = filter_tools_by_skill_allowed_tools(
         raw_tools,
         skills_for_tool_policy,
-        always_allowed_tool_names=SKILL_LOADING_TOOL_NAMES,
+        always_allowed_tool_names=ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES,
     )
     if require_table_rag and not _has_tablerag_tools(filtered_tools):
         raise RuntimeError("DataAgent TableRAG tools were removed by the active Skill tool policy. Check the enabled DataAgent skills and their allowed-tools metadata.")
-    filtered_tools = _append_unique_tools(filtered_tools, build_data_agent_runtime_tools())
+    filtered_tools = _append_unique_tools(filtered_tools, get_data_agent_tools())
     if non_interactive:
         filtered_tools = [tool for tool in filtered_tools if tool.name not in _NON_INTERACTIVE_DISABLED_TOOL_NAMES]
     final_tools, deferred_setup = assemble_deferred_tools(filtered_tools, enabled=resolved_app_config.tool_search.enabled)

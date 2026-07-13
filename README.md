@@ -362,7 +362,10 @@ stdio server entry for the DataAgent Text2SQL workflow. See
 your own TableRAG config and DSNs.
 For local prototype runs without adding a Gateway route, use
 `python backend\tests\service_agent\test-data-agent\run_data_agent_stream.py "your data question"` to
-stream the experimental DataAgent (`backend/packages/harness/deerflow-dev/agents/data_agent`).
+stream the experimental DataAgent (`backend/packages/harness/deerflow-dev`).
+The prototype mirrors the DeerFlow SDK boundaries: graph assembly in
+`agents/data_agent`, middleware in `agents/middlewares`, state in
+`agents/thread_state.py`, and callable tools in `tools/builtins`.
 Use `--log-path <directory-or-log.txt>` to create a timestamped, credential-redacted
 `log_YYYYMMDD_HHMMSS_mmm.txt` containing runtime variables, stream events, tool/stage
 output, and Python dependency logs.

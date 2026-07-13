@@ -398,8 +398,9 @@ def _run_events(runtime: WebRuntime, request: ChatRequest) -> Iterator[dict[str,
     Yields:
         NDJSON 响应中的结构化事件。
     """
-    from agents.data_agent import MySQLExecutionSettings, build_data_agent, execute_readonly_sql
+    from agents import build_data_agent
     from langchain_core.messages import HumanMessage
+    from tools.database import MySQLExecutionSettings, execute_readonly_sql
 
     run_id = f"web-{uuid.uuid4()}"
     thread_id = request.thread_id or f"data-agent-web-{uuid.uuid4()}"

@@ -1,4 +1,4 @@
-"""DataAgent 实验性状态定义。"""
+"""DataAgent 实验性线程状态定义。"""
 
 from __future__ import annotations
 

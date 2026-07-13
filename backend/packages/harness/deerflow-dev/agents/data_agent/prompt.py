@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .constants import TABLE_RAG_TOOL_HINTS
+from tools.constants import TABLE_RAG_TOOL_HINTS
 
 
 def build_data_agent_prompt_appendix(

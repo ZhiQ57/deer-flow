@@ -1,4 +1,4 @@
-"""DataAgent 图表规格构造。"""
+"""DataAgent 图表规格构造能力。"""
 
 from __future__ import annotations
 

@@ -111,6 +111,39 @@ curl.exe http://localhost:8001/health
 
 > 修改 `config.yaml` 的模型配置后，需要重启后端 Gateway。
 
+### 3.1 使用 VS Code 调试 Gateway
+
+仓库提供 `.vscode/launch.json`，其工作目录、环境变量和 Uvicorn 参数与上面的
+PowerShell 手动启动方式一致。该配置只启动宿主机 Gateway，不会启动前端或
+任何 Docker 服务。
+
+使用前确认：
+
+1. 使用 VS Code 打开 DeerFlow 仓库根目录，而不是只打开 `backend` 目录。
+2. 已安装 VS Code Python 调试扩展。
+3. 已执行 `uv sync --all-packages --extra redis`，并存在
+   `backend\.venv\Scripts\python.exe`。
+4. Redis、前端和 Nginx 是否启动由开发者自行决定；Gateway 调试配置不会管理它们。
+
+启动调试：
+
+1. 在需要调试的 DeerFlow Python 源码中设置断点。
+2. 打开 VS Code“运行和调试”面板。
+3. 选择 `DeerFlow: 调试 Gateway`。
+4. 按 `F5` 启动。
+
+调试器等价执行：
+
+```powershell
+Set-Location "$Root\backend"
+uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
+```
+
+其中 VS Code 会直接使用 `uv` 创建的
+`backend\.venv\Scripts\python.exe` 启动 `uvicorn` 模块，以便断点进入
+DeerFlow 内部代码。配置没有启用 `--reload`，避免热重载子进程影响断点稳定性；
+修改代码后可停止调试并再次按 `F5`。
+
 ## 4. 启动前端 Frontend（宿主机控制台）
 
 再新开一个 PowerShell 窗口，执行：
@@ -290,4 +323,3 @@ No models are configured in config.yaml
 ### 8.5 不要绕过终端安全软件
 
 如果安全软件隔离了某个源码文件，不要关闭安全软件或强行加白名单。应先人工审查代码来源与内容，再决定是否恢复。
-

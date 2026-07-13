@@ -748,7 +748,7 @@ def _run_question(
     Return:
         None。
     """
-    from agents.data_agent import make_data_agent
+    from agents import make_data_agent
     from langchain_core.messages import HumanMessage
 
     thread_id = args.thread_id or f"data-agent-{uuid.uuid4()}"
@@ -848,7 +848,7 @@ def main() -> int:
         output.info(f"runtime.question_count={len(questions)}")
 
         if not args.skip_db_preflight:
-            from agents.data_agent import MySQLExecutionSettings, execute_readonly_sql
+            from tools.database import MySQLExecutionSettings, execute_readonly_sql
 
             settings = MySQLExecutionSettings.from_env()
             output.info(f"[DataAgent:MySQL] preflight {settings.safe_description()}")

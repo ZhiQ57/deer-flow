@@ -1,4 +1,4 @@
-"""DataAgent MySQL 只读 SQL 校验。"""
+"""DataAgent MySQL 只读 SQL 校验能力。"""
 
 from __future__ import annotations
 

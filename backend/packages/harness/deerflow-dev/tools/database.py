@@ -1,4 +1,4 @@
-"""DataAgent MySQL 只读执行层。"""
+"""DataAgent MySQL 只读数据库执行层。"""
 
 from __future__ import annotations
 
