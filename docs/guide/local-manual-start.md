@@ -15,14 +15,17 @@
 查看系统是否残留服务没有关闭：
 
 # 先查看服务
+```powershell
 Get-NetTCPConnection -LocalPort 8001,3000,2026 -State Listen -ErrorAction SilentlyContinue |
   Select-Object LocalAddress,LocalPort,State,OwningProcess
+```
 
 # 停后端 8001、前端 3000、Nginx 2026
+```powershell
 Get-NetTCPConnection -LocalPort 8001,3000,2026 -State Listen -ErrorAction SilentlyContinue |
   Select-Object -ExpandProperty OwningProcess -Unique |
   ForEach-Object { Stop-Process -Id $_ -Force }
-
+```
 需要已准备：
 
 1. Docker Desktop 已启动。

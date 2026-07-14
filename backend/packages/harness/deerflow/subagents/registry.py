@@ -16,7 +16,7 @@ def _resolve_subagents_app_config(app_config: Any | None = None):
         from deerflow.config.subagents_config import get_subagents_app_config
 
         return get_subagents_app_config()
-    return getattr(app_config, "subagents", app_config)
+    return getattr(app_config, "subagents", app_config) # 尝试读取 app_config 的 subagents 属性，找不到则直接把 app_config自身返回
 
 
 def _build_custom_subagent_config(name: str, *, app_config: Any | None = None) -> SubagentConfig | None:
@@ -130,12 +130,13 @@ def list_subagents(*, app_config: Any | None = None) -> list[SubagentConfig]:
     return configs
 
 
-def get_subagent_names(*, app_config: Any | None = None) -> list[str]:
+def get_subagent_names(*, app_config: Any | None = None, allowable_subagents: set[str] | None = None) -> list[str]:
     """Get all available subagent names (built-in + custom).
 
     Returns:
         List of subagent names.
     """
+    # 系统内置的 subagents, 包括: general-purpose, bash
     names = list(BUILTIN_SUBAGENTS.keys())
 
     # Merge custom_agents from config.yaml
@@ -144,16 +145,28 @@ def get_subagent_names(*, app_config: Any | None = None) -> list[str]:
         if custom_name not in names:
             names.append(custom_name)
 
+    # allowable_subagents = agent_name 仅授权的子代理列表
+    # 过滤 names 仅保留授权子代理（注: default = 默认 bash + general）
+    if allowable_subagents is not None and len(allowable_subagents) > 0:
+        # 1. 计算允许保留的元素集合
+        allowed = set(allowable_subagents)
+        if "default" in allowed:
+            allowed.remove("default")  # 移除标记位
+            allowed.update(list(BUILTIN_SUBAGENTS.keys())) # 补充 default 对应的保留项
+
+        # 2. 按原顺序过滤 names
+        names = [name for name in names if name in allowed]
+
     return names
 
 
-def get_available_subagent_names(*, app_config: Any | None = None) -> list[str]:
+def get_available_subagent_names(*, app_config: Any | None = None, allowable_subagents: set[str] | None = None) -> list[str]:
     """Get subagent names that should be exposed to the active runtime.
 
     Returns:
         List of subagent names visible to the current sandbox configuration.
     """
-    names = get_subagent_names(app_config=app_config)
+    names = get_subagent_names(app_config=app_config, allowable_subagents=allowable_subagents)
     try:
         host_bash_allowed = is_host_bash_allowed(app_config) if hasattr(app_config, "sandbox") else is_host_bash_allowed()
     except Exception:

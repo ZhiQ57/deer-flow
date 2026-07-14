@@ -304,6 +304,13 @@ def build_middlewares(
     if todo_list_middleware is not None:
         middlewares.append(todo_list_middleware)
 
+    agent_name = validate_agent_name(cfg.get("agent_name"))  # cfg.get("agent_name")可读取配置的智能体名称
+    # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
+    is_bootstrap = cfg.get("is_bootstrap", False)
+    agent_config = load_agent_config(agent_name) if not is_bootstrap else None
+
+    # TODO : 按照 agent_name 加载定制化的 Middleware 配置.
+
     # Add TokenUsageMiddleware when token_usage tracking is enabled
     if resolved_app_config.token_usage.enabled:
         middlewares.append(TokenUsageMiddleware())
@@ -396,6 +403,16 @@ def _available_skill_names(agent_config, is_bootstrap: bool) -> set[str] | None:
         return set(agent_config.skills)
     return None
 
+def _available_subagents(agent_config, subagent_enabled: bool) -> set[str] | None:
+    """读取 custom agent 配置的 allowable_subagents 列表.
+    - 如果 subagent_enabled 为 False, 则返回 None
+    - 如果 allowable_subagents 未配置, 则返回默认值 ["default"], 否则返回配置的 allowable_subagents 列表
+    """
+    if not subagent_enabled:
+        return None
+    if agent_config and agent_config.allowable_subagents is not None:
+        return set(agent_config.allowable_subagents)
+    return set(["default"])
 
 def _load_enabled_skills_for_tool_policy(available_skills: set[str] | None, *, app_config: AppConfig, user_id: str | None = None) -> list[Skill]:
     try:
@@ -443,11 +460,12 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
     is_bootstrap = cfg.get("is_bootstrap", False)
     non_interactive = bool(cfg.get("non_interactive", False))
-    agent_name = validate_agent_name(cfg.get("agent_name"))
+    agent_name = validate_agent_name(cfg.get("agent_name"))                 # cfg.get("agent_name")可读取配置的智能体名称
     
     # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
     available_skills = _available_skill_names(agent_config, is_bootstrap)
+    available_subagents = _available_subagents(agent_config, subagent_enabled)
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
 
@@ -550,6 +568,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             ),
             system_prompt=apply_prompt_template(
                 subagent_enabled=subagent_enabled,
+                allowable_subagents=available_subagents,
                 max_concurrent_subagents=max_concurrent_subagents,
                 available_skills=set(_BOOTSTRAP_SKILL_NAMES),
                 app_config=resolved_app_config,
@@ -616,6 +635,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         ),
         system_prompt=apply_prompt_template(
             subagent_enabled=subagent_enabled,
+            allowable_subagents=available_subagents,
             max_concurrent_subagents=max_concurrent_subagents,
             agent_name=agent_name,
             available_skills=available_skills,

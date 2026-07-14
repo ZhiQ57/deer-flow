@@ -294,7 +294,7 @@ def _build_available_subagents_description(available_names: list[str], bash_avai
     return "\n".join(lines)
 
 
-def _build_subagent_section(max_concurrent: int, *, app_config: AppConfig | None = None) -> str:
+def _build_subagent_section(max_concurrent: int, *, app_config: AppConfig | None = None, allowable_subagents: set[str] | None = None) -> str:
     """Build the subagent system prompt section with dynamic concurrency limit.
 
     Args:
@@ -304,7 +304,8 @@ def _build_subagent_section(max_concurrent: int, *, app_config: AppConfig | None
         Formatted subagent section string.
     """
     n = max_concurrent
-    available_names = get_available_subagent_names(app_config=app_config) if app_config is not None else get_available_subagent_names()
+    available_names = get_available_subagent_names(app_config=app_config, allowable_subagents=allowable_subagents) if app_config is not None else get_available_subagent_names()
+
     bash_available = "bash" in available_names
 
     # Dynamically build subagent type descriptions from registry (aligned with Codex's
@@ -940,6 +941,7 @@ Memory is running in tool mode. Use the injected <memory> block as current conte
 
 def apply_prompt_template(
     subagent_enabled: bool = False,
+    allowable_subagents: set[str] | None = None,
     max_concurrent_subagents: int = 3,
     *,
     agent_name: str | None = None,
@@ -952,7 +954,7 @@ def apply_prompt_template(
 ) -> str:
     # Include subagent section only if enabled (from runtime parameter)
     n = max_concurrent_subagents
-    subagent_section = _build_subagent_section(n, app_config=app_config) if subagent_enabled else ""
+    subagent_section = _build_subagent_section(n, app_config=app_config, allowable_subagents=allowable_subagents) if subagent_enabled else ""
 
     # Add subagent reminder to critical_reminders if enabled
     subagent_reminder = (

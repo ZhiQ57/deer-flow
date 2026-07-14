@@ -162,6 +162,10 @@ class AgentConfig(BaseModel):
     name: str
     description: str = ""
     model: str | None = None
+    # 授予子智能体列表:
+    # - default 表示使用系统默认的子智能体
+    # - ["default", "subagent1", "subagent2"] 表示允许使用的子智能体列表
+    allowable_subagents: list[str] | None = None
     tool_groups: list[str] | None = None
     # skills controls which skills are loaded into the agent's prompt:
     # - None (or omitted): load all enabled skills (default fallback behavior)
