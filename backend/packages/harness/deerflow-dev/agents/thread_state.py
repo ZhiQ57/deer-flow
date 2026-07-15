@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from deerflow.agents.thread_state import ThreadState
+from deerflow.tools.builtins.entity_extract_tool import EntityExtractionResult
 
 DataAgentStage = Literal[
     "query_context",
@@ -16,27 +17,6 @@ DataAgentStage = Literal[
     "chart_failed",
     "chart_ready",
 ]
-
-
-class DataQueryEntity(TypedDict):
-    """DataAgent 从用户问题中识别出的实体标签。"""
-
-    label: str
-    value: str
-    normalized: NotRequired[str]
-    source: NotRequired[str]
-
-
-class DataQueryContext(TypedDict):
-    """DataAgent QueryContextMiddleware 产出的结构化查询上下文。"""
-
-    original_query: str
-    normalized_query: str
-    intent: str
-    aliases: list[DataQueryEntity]
-    entities: list[DataQueryEntity]
-    labels: list[DataQueryEntity]
-    warnings: list[str]
 
 
 class DataRetrievalContext(TypedDict):
@@ -94,6 +74,24 @@ class DataChartSpec(TypedDict, total=False):
     truncated: bool
 
 
+class DataQueryLabel(TypedDict, total=False):
+    """DataAgent 用户侧查询标签。"""
+
+    label: str
+    value: str
+    source: Literal["user", "database", "derived"]
+    normalized: str
+    evidence: str
+
+
+class DataQueryLabels(TypedDict, total=False):
+    """DataAgent 当前完整查询标签快照。"""
+
+    intent: str
+    labels: list[DataQueryLabel]
+    summary: str
+
+
 def replace_value[T](existing: T | None, new: T | None) -> T | None:
     """替换 DataAgent 单值状态。
 
@@ -134,7 +132,8 @@ class DataAgentState(ThreadState):
     """DataAgent 状态结构，继承 DeerFlow 原生 ThreadState 并增加生产流程状态。"""
 
     data_agent_stage: Annotated[DataAgentStage | None, replace_value]
-    data_query_context: Annotated[DataQueryContext | None, replace_value]
+    data_query_context: Annotated[EntityExtractionResult | None, replace_value]
+    data_query_labels: Annotated[DataQueryLabels | None, replace_value]
     data_retrieval_context: Annotated[DataRetrievalContext | None, merge_retrieval_context]
     data_generated_sql: Annotated[str | None, replace_value]
     data_sql_validation: Annotated[DataSQLValidation | None, replace_value]

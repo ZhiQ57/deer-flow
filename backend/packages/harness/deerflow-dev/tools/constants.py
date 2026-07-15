@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+ENTITY_EXTRACT_TOOL_NAME = "entity_extract_tool"
+PUBLISH_QUERY_LABELS_TOOL_NAME = "publish_query_labels"
+
 TABLE_RAG_TOOL_HINTS: tuple[str, ...] = (
     "tablerag_retrieve",
     "tablerag_raw_retrieve",
@@ -28,6 +31,8 @@ DATA_BUILD_CHART_SPEC_TOOL_NAME = "data_build_chart_spec"
 
 DATA_AGENT_BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
     {
+        ENTITY_EXTRACT_TOOL_NAME,
+        PUBLISH_QUERY_LABELS_TOOL_NAME,
         DATA_VALIDATE_SQL_TOOL_NAME,
         DATA_EXECUTE_SQL_TOOL_NAME,
         DATA_BUILD_CHART_SPEC_TOOL_NAME,

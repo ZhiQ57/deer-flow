@@ -12,11 +12,11 @@
 - [X] 2.2 定义 DataAgent 常量、状态结构和系统提示片段，默认绑定 `data-agent`、TableRAG Skill 白名单和 `tablerag_*` MCP 使用约束。
 - [X] 2.3 通过 `create_deerflow_agent(...)` 重新创建图，同时复用 lead-agent 的模型、工具、prompt、deferred tool、skill 和 middleware 组装逻辑。
 
-## 3、QueryContextMiddleware 编排
+## 3、QueryContext Tool 编排
 
-- [X] 3.1 实现意图归一化：用可配置黑话/别名表把用户问题中的业务黑话映射为标准值。
-- [X] 3.2 实现轻量实体抽取：从问题中抽取时间、指标、维度、地区、排序、数量和关键词标签。
-- [X] 3.3 将结构化 Query Context 写入 `DataAgentState`，并作为隐藏上下文注入模型请求，同时通过 custom stream event 输出给执行脚本观察。
+- [X] 3.1 将意图归一化与轻量实体抽取收敛到稳定 SDK 的 `deerflow.tools.builtins.entity_extract_tool.EntityExtractor`。
+- [X] 3.2 新增模型按需调用的 `data_extract_query_context`，从最后一条真实用户消息构造 Query Context，并通过 ToolMessage artifact 返回完整结果。
+- [X] 3.3 将 middleware 收敛为新用户轮次状态重置、artifact 状态适配和阶段门禁；标准 Tool 负责 custom stream event，非数据请求不强制抽取。
 
 ## 4、执行脚本与文档
 
@@ -26,7 +26,7 @@
 
 ## 5、验证
 
-- [X] 5.1 增加后端单元测试，覆盖 QueryContextMiddleware、DataAgent middleware 组装和 `create_deerflow_agent(...)` 调用边界。
+- [X] 5.1 增加后端单元测试，覆盖 SDK EntityExtractor/Tool、轮次重置 middleware、artifact 状态适配、DataAgent middleware 组装和 `create_deerflow_agent(...)` 调用边界。
 - [X] 5.2 执行 ruff/pytest/py_compile 定向验证。
 - [X] 5.3 检查 `git status`，确认没有生成物、缓存或真实凭据进入变更。
 
@@ -65,7 +65,7 @@
 ## 9、SDK 目录重构
 
 - [X] 9.1 将 `agents/data_agent` 收敛为图工厂、prompt 和 Agent 常量。
-- [X] 9.2 将 QueryContext 与流程编排拆分到 `agents/middlewares` 独立模块。
+- [X] 9.2 将轮次重置与流程编排拆分到 `agents/middlewares`，并将 QueryContext 抽取能力迁移到稳定 SDK 的 `deerflow/tools/builtins/entity_extract_tool.py`。
 - [X] 9.3 将 `DataAgentState` 迁移到 `agents/thread_state.py`。
 - [X] 9.4 将 SQL 校验、MySQL 执行、ChartSpec 和模型可调用工具迁移到 `tools` / `tools/builtins`。
 - [X] 9.5 删除旧导入路径，不保留兼容层，并增加 SDK 目录边界回归测试。

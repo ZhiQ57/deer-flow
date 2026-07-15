@@ -5,7 +5,7 @@ DataAgent 当前包含两条用途不同的路径：
 1. `docs/agents/data-agent/config.yaml` 与 `SOUL.md` 是 DeerFlow 原生 custom-agent 模板，可复制到 `.deer-flow/users/{user_id}/agents/data-agent/`。
 2. `backend/packages/harness/deerflow-dev/` 是实验性、阶段门禁化的 DataAgent 运行层，按照 DeerFlow SDK 的 `agents`、`agents/middlewares`、`tools/builtins`、`subagents` 边界组织，并通过 `create_deerflow_agent(...)` 重新创建图；当前只由测试执行脚本直接启动，不新增 Gateway 路由。
 
-只有第 2 条实验性路径包含本文所述的 QueryContext、只读 SQL 校验/执行、ChartSpec 和调用预算门禁。原生 UI custom-agent 路径仍使用 lead-agent，不会自动切换到该实验图。
+只有第 2 条实验性路径包含本文所述的查询标签工具/中间件、可选 QueryContext Tool、只读 SQL 校验/执行、ChartSpec 和调用预算门禁。原生 UI custom-agent 路径仍使用 lead-agent，不会自动切换到该实验图。
 
 ## 1. 执行步骤
 
@@ -73,10 +73,11 @@ Copy-Item -LiteralPath "extensions_config.example.json" -Destination "extensions
 在启动 DataAgent 的同一个 PowerShell 会话中注入配置。密码含 `@`、`:` 等字符时必须先做 URL 编码：
 
 ```powershell
-$env:TABLERAG_CONFIG="D:\path\to\tabelrag.yaml"
-$env:TABLERAG_MCP_INDEX_DSN="postgresql://<user>:<password>@<host>:<port>/<index_database>"
-$env:TABLERAG_MCP_SOURCE_DSN="postgresql://<user>:<password>@<host>:<port>/<source_database>"
-$env:DATA_AGENT_MYSQL_DSN="mysql+pymysql://<user>:<url-encoded-password>@<host>:<port>/<business_database>"
+$env:TABLERAG_CONFIG = "D:\A-PythonWork\AOpenGithub\deer-flow\tabelrag.yaml"
+$env:TABLERAG_MCP_INDEX_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
+$env:TABLERAG_MCP_SOURCE_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
+
+$env:DATA_AGENT_MYSQL_DSN = "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql"
 ```
 
 也可以不用 MySQL DSN，改为分别设置：
@@ -97,22 +98,35 @@ $env:DATA_AGENT_MYSQL_DATABASE="<business_database>"
 
 实验性运行层复用 lead-agent 的模型、prompt、Skill、MCP 和多数 middleware，并额外增加：
 
-- `QueryContextMiddleware`：黑话归一化、意图识别、实体抽取、每轮状态重置和 `data_query_context` 流事件。
-- `DataAgentOrchestrationMiddleware`：强制 TableRAG -> SQL 校验 -> SQL 执行 -> 可选 ChartSpec 的阶段顺序。
+- `DataAgentTurnResetMiddleware`：只在新真实用户轮次开始时重置上一轮 QueryContext、检索、SQL 和图表状态，不执行实体抽取。
+- `publish_query_labels`：稳定 SDK 中的标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels` 和可选 `summary`，不调用模型。
+- `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`，拦截标签工具，生成顶层 ToolMessage artifact、写入 `data_query_labels`、发送 custom stream 事件，并继续当前图执行；数据库来源标签必须关联成功 TableRAG 检索和 Evidence 摘要。
+- `entity_extract_tool`：现有实体抽取工具继续保留，可在确实需要独立模型抽取时按需调用，但不再是 TableRAG 或 SQL 的前置条件。
+- `DataAgentOrchestrationMiddleware`：允许 lead-agent 直接组织 TableRAG query/keywords；只强制 TableRAG -> SQL 校验 -> SQL 执行 -> 可选 ChartSpec 的阶段顺序，不把标签展示或实体抽取作为门禁。
 - `data_validate_sql`：只允许单条 MySQL `SELECT/WITH`，拒绝 DDL/DML、多语句、锁、文件写出、危险函数、优化器 Hint、占位符、跨业务库和系统库访问，并自动收紧 `LIMIT`。
 - `data_execute_sql`：只执行最近校验返回的同一条 `executable_sql`；使用只读事务、连接/读取/查询超时、行数、单元格和结果总字符预算。
 - `data_build_chart_spec`：只消费成功 SQL 结果，并校验图表字段和数值轴。
 
+lead-agent 可以直接从用户问题中组织 TableRAG 检索关键词。标签展示由
+`publish_query_labels` 完成：显式意图可在检索前发布，只有通过 TableRAG/SQL
+确认的数据库真实值才应标记为 `source=database`。后续再次调用会替换当前完整
+标签快照。标签展示不会阻塞检索，也不会额外请求模型。
+
 当前代码目录：
 
 ```text
+deerflow/
+└── tools/builtins/
+    ├── entity_extract_tool.py      # 保留的可选实体抽取工具
+    └── query_labels_tool.py        # SDK 标签声明工具
+
 deerflow-dev/
 ├── agents/
 │   ├── data_agent/                 # 图工厂、prompt、Agent 常量
-│   ├── middlewares/                # QueryContext 与流程编排 middleware
+│   ├── middlewares/                # 轮次重置、标签发布与流程编排 middleware
 │   └── thread_state.py             # DataAgentState 与 reducer
 ├── tools/
-│   ├── builtins/                   # 三个模型可调用工具
+│   ├── builtins/                   # 标签/实体、SQL 和 ChartSpec 工具注册
 │   ├── sql_validation.py           # SQL AST 校验
 │   ├── database.py                 # MySQL 只读执行
 │   └── chart_spec.py               # ChartSpec 构造
@@ -122,13 +136,14 @@ deerflow-dev/
 
 图入口使用 `from agents import build_data_agent, make_data_agent`。旧的
 `agents.data_agent.middleware`、`agents.data_agent.state`、
-`agents.data_agent.tools` 等导入路径已经删除，不提供兼容层。
+`agents.data_agent.tools`、`tools.query_context` 和
+`tools.builtins.query_context_tool` 等导入路径已经删除，不提供兼容层。
 
 默认工具面只保留：
 
 - `read_file` 等必要 DeerFlow 框架工具；
 - 只读 `tablerag_*` MCP 工具；
-- DataAgent 专用 SQL/ChartSpec 工具。
+- DataAgent 标签、可选 QueryContext、SQL 和 ChartSpec 工具。
 
 不会暴露 Bash、写文件、其他 MCP、`tablerag_initialize_indexes` 或 `tablerag_sync_field_values`。通用子代理默认关闭；如显式启用，只接受配置了明确工具白名单、且工具全部属于只读 TableRAG 的自定义子代理。
 
@@ -136,6 +151,7 @@ deerflow-dev/
 
 | 阶段 | 默认上限 |
 |---|---:|
+| 可选 QueryContext 抽取 | 1 |
 | TableRAG 检索 | 6 |
 | SQL 校验 | 4 |
 | SQL 执行 | 2 |
@@ -170,7 +186,7 @@ backend\.venv\Scripts\python.exe backend\tests\service_agent\test-data-agent\run
 - 命令行参数、工作目录、Python/平台信息；
 - `config.yaml`、`extensions_config.json`、TableRAG 配置和 DataAgent 模板路径；
 - TableRAG/PostgreSQL、MySQL 和 SQL 预算相关环境变量；
-- QueryContext、工具调用、工具结果、阶段变化、SQL 校验/执行和 ChartSpec；
+- 查询标签、可选 QueryContext、工具调用、工具结果、阶段变化、SQL 校验/执行和 ChartSpec；
 - 模型流式回答文本以及 DeerFlow/依赖库通过 Python logging 输出的日志。
 
 DSN 中的密码和 `PASSWORD/TOKEN/SECRET/API_KEY` 环境变量会自动脱敏，不会明文写入日志。
@@ -225,7 +241,8 @@ backend\.venv\Scripts\python.exe backend\tests\service_agent\test-data-agent\run
 页面提供：
 
 - 同一 `thread_id` 下的简单连续对话；
-- QueryContext、归一化问题和实体标签；
+- lead-agent 发布的用户意图标签及其 user/database/derived 来源；
+- 可选 QueryContext Tool 产生的归一化问题和实体结果；
 - DataAgent 阶段进度；
 - TableRAG 检索摘要；
 - 生成 SQL 与 SQL 校验数据；
@@ -254,6 +271,7 @@ backend\.venv\Scripts\python.exe backend\tests\service_agent\test-data-agent\run
 流式 `values` 中可观察：
 
 - `data_agent_stage`
+- `data_query_labels`
 - `data_query_context`
 - `data_retrieval_context`
 - `data_generated_sql`
@@ -265,13 +283,15 @@ backend\.venv\Scripts\python.exe backend\tests\service_agent\test-data-agent\run
 成功主路径为：
 
 ```text
-query_context
+publish_query_labels（可在任意合适阶段发布或更新，不是门禁）
 -> retrieval_completed
 -> sql_validated
 -> sql_executed
 -> chart_ready（用户要求图表时）
 -> FinalAnswer
 ```
+
+普通非数据请求可以不进入上述状态链，直接输出 FinalAnswer。
 
 失败阶段会标记为 `sql_validation_failed`、`sql_execution_failed` 或 `chart_failed`。
 

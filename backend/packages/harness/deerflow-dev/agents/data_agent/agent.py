@@ -15,7 +15,7 @@ from tools.constants import (
 )
 
 from agents.middlewares.data_agent_orchestration_middleware import DataAgentOrchestrationMiddleware
-from agents.middlewares.query_context_middleware import QueryContextMiddleware
+from agents.middlewares.data_agent_turn_reset_middleware import DataAgentTurnResetMiddleware
 from agents.thread_state import DataAgentState
 from deerflow.agents.factory import create_deerflow_agent
 from deerflow.agents.lead_agent.agent import (
@@ -27,6 +27,7 @@ from deerflow.agents.lead_agent.agent import (
     build_middlewares as build_lead_middlewares,
 )
 from deerflow.agents.lead_agent.prompt import apply_prompt_template
+from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 from deerflow.config.agents_config import load_agent_config, validate_agent_name
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.models import create_chat_model
@@ -47,26 +48,6 @@ from .prompt import build_data_agent_prompt_appendix
 logger = logging.getLogger(__name__)
 
 _NON_INTERACTIVE_DISABLED_TOOL_NAMES = frozenset({"ask_clarification"})
-
-
-def _runtime_alias_map(cfg: Mapping[str, Any]) -> dict[str, str] | None:
-    """读取运行时传入的 DataAgent 黑话映射。
-
-    Args:
-        cfg: 合并后的运行时配置。
-
-    Return:
-        字符串到字符串的黑话映射；未配置则返回 None。
-    """
-    value = cfg.get("data_agent_alias_map") or cfg.get("data_agent_aliases")
-    if not isinstance(value, Mapping):
-        return None
-    aliases = {str(key).strip(): str(item).strip() for key, item in value.items() if str(key).strip() and str(item).strip()}
-    if len(aliases) > 200:
-        raise ValueError("DataAgent alias map must contain at most 200 entries.")
-    if any(len(key) > 100 or len(item) > 200 for key, item in aliases.items()):
-        raise ValueError("DataAgent alias keys/values exceed the allowed length.")
-    return aliases
 
 
 def _runtime_bounded_int(
@@ -250,14 +231,16 @@ def _append_unique_tools(tools: list[Any], extra_tools: list[Any]) -> list[Any]:
 
 def _insert_data_middlewares(
     middlewares: list[AgentMiddleware],
-    query_context: QueryContextMiddleware,
+    turn_reset: DataAgentTurnResetMiddleware,
+    query_labels: QueryLabelsMiddleware,
     orchestration: DataAgentOrchestrationMiddleware,
 ) -> list[AgentMiddleware]:
     """把 DataAgent 编排 middleware 插入到 lead-agent 动态上下文前。
 
     Args:
         middlewares: 原生 lead-agent middleware 链。
-        query_context: 查询上下文 middleware。
+        turn_reset: 新用户轮次状态重置 middleware。
+        query_labels: 查询标签发布 middleware。
         orchestration: 编排提示 middleware。
 
     Return:
@@ -265,7 +248,7 @@ def _insert_data_middlewares(
     """
     result = list(middlewares)
     insert_at = next((index for index, item in enumerate(result) if type(item).__name__ == "DynamicContextMiddleware"), len(result))
-    result[insert_at:insert_at] = [query_context, orchestration]
+    result[insert_at:insert_at] = [turn_reset, query_labels, orchestration]
     return result
 
 
@@ -283,7 +266,6 @@ def build_data_middlewares(
     max_sql_validation_calls: int = 4,
     max_sql_execution_calls: int = 2,
     max_chart_calls: int = 2,
-    alias_map: Mapping[str, str] | None = None,
 ) -> list[AgentMiddleware]:
     """构造 DataAgent middleware 链。
 
@@ -300,8 +282,6 @@ def build_data_middlewares(
         max_sql_validation_calls: 单轮最大 SQL 校验调用数。
         max_sql_execution_calls: 单轮最大 SQL 执行调用数。
         max_chart_calls: 单轮最大 ChartSpec 调用数。
-        alias_map: 可选黑话映射。
-
     Return:
         DataAgent middleware 实例列表。
     """
@@ -316,7 +296,8 @@ def build_data_middlewares(
     )
     return _insert_data_middlewares(
         lead_middlewares,
-        QueryContextMiddleware(alias_map=alias_map),
+        DataAgentTurnResetMiddleware(),
+        QueryLabelsMiddleware(),
         DataAgentOrchestrationMiddleware(
             subagent_enabled=subagent_enabled,
             allowed_subagents=allowed_subagents,
@@ -498,7 +479,6 @@ def build_data_agent(
             max_sql_validation_calls=max_sql_validation_calls,
             max_sql_execution_calls=max_sql_execution_calls,
             max_chart_calls=max_chart_calls,
-            alias_map=_runtime_alias_map(cfg),
         ),
         system_prompt=system_prompt,
         state_schema=DataAgentState,

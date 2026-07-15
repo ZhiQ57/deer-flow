@@ -207,6 +207,13 @@ def _custom_events(chunk: Any, observed: dict[str, Any]) -> list[dict[str, Any]]
             return []
         observed["digest:data_query_context"] = digest
         return [{"type": "query_context", "payload": payload}]
+    if isinstance(chunk, dict) and chunk.get("type") == "data_query_labels":
+        payload = chunk.get("labels") or {}
+        digest = _event_digest(payload)
+        if digest == observed.get("digest:data_query_labels"):
+            return []
+        observed["digest:data_query_labels"] = digest
+        return [{"type": "query_labels", "payload": payload}]
     return [{"type": "custom", "payload": chunk}]
 
 
@@ -281,6 +288,7 @@ def _values_events(chunk: Any, observed: dict[str, Any]) -> list[dict[str, Any]]
     events: list[dict[str, Any]] = []
     mappings = (
         ("data_query_context", "query_context"),
+        ("data_query_labels", "query_labels"),
         ("data_retrieval_context", "retrieval"),
         ("data_generated_sql", "generated_sql"),
         ("data_sql_validation", "sql_validation"),
@@ -1006,8 +1014,12 @@ _PAGE_HTML = r"""<!doctype html>
         <div id="stages" class="stages"></div>
         <div class="grid">
           <section class="card" data-panel="query-context">
-            <div class="card-head">QueryContext / 实体标签</div>
+            <div class="card-head">QueryContext / 可选实体抽取</div>
             <div id="query-context" class="card-body"><span class="empty">等待问题分析</span></div>
+          </section>
+          <section class="card" data-panel="query-labels">
+            <div class="card-head">用户意图标签</div>
+            <div id="query-labels" class="card-body"><span class="empty">等待标签发布</span></div>
           </section>
           <section class="card" data-panel="retrieval">
             <div class="card-head">TableRAG 检索</div>
@@ -1040,11 +1052,9 @@ _PAGE_HTML = r"""<!doctype html>
 
   <script>
     const stageOrder = [
-      "query_context", "retrieval_completed", "sql_validated",
-      "sql_executed", "chart_ready"
+      "retrieval_completed", "sql_validated", "sql_executed", "chart_ready"
     ];
     const stageLabels = {
-      query_context: "问题分析",
       retrieval_completed: "TableRAG",
       sql_validation_failed: "SQL校验失败",
       sql_validated: "SQL已校验",
@@ -1104,6 +1114,7 @@ _PAGE_HTML = r"""<!doctype html>
       state.eventCount = 0;
       for (const [id, text] of [
         ["query-context", "等待问题分析"], ["retrieval", "等待表结构检索"],
+        ["query-labels", "等待标签发布"],
         ["sql", "等待 SQL"], ["execution", "等待数据库结果"],
         ["chart", "等待图表数据"], ["tools", "等待工具调用"],
         ["timeline", "等待运行事件"]
@@ -1138,6 +1149,20 @@ _PAGE_HTML = r"""<!doctype html>
         tags.appendChild(textNode("span", label + (item.normalized || item.value || ""), "tag"));
       }
       if (!entities.length) tags.appendChild(textNode("span", "未识别实体", "empty"));
+      node.appendChild(tags);
+    }
+    function renderQueryLabels(payload) {
+      const node = el("query-labels"); clearNode(node);
+      node.appendChild(textNode("div", "意图：" + (payload.intent || "-")));
+      if (payload.summary) node.appendChild(textNode("div", "理解：" + payload.summary));
+      const tags = document.createElement("div"); tags.className = "tags"; tags.style.marginTop = "8px";
+      const labels = Array.isArray(payload.labels) ? payload.labels : [];
+      for (const item of labels) {
+        const source = item.source ? ` · ${item.source}` : "";
+        const normalized = item.normalized ? ` → ${item.normalized}` : "";
+        tags.appendChild(textNode("span", `${item.label || "标签"}：${item.value || ""}${normalized}${source}`, "tag"));
+      }
+      if (!labels.length) tags.appendChild(textNode("span", "尚未发布标签", "empty"));
       node.appendChild(tags);
     }
     function renderRetrieval(payload) {
@@ -1273,6 +1298,7 @@ _PAGE_HTML = r"""<!doctype html>
           el("messages").scrollTop = el("messages").scrollHeight;
           break;
         case "query_context": renderQueryContext(event.payload || {}); break;
+        case "query_labels": renderQueryLabels(event.payload || {}); break;
         case "stage": renderStages(event.stage); break;
         case "retrieval": renderRetrieval(event.payload || {}); break;
         case "generated_sql": state.generatedSql = String(event.payload || ""); renderSql(); break;

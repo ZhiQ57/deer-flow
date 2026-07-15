@@ -15,6 +15,27 @@ if str(TEST_DIR) not in sys.path:
 import run_data_agent_web as web  # noqa: E402
 
 
+def test_data_agent_registry_uses_stable_deerflow_tools() -> None:
+    """校验完整 DataAgent 注册表使用稳定 DeerFlow 实体与标签工具。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    web._prepare_imports(web._repo_root())
+
+    from tools.builtins import get_data_agent_tools
+
+    from deerflow.tools import entity_extract_tool, publish_query_labels_tool
+
+    tools_by_name = {tool.name: tool for tool in get_data_agent_tools()}
+
+    assert tools_by_name["entity_extract_tool"] is entity_extract_tool
+    assert tools_by_name["publish_query_labels"] is publish_query_labels_tool
+
+
 def _fake_events(runtime: web.WebRuntime, request: web.ChatRequest):
     """生成不访问模型和数据库的页面测试事件。
 
@@ -58,6 +79,7 @@ async def test_web_page_exposes_chat_and_structured_trace_panels(tmp_path, monke
     assert response.status_code == 200
     assert "DataAgent 结构化调试台" in response.text
     assert 'data-panel="query-context"' in response.text
+    assert 'data-panel="query-labels"' in response.text
     assert 'data-panel="sql-execution"' in response.text
     assert 'data-panel="timeline"' in response.text
     assert response.headers["x-frame-options"] == "DENY"
@@ -177,6 +199,17 @@ def test_web_values_events_expose_data_trajectory_and_deduplicate() -> None:
     state = {
         "data_agent_stage": "sql_executed",
         "data_query_context": {"intent": "metric_query", "entities": []},
+        "data_query_labels": {
+            "intent": "aggregation",
+            "labels": [
+                {
+                    "label": "指标",
+                    "value": "病例数",
+                    "source": "database",
+                    "evidence": "report.metric_name=病例数",
+                }
+            ],
+        },
         "data_retrieval_context": {"ok": True, "tool_name": "tablerag_retrieve", "query": "病例数"},
         "data_generated_sql": "SELECT count(*) FROM report",
         "data_sql_validation": {"valid": True, "executable_sql": "SELECT count(*) FROM report LIMIT 100"},
@@ -195,13 +228,14 @@ def test_web_values_events_expose_data_trajectory_and_deduplicate() -> None:
     assert [event["type"] for event in events] == [
         "stage",
         "query_context",
+        "query_labels",
         "retrieval",
         "generated_sql",
         "sql_validation",
         "sql_execution",
         "chart_spec",
     ]
-    assert events[5]["last_successful"]["rows"] == [{"count": 3}]
+    assert events[6]["last_successful"]["rows"] == [{"count": 3}]
     assert web._values_events(state, observed) == []
 
 
@@ -227,6 +261,34 @@ def test_web_custom_query_context_deduplicates_against_values_event() -> None:
     )
 
     assert custom_events == [{"type": "query_context", "payload": context}]
+    assert values_events == []
+
+
+def test_web_custom_query_labels_deduplicates_against_values_event() -> None:
+    """校验 custom 与 values 中的同一标签快照不会重复展示。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    observed: dict[str, object] = {}
+    labels = {
+        "intent": "trend",
+        "labels": [{"label": "时间粒度", "value": "按月", "source": "derived"}],
+    }
+
+    custom_events = web._custom_events(
+        {"type": "data_query_labels", "labels": labels},
+        observed,
+    )
+    values_events = web._values_events(
+        {"data_query_labels": labels},
+        observed,
+    )
+
+    assert custom_events == [{"type": "query_labels", "payload": labels}]
     assert values_events == []
 
 

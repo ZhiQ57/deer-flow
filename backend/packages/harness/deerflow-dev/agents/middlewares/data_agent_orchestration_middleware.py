@@ -20,6 +20,8 @@ from tools.constants import (
     DATA_BUILD_CHART_SPEC_TOOL_NAME,
     DATA_EXECUTE_SQL_TOOL_NAME,
     DATA_VALIDATE_SQL_TOOL_NAME,
+    ENTITY_EXTRACT_TOOL_NAME,
+    PUBLISH_QUERY_LABELS_TOOL_NAME,
     is_readonly_tablerag_tool_name,
     is_tablerag_retrieval_tool_name,
 )
@@ -31,6 +33,7 @@ from agents.middlewares._data_agent_messages import (
     message_content_text,
     result_messages,
 )
+from deerflow.tools.builtins.entity_extract_tool import EntityExtractionResult
 
 
 class DataAgentOrchestrationMiddleware(AgentMiddleware):
@@ -79,14 +82,17 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             隐藏 SystemMessage。
         """
         resolved_state = state or {}
-        stage = str(resolved_state.get("data_agent_stage") or "query_context")
+        stage = str(resolved_state.get("data_agent_stage") or "not_started")
         query_context = resolved_state.get("data_query_context")
-        chart_requested = isinstance(query_context, Mapping) and query_context.get("intent") == "chart"
+        query_labels = resolved_state.get("data_query_labels")
+        chart_requested = (isinstance(query_labels, Mapping) and query_labels.get("intent") == "chart") or (isinstance(query_context, Mapping) and query_context.get("intent") == "chart")
         chart_ready = isinstance(resolved_state.get("data_chart_spec"), Mapping)
         if chart_requested and self._execution_completed(resolved_state) and not chart_ready:
             next_action = f"用户已明确要求图表且 SQL 已成功执行；下一步必须调用 `{DATA_BUILD_CHART_SPEC_TOOL_NAME}`。在 ChartSpec 成功前不得输出最终答案，也不得继续检索、改写或重新校验 SQL。"
         elif chart_ready:
             next_action = "ChartSpec 已生成；停止调用数据工具并输出最终答案。"
+        elif not self._retrieval_attempted(resolved_state):
+            next_action = f"先判断请求类型；普通问候、能力说明或与数据无关的问题可以直接回答。进入数据流程时直接分析用户问题并组织 TableRAG 检索关键词；可以调用 `{PUBLISH_QUERY_LABELS_TOOL_NAME}` 展示当前意图，但标签不是阶段门禁。"
         else:
             next_action = "继续完成当前阶段；只有用户明确要求图表或结果确实适合可视化时才进入 ChartSpec。"
         if self._subagent_enabled:
@@ -97,13 +103,14 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         return SystemMessage(
             content=f"""<data_agent_orchestration>
 按以下阶段执行 DataAgent 流程：
-1. QueryContext：读取实体标签、标准术语、时间和排序信息。
+1. IntentLabels：由 lead-agent 自己理解用户问题，并按需调用 `{PUBLISH_QUERY_LABELS_TOOL_NAME}` 展示显式意图或检索后确认的隐式标签；标签不作为流程门禁。
 2. TableRAG：使用名称包含 `tablerag` 的 MCP 工具检索 Evidence、表、列、字段值和 Join Graph；结果差时改写关键词继续检索。
 3. NL2SQL：只基于确认过的 Evidence/表/列/Join 生成只读 SQL，并做语法、字段来源、聚合粒度、过滤条件和 LIMIT 检查。
 4. ChartSpec：当用户要求图表或结果适合可视化时，给出图表类型、x/y/series 字段映射和排序/聚合说明。
 5. FinalAnswer：最终答案必须呈现用户可读结论，并列出待确认项。
 当前持久化阶段：`{stage}`。
-阶段门禁：必须先成功调用 TableRAG，再调用 `{DATA_VALIDATE_SQL_TOOL_NAME}`；校验成功后把返回的 `executable_sql` 原样传给 `{DATA_EXECUTE_SQL_TOOL_NAME}`；执行成功后才能调用 `{DATA_BUILD_CHART_SPEC_TOOL_NAME}`。
+阶段门禁：标签发布和实体抽取都不是前置门禁；必须先成功调用 TableRAG，再调用 `{DATA_VALIDATE_SQL_TOOL_NAME}`；
+校验成功后把返回的 `executable_sql` 原样传给 `{DATA_EXECUTE_SQL_TOOL_NAME}`；执行成功后才能调用 `{DATA_BUILD_CHART_SPEC_TOOL_NAME}`。
 当前动作约束：{next_action}
 {delegate_line}
 </data_agent_orchestration>""",
@@ -249,7 +256,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
     ) -> int:
         """统计当前轮次指定工具的结果消息数。
 
-        QueryContextMiddleware 会在每轮开始时重置 DataAgent 阶段状态，但不会
+        DataAgentTurnResetMiddleware 会在新用户轮次开始时重置 DataAgent 阶段状态，但不会
         删除历史消息，因此只统计最后一条可见 HumanMessage 之后的 ToolMessage。
 
         Args:
@@ -279,6 +286,24 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         name = str(request.tool_call.get("name") or "")
         state = request.state if isinstance(request.state, Mapping) else {}
         execution_count = self._tool_result_count(state, lambda tool_name: tool_name == DATA_EXECUTE_SQL_TOOL_NAME)
+        query_context_count = self._tool_result_count(state, lambda tool_name: tool_name == ENTITY_EXTRACT_TOOL_NAME)
+        if name == ENTITY_EXTRACT_TOOL_NAME:
+            if isinstance(state.get("data_query_context"), Mapping) or query_context_count >= 1:
+                return self._block(request, "DataAgent 调用预算：本轮 QueryContext 已完成，不允许重复抽取。")
+            data_tool_count = self._tool_result_count(
+                state,
+                lambda tool_name: (
+                    is_tablerag_retrieval_tool_name(tool_name)
+                    or tool_name
+                    in {
+                        DATA_VALIDATE_SQL_TOOL_NAME,
+                        DATA_EXECUTE_SQL_TOOL_NAME,
+                        DATA_BUILD_CHART_SPEC_TOOL_NAME,
+                    }
+                ),
+            )
+            if data_tool_count:
+                return self._block(request, "DataAgent 调用预算：数据检索已开始，不应再补调用额外模型执行实体抽取；请直接基于现有 Evidence 继续。")
         if is_tablerag_retrieval_tool_name(name):
             if execution_count >= self._max_sql_execution_calls:
                 return self._block(request, "DataAgent 调用预算：本轮 SQL 执行次数已达上限，不再允许继续检索；请保留已有执行结果并输出结论或待确认项。")
@@ -313,6 +338,74 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             if chart_count >= self._max_chart_calls:
                 return self._block(request, "DataAgent 调用预算：本轮 ChartSpec 生成次数已达上限，请直接使用已有查询结果回答。")
         return None
+
+    @staticmethod
+    def _merge_tool_update(
+        result: ToolMessage | Command,
+        update: dict[str, Any],
+    ) -> ToolMessage | Command:
+        """把 DataAgent 状态更新合并到工具结果。
+
+        Args:
+            result: 原始工具结果。
+            update: 需要追加的 DataAgent 状态。
+
+        Return:
+            带状态更新的工具结果。
+        """
+        if isinstance(result, ToolMessage):
+            return Command(update={**update, "messages": [result]})
+        if isinstance(result.update, dict):
+            return dc_replace(result, update={**result.update, **update})
+        return result
+
+    @staticmethod
+    def _entity_extraction_result(result: ToolMessage | Command) -> EntityExtractionResult | None:
+        """从标准实体抽取工具结果中读取结构化 artifact。
+
+        Args:
+            result: 实体抽取工具结果。
+
+        Return:
+            成功时返回结构化实体抽取结果，否则返回 None。
+        """
+        messages = result_messages(result)
+        if not messages:
+            return None
+        message = messages[-1]
+        if getattr(message, "status", "success") == "error":
+            return None
+        artifact = message.artifact
+        if not isinstance(artifact, Mapping):
+            return None
+        original_query = artifact.get("original_query")
+        normalized_query = artifact.get("normalized_query")
+        intent = artifact.get("intent")
+        if not all(isinstance(value, str) and value for value in (original_query, normalized_query, intent)):
+            return None
+        return dict(artifact)
+
+    @staticmethod
+    def _attach_entity_extraction_update(
+        result: ToolMessage | Command,
+    ) -> ToolMessage | Command:
+        """把标准实体抽取结果适配为 DataAgent 查询上下文状态。
+
+        Args:
+            result: 标准实体抽取工具结果。
+
+        Return:
+            成功时附加 QueryContext 状态，失败时保持原结果。
+        """
+        context = DataAgentOrchestrationMiddleware._entity_extraction_result(result)
+        if context is None:
+            return result
+        return DataAgentOrchestrationMiddleware._merge_tool_update(
+            result,
+            {
+                "data_query_context": context,
+            },
+        )
 
     @staticmethod
     def _retrieval_succeeded(
@@ -386,11 +479,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         if ok:
             update["data_agent_stage"] = "retrieval_completed"
 
-        if isinstance(result, ToolMessage):
-            return Command(update={**update, "messages": [result]})
-        if isinstance(result.update, dict):
-            return dc_replace(result, update={**result.update, **update})
-        return result
+        return DataAgentOrchestrationMiddleware._merge_tool_update(result, update)
 
     def _after_tool_call(
         self,
@@ -407,6 +496,8 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             原结果或带状态更新的结果。
         """
         name = str(request.tool_call.get("name") or "")
+        if name == ENTITY_EXTRACT_TOOL_NAME:
+            return self._attach_entity_extraction_update(result)
         if is_tablerag_retrieval_tool_name(name):
             return self._attach_retrieval_update(request, result)
         return result

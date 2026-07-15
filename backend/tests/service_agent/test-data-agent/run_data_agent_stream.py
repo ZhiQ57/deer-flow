@@ -453,6 +453,10 @@ def _print_custom_event(chunk: Any, output: RunLogOutput | None = None) -> None:
         payload = json.dumps(chunk.get("context"), ensure_ascii=False, separators=(",", ":"), default=str)
         _emit_event(output, f"[DataAgent:QueryContext] {payload}")
         return
+    if isinstance(chunk, dict) and chunk.get("type") == "data_query_labels":
+        payload = json.dumps(chunk.get("labels"), ensure_ascii=False, separators=(",", ":"), default=str)
+        _emit_event(output, f"[DataAgent:QueryLabels] {payload}")
+        return
     payload = json.dumps(chunk, ensure_ascii=False, separators=(",", ":"), default=str)
     _emit_event(output, f"[custom] {payload}")
 
@@ -507,6 +511,15 @@ def _print_values_event(
     if stage and stage != observed.get("stage"):
         observed["stage"] = stage
         _emit_event(output, f"[DataAgent:Stage] {stage}")
+
+    labels = chunk.get("data_query_labels")
+    labels_digest = json.dumps(labels, ensure_ascii=False, sort_keys=True, default=str) if isinstance(labels, dict) else None
+    if labels_digest and labels_digest != observed.get("labels_digest"):
+        observed["labels_digest"] = labels_digest
+        _emit_event(
+            output,
+            f"[DataAgent:QueryLabels] intent={labels.get('intent')} labels={json.dumps(labels.get('labels') or [], ensure_ascii=False, separators=(',', ':'), default=str)}",
+        )
 
     retrieval = chunk.get("data_retrieval_context")
     retrieval_digest = retrieval.get("content_sha256") if isinstance(retrieval, dict) else None

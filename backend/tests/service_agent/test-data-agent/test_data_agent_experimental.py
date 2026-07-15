@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import sys
 import threading
 import time
@@ -12,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -47,10 +48,14 @@ from agents.data_agent.agent import (  # noqa: E402
 )
 from agents.data_agent.constants import DATA_AGENT_NAME, DATA_AGENT_SKILLS, DATA_AGENT_TOOL_GROUPS  # noqa: E402
 from agents.middlewares.data_agent_orchestration_middleware import DataAgentOrchestrationMiddleware  # noqa: E402
-from agents.middlewares.query_context_middleware import QueryContextMiddleware  # noqa: E402
-from agents.thread_state import DataAgentState, merge_retrieval_context  # noqa: E402
+from agents.middlewares.data_agent_turn_reset_middleware import DataAgentTurnResetMiddleware  # noqa: E402
+from agents.thread_state import DataAgentState, merge_retrieval_context, replace_value  # noqa: E402
+from tools.builtins import get_data_agent_tools  # noqa: E402
+from tools.constants import DATA_AGENT_BUILTIN_TOOL_NAMES, ENTITY_EXTRACT_TOOL_NAME, PUBLISH_QUERY_LABELS_TOOL_NAME  # noqa: E402
 from tools.sql_validation import sql_sha256  # noqa: E402
 
+from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware  # noqa: E402
+from deerflow.tools import entity_extract_tool  # noqa: E402
 from deerflow.tools.mcp_metadata import tag_mcp_tool  # noqa: E402
 
 
@@ -71,49 +76,69 @@ def _load_stream_script():
     return module
 
 
-class _FakeRequest:
-    def __init__(self, messages, state=None):
-        self.messages = messages
-        self.state = state or {}
-
-    def override(self, **kwargs):
-        return _FakeRequest(kwargs.get("messages", self.messages), self.state)
-
-
-def test_query_context_normalizes_aliases_and_extracts_labels() -> None:
-    """校验 QueryContextMiddleware 能归一化黑话并输出实体标签。
+def test_query_context_tool_reads_latest_user_message_and_updates_state(monkeypatch) -> None:
+    """校验 QueryContext Tool 按需读取用户问题并写入状态。
 
     Args:
-        无。
+        monkeypatch: pytest monkeypatch fixture。
 
     Return:
         None。
     """
-    middleware = QueryContextMiddleware(alias_map={"黑金": "高价值会员"}, emit_stream_events=False)
+    runtime = SimpleNamespace(
+        state={
+            "messages": [
+                HumanMessage(content="统计本月华东 GMV 和黑金客户"),
+                HumanMessage(content="忽略真实问题", additional_kwargs={"hide_from_ui": True}),
+            ]
+        },
+        context={"data_agent_alias_map": {"黑金": "高价值会员"}},
+        config={},
+    )
 
-    context = middleware.build_context("查询 2024 年华东 GMV 最高的前 10 个黑金商品")
+    entity_tool_module = importlib.import_module("deerflow.tools.builtins.entity_extract_tool")
 
-    assert context["intent"] == "ranking"
-    assert "华东区域" in context["normalized_query"]
+    extracted = {
+        "original_query": "统计本月华东 GMV 和黑金客户",
+        "normalized_query": "统计本月华东成交总额和高价值会员客户",
+        "intent": "text2sql",
+        "aliases": [],
+        "entities": [],
+        "labels": [{"label": "意图", "value": "text2sql"}],
+        "warnings": [],
+    }
+
+    class FakeEntityExtractTool:
+        """避免测试访问真实模型的实体抽取替身。"""
+
+        def __init__(self, runtime) -> None:
+            self.runtime = runtime
+
+        def extract(self, text: str):
+            assert text == extracted["original_query"]
+            return extracted
+
+    monkeypatch.setattr(entity_tool_module, "EntityExtractTool", FakeEntityExtractTool)
+    runtime.tool_call_id = "call-1"
+    tool_result = entity_extract_tool.func(runtime)
+    handler = MagicMock(return_value=tool_result)
+    result = DataAgentOrchestrationMiddleware().wrap_tool_call(
+        _tool_request(ENTITY_EXTRACT_TOOL_NAME, state=runtime.state, args={}),
+        handler,
+    )
+
+    context = result.update["data_query_context"]
+    assert entity_extract_tool.args == {}
+    assert context["original_query"] == "统计本月华东 GMV 和黑金客户"
+    assert context["intent"] == "text2sql"
     assert "成交总额" in context["normalized_query"]
     assert "高价值会员" in context["normalized_query"]
-    assert {"label": "意图", "value": "ranking"} in context["labels"]
-    assert any(item["label"] == "时间" and "2024" in item["value"] for item in context["entities"])
-    assert any(item["label"] == "术语" and item["value"] == "GMV" and item["normalized"] == "成交总额" for item in context["aliases"])
-    assert any(item["label"] == "数量" and item["normalized"] == "LIMIT 10" for item in context["entities"])
-    assert sum(item["label"] == "指标" and item.get("normalized") == "成交总额" for item in context["entities"]) == 1
-    assert sum(item["label"] == "地区" and item.get("normalized") == "华东区域" for item in context["entities"]) == 1
-    assert not any(item["label"] == "关键词" and item["value"] in {"年华东区域", "最高的前"} for item in context["entities"])
-
-    case_context = middleware.build_context("原因不明(例)")
-    assert case_context["normalized_query"] == "原因不明病例数"
-    assert any(item["label"] == "指标" and item.get("normalized") == "病例数" for item in case_context["entities"])
-    assert sum(item["label"] == "指标" for item in case_context["entities"]) == 1
-    assert not any(item["label"] == "指标" and item["value"] == "例数" for item in case_context["entities"])
+    assert "data_agent_stage" not in result.update
+    assert "data_retrieval_context" not in result.update
 
 
-def test_query_context_updates_state_and_injects_hidden_model_context() -> None:
-    """校验 QueryContextMiddleware 写入状态并注入隐藏模型上下文。
+def test_data_agent_builtin_tool_registry_matches_runtime_names() -> None:
+    """校验 DataAgent 注册表常量与 LangChain 实际工具名一致。
 
     Args:
         无。
@@ -121,29 +146,207 @@ def test_query_context_updates_state_and_injects_hidden_model_context() -> None:
     Return:
         None。
     """
-    middleware = QueryContextMiddleware(emit_stream_events=False)
-    state_update = middleware.before_agent({"messages": [HumanMessage(content="统计本月华东 GMV")]}, None)
+    assert {item.name for item in get_data_agent_tools()} == set(DATA_AGENT_BUILTIN_TOOL_NAMES)
 
-    assert state_update is not None
-    assert state_update["data_query_context"]["intent"] == "text2sql"
-    assert state_update["data_retrieval_context"] is None
-    assert state_update["data_sql_validation"] is None
-    assert state_update["data_sql_execution"] is None
-    assert state_update["data_last_successful_sql_execution"] is None
-    assert state_update["data_chart_spec"] is None
 
-    request = _FakeRequest(
-        [HumanMessage(content="统计本月华东 GMV")],
-        state=state_update,
+def test_query_labels_middleware_intercepts_without_executing_tool(monkeypatch) -> None:
+    """校验标签 middleware 直接发布标签，不执行占位工具。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+
+    Return:
+        None。
+    """
+    labels_module = importlib.import_module("deerflow.agents.middlewares.query_labels_middleware")
+    from langgraph.types import Command
+
+    stream_events: list[dict] = []
+    monkeypatch.setattr(labels_module, "get_stream_writer", lambda: stream_events.append)
+    request = _tool_request(
+        PUBLISH_QUERY_LABELS_TOOL_NAME,
+        state={"data_retrieval_context": {"ok": True}},
+        args={
+            "intent": "ranking",
+            "summary": "按数据库真实会员等级统计排名",
+            "labels": [
+                {"label": "指标", "value": "成交总额", "source": "user"},
+                {
+                    "label": "会员等级",
+                    "value": "黑金会员",
+                    "normalized": "BLACK_GOLD",
+                    "source": "database",
+                    "evidence": "TableRAG 字段值 customers.level=BLACK_GOLD",
+                },
+            ],
+        },
     )
-    injected = middleware.wrap_model_call(request, lambda req: req)
+    handler = MagicMock()
 
-    assert isinstance(injected.messages[0], SystemMessage)
-    assert injected.messages[0].additional_kwargs["data_query_context"] == "authority"
-    assert isinstance(injected.messages[1], HumanMessage)
-    assert injected.messages[1].additional_kwargs["data_query_context"] == "payload"
-    assert "<data_query_context>" in injected.messages[1].content
-    assert "成交总额" in injected.messages[1].content
+    result = QueryLabelsMiddleware().wrap_tool_call(request, handler)
+
+    handler.assert_not_called()
+    assert isinstance(result, Command)
+    assert not result.goto
+    assert result.update["data_query_labels"]["intent"] == "ranking"
+    assert result.update["data_query_labels"]["labels"][1]["source"] == "database"
+    message = result.update["messages"][0]
+    assert message.name == PUBLISH_QUERY_LABELS_TOOL_NAME
+    assert message.artifact == result.update["data_query_labels"]
+    assert stream_events == [
+        {
+            "type": "data_query_labels",
+            "labels": result.update["data_query_labels"],
+        }
+    ]
+
+
+def test_query_labels_middleware_requires_evidence_for_database_labels() -> None:
+    """校验数据库来源标签必须关联成功检索和 Evidence。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    middleware = QueryLabelsMiddleware()
+    handler = MagicMock()
+
+    missing_retrieval = middleware.wrap_tool_call(
+        _tool_request(
+            PUBLISH_QUERY_LABELS_TOOL_NAME,
+            args={
+                "intent": "detail",
+                "labels": [
+                    {
+                        "label": "会员等级",
+                        "value": "黑金会员",
+                        "source": "database",
+                        "evidence": "customers.level=BLACK_GOLD",
+                    }
+                ],
+            },
+        ),
+        handler,
+    )
+    missing_evidence = middleware.wrap_tool_call(
+        _tool_request(
+            PUBLISH_QUERY_LABELS_TOOL_NAME,
+            state={"data_retrieval_context": {"ok": True}},
+            args={
+                "intent": "detail",
+                "labels": [
+                    {
+                        "label": "会员等级",
+                        "value": "黑金会员",
+                        "source": "database",
+                    }
+                ],
+            },
+        ),
+        handler,
+    )
+
+    handler.assert_not_called()
+    assert missing_retrieval.status == "error"
+    assert "TableRAG" in missing_retrieval.content
+    assert missing_evidence.status == "error"
+    assert "evidence" in missing_evidence.content
+
+
+def test_query_labels_middleware_delegates_unrelated_tools_sync_and_async() -> None:
+    """校验标签 middleware 不影响其他工具的同步和异步执行。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    middleware = QueryLabelsMiddleware()
+    request = _tool_request("data_validate_sql")
+    sync_result = ToolMessage(content="sync", tool_call_id="call-1", name="data_validate_sql")
+
+    assert middleware.wrap_tool_call(request, lambda _: sync_result) is sync_result
+
+    async def run() -> None:
+        async_result = ToolMessage(content="async", tool_call_id="call-1", name="data_validate_sql")
+
+        async def handler(_):
+            return async_result
+
+        assert await middleware.awrap_tool_call(request, handler) is async_result
+
+    asyncio.run(run())
+
+
+def test_query_labels_middleware_async_intercept_and_latest_snapshot(monkeypatch) -> None:
+    """校验异步拦截可用，连续发布时状态 reducer 采用最新标签快照。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+
+    Return:
+        None。
+    """
+    labels_module = importlib.import_module("deerflow.agents.middlewares.query_labels_middleware")
+
+    monkeypatch.setattr(labels_module, "get_stream_writer", lambda: lambda _: None)
+    middleware = QueryLabelsMiddleware()
+
+    async def run():
+        async def handler(_):
+            raise AssertionError("标签占位工具不应执行")
+
+        return await middleware.awrap_tool_call(
+            _tool_request(
+                PUBLISH_QUERY_LABELS_TOOL_NAME,
+                args={
+                    "intent": "trend",
+                    "labels": [
+                        {
+                            "label": "时间粒度",
+                            "value": "按月",
+                            "source": "derived",
+                        }
+                    ],
+                },
+            ),
+            handler,
+        )
+
+    result = asyncio.run(run())
+    old = {"intent": "detail", "labels": [{"label": "指标", "value": "病例数", "source": "user"}]}
+
+    assert result.update["data_query_labels"]["intent"] == "trend"
+    assert replace_value(old, result.update["data_query_labels"]) is result.update["data_query_labels"]
+
+
+def test_turn_reset_middleware_only_resets_new_visible_user_turn() -> None:
+    """校验轮次 middleware 只重置状态，不执行实体抽取。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    middleware = DataAgentTurnResetMiddleware()
+    state = {
+        "messages": [HumanMessage(content="统计本月华东 GMV")],
+        "data_query_context": {"original_query": "旧问题"},
+        "data_query_labels": {"intent": "旧意图", "labels": []},
+        "data_sql_execution": {"ok": True},
+    }
+
+    update = middleware.before_agent(state, None)
+
+    assert update is not None
+    assert update["data_query_context"] is None
+    assert update["data_query_labels"] is None
+    assert update["data_sql_execution"] is None
+    assert middleware.before_agent({"messages": [ToolMessage(content="ok", tool_call_id="call-1")]}, None) is None
 
 
 def test_data_middlewares_insert_before_dynamic_context() -> None:
@@ -167,13 +370,15 @@ def test_data_middlewares_insert_before_dynamic_context() -> None:
 
     result = _insert_data_middlewares(
         [FirstMiddleware(), DynamicContextMiddleware(), TailMiddleware()],
-        QueryContextMiddleware(emit_stream_events=False),
+        DataAgentTurnResetMiddleware(),
+        QueryLabelsMiddleware(),
         DataAgentOrchestrationMiddleware(subagent_enabled=True),
     )
 
     assert [type(item).__name__ for item in result] == [
         "FirstMiddleware",
-        "QueryContextMiddleware",
+        "DataAgentTurnResetMiddleware",
+        "QueryLabelsMiddleware",
         "DataAgentOrchestrationMiddleware",
         "DynamicContextMiddleware",
         "TailMiddleware",
@@ -284,11 +489,102 @@ def _tool_request(
     runtime.state = state or {}
     runtime.context = {"thread_id": "data-agent-test"}
     return ToolCallRequest(
-        tool_call={"name": name, "args": args or {"sql": "SELECT 1"}, "id": "call-1"},
+        tool_call={"name": name, "args": args if args is not None else {"sql": "SELECT 1"}, "id": "call-1"},
         tool=None,
         state=runtime.state,
         runtime=runtime,
     )
+
+
+def _query_context_state(**updates) -> dict:
+    """构造已完成 QueryContext Tool 的测试状态。
+
+    Args:
+        updates: 需要覆盖或追加的状态字段。
+
+    Return:
+        包含当前轮次 QueryContext 的状态。
+    """
+    state = {
+        "data_query_context": {
+            "original_query": "统计测试指标",
+            "normalized_query": "统计测试指标",
+            "intent": "text2sql",
+        }
+    }
+    state.update(updates)
+    return state
+
+
+def test_orchestration_allows_non_data_answer_without_query_context_tool() -> None:
+    """校验未进入数据流程时模型可以直接回答。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    message = DataAgentOrchestrationMiddleware()._message({})
+
+    assert "普通问候" in message.content
+    assert f"`{PUBLISH_QUERY_LABELS_TOOL_NAME}`" in message.content
+    assert "标签不是阶段门禁" in message.content
+
+
+def test_orchestration_allows_tablerag_without_entity_extract_tool() -> None:
+    """校验 lead-agent 可直接组织关键词进入 TableRAG，不强制实体抽取。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    middleware = DataAgentOrchestrationMiddleware()
+    handler = MagicMock(
+        return_value=ToolMessage(
+            content='{"ok": true, "result": {"tables": [{"table_name": "orders"}]}}',
+            tool_call_id="call-1",
+            name="tablerag_tablerag_retrieve",
+        )
+    )
+
+    result = middleware.wrap_tool_call(
+        _tool_request("tablerag_tablerag_retrieve", args={"query": "指标"}),
+        handler,
+    )
+
+    handler.assert_called_once()
+    assert result.update["data_retrieval_context"]["ok"] is True
+
+
+def test_orchestration_blocks_repeated_query_context_tool() -> None:
+    """校验单轮 QueryContext Tool 只允许成功调用一次。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    state = _query_context_state(
+        messages=[
+            HumanMessage(content="统计测试指标"),
+            ToolMessage(content="{}", tool_call_id="query-1", name=ENTITY_EXTRACT_TOOL_NAME),
+        ]
+    )
+    middleware = DataAgentOrchestrationMiddleware()
+    handler = MagicMock()
+
+    result = middleware.wrap_tool_call(
+        _tool_request(ENTITY_EXTRACT_TOOL_NAME, state=state, args={}),
+        handler,
+    )
+
+    handler.assert_not_called()
+    assert result.status == "error"
+    assert "不允许重复抽取" in result.content
 
 
 def test_orchestration_blocks_sql_validation_before_retrieval() -> None:
@@ -303,7 +599,7 @@ def test_orchestration_blocks_sql_validation_before_retrieval() -> None:
     middleware = DataAgentOrchestrationMiddleware()
     handler = MagicMock()
 
-    result = middleware.wrap_tool_call(_tool_request("data_validate_sql"), handler)
+    result = middleware.wrap_tool_call(_tool_request("data_validate_sql", state=_query_context_state()), handler)
 
     handler.assert_not_called()
     assert result.status == "error"
@@ -323,7 +619,7 @@ def test_orchestration_marks_successful_tablerag_retrieval() -> None:
     from langgraph.types import Command
 
     middleware = DataAgentOrchestrationMiddleware()
-    request = _tool_request("tablerag_tablerag_retrieve")
+    request = _tool_request("tablerag_tablerag_retrieve", state=_query_context_state())
     handler = MagicMock(
         return_value=ToolMessage(
             content='{"ok": true, "result": {"tables": [{"table_name": "orders"}]}}',
@@ -354,7 +650,7 @@ def test_orchestration_does_not_accept_empty_retrieval_or_index_healthcheck() ->
 
     middleware = DataAgentOrchestrationMiddleware()
     empty_result = middleware.wrap_tool_call(
-        _tool_request("tablerag_tablerag_retrieve"),
+        _tool_request("tablerag_tablerag_retrieve", state=_query_context_state()),
         MagicMock(
             return_value=ToolMessage(
                 content='{"ok": true, "result": {"tables": [], "columns": [], "values": [], "join_graphs": [], "evidences": []}}',
@@ -373,7 +669,7 @@ def test_orchestration_does_not_accept_empty_retrieval_or_index_healthcheck() ->
         name="tablerag_tablerag_validate_index",
     )
     health_result = middleware.wrap_tool_call(
-        _tool_request("tablerag_tablerag_validate_index"),
+        _tool_request("tablerag_tablerag_validate_index", state=_query_context_state()),
         MagicMock(return_value=health_message),
     )
     assert health_result is health_message
@@ -418,10 +714,10 @@ def test_orchestration_blocks_execution_without_matching_validation() -> None:
     """
     middleware = DataAgentOrchestrationMiddleware()
     handler = MagicMock()
-    state = {
-        "data_retrieval_context": {"ok": True},
-        "data_sql_validation": {"valid": True, "sql_sha256": "different"},
-    }
+    state = _query_context_state(
+        data_retrieval_context={"ok": True},
+        data_sql_validation={"valid": True, "sql_sha256": "different"},
+    )
 
     result = middleware.wrap_tool_call(_tool_request("data_execute_sql", state=state), handler)
 
@@ -442,7 +738,7 @@ def test_orchestration_requires_chart_tool_after_execution_for_chart_intent() ->
     middleware = DataAgentOrchestrationMiddleware()
     message = middleware._message(
         {
-            "data_query_context": {"intent": "chart"},
+            "data_query_labels": {"intent": "chart", "labels": []},
             "data_sql_validation": {"valid": True, "sql_sha256": "same"},
             "data_sql_execution": {"ok": True, "sql_sha256": "same"},
             "data_chart_spec": None,
@@ -497,6 +793,7 @@ def test_orchestration_requires_retrieval_before_clarification() -> None:
     result = middleware.wrap_tool_call(
         _tool_request(
             "ask_clarification",
+            state=_query_context_state(),
             args={"question": "请补充时间范围"},
         ),
         handler,
@@ -523,6 +820,7 @@ def test_orchestration_caps_sql_execution_attempts_per_turn() -> None:
             ToolMessage(content="{}", tool_call_id="exec-1", name="data_execute_sql"),
             ToolMessage(content="{}", tool_call_id="exec-2", name="data_execute_sql"),
         ],
+        "data_query_context": _query_context_state()["data_query_context"],
         "data_retrieval_context": {"ok": True},
         "data_sql_validation": {"valid": True, "sql_sha256": sql_sha256(sql)},
     }
@@ -554,6 +852,7 @@ def test_orchestration_blocks_new_validation_after_execution_budget() -> None:
             ToolMessage(content="{}", tool_call_id="exec-1", name="data_execute_sql"),
             ToolMessage(content="{}", tool_call_id="exec-2", name="data_execute_sql"),
         ],
+        "data_query_context": _query_context_state()["data_query_context"],
         "data_retrieval_context": {"ok": True},
         "data_sql_validation": {"valid": True, "sql_sha256": "same"},
         "data_sql_execution": {"ok": True, "sql_sha256": "same"},
@@ -630,7 +929,14 @@ def test_orchestration_serializes_parallel_tablerag_calls_per_thread() -> None:
             name=str(request.tool_call["name"]),
         )
 
-    requests = [_tool_request("tablerag_tablerag_search_tables", args={"query": f"query-{index}"}) for index in range(2)]
+    requests = [
+        _tool_request(
+            "tablerag_tablerag_search_tables",
+            state=_query_context_state(),
+            args={"query": f"query-{index}"},
+        )
+        for index in range(2)
+    ]
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(lambda request: middleware.wrap_tool_call(request, handler), requests))
 
@@ -650,7 +956,11 @@ def test_async_tablerag_lock_wait_is_cancellation_safe() -> None:
 
     async def run() -> None:
         middleware = DataAgentOrchestrationMiddleware()
-        request = _tool_request("tablerag_tablerag_search_tables", args={"query": "指标"})
+        request = _tool_request(
+            "tablerag_tablerag_search_tables",
+            state=_query_context_state(),
+            args={"query": "指标"},
+        )
         lock = middleware._table_rag_lock(request)
         lock.acquire()
 
@@ -690,6 +1000,10 @@ def test_stream_values_output_reports_stage_and_execution(capsys) -> None:
     module._print_values_event(
         {
             "data_agent_stage": "sql_executed",
+            "data_query_labels": {
+                "intent": "aggregation",
+                "labels": [{"label": "指标", "value": "病例数", "source": "database", "evidence": "metric_name=病例数"}],
+            },
             "data_sql_execution": {
                 "ok": True,
                 "sql_sha256": "abc",
@@ -703,7 +1017,32 @@ def test_stream_values_output_reports_stage_and_execution(capsys) -> None:
 
     output = capsys.readouterr().out
     assert "[DataAgent:Stage] sql_executed" in output
+    assert "[DataAgent:QueryLabels] intent=aggregation" in output
     assert "[DataAgent:SQLExecution] ok=True rows=2" in output
+
+
+def test_stream_custom_output_reports_query_labels(capsys) -> None:
+    """校验控制台脚本会单独打印标签 custom stream 事件。
+
+    Args:
+        capsys: pytest 输出捕获 fixture。
+
+    Return:
+        None。
+    """
+    module = _load_stream_script()
+
+    module._print_custom_event(
+        {
+            "type": "data_query_labels",
+            "labels": {
+                "intent": "trend",
+                "labels": [{"label": "时间粒度", "value": "按月", "source": "derived"}],
+            },
+        }
+    )
+
+    assert "[DataAgent:QueryLabels]" in capsys.readouterr().out
 
 
 def test_stream_log_path_uses_timestamped_filename(tmp_path) -> None:
@@ -908,7 +1247,7 @@ def test_build_data_agent_uses_create_deerflow_agent(monkeypatch) -> None:
 
     monkeypatch.setattr(data_agent_module, "apply_prompt_template", fake_apply_prompt_template)
     monkeypatch.setattr(data_agent_module, "create_chat_model", lambda **kwargs: MagicMock(name="model"))
-    monkeypatch.setattr(data_agent_module, "build_data_middlewares", lambda *args, **kwargs: [QueryContextMiddleware(emit_stream_events=False)])
+    monkeypatch.setattr(data_agent_module, "build_data_middlewares", lambda *args, **kwargs: [DataAgentTurnResetMiddleware()])
     monkeypatch.setattr(data_agent_module, "create_deerflow_agent", fake_create_deerflow_agent)
 
     result = build_data_agent(
@@ -926,6 +1265,12 @@ def test_build_data_agent_uses_create_deerflow_agent(monkeypatch) -> None:
     assert calls["name"] == DATA_AGENT_NAME
     assert calls["state_schema"] is DataAgentState
     assert calls["system_prompt"].startswith("lead-prompt")
-    assert isinstance(calls["middleware"][0], QueryContextMiddleware)
+    assert isinstance(calls["middleware"][0], DataAgentTurnResetMiddleware)
     assert prompt_kwargs["agent_name"] == DATA_AGENT_NAME
-    assert {"data_validate_sql", "data_execute_sql", "data_build_chart_spec"} <= {tool.name for tool in calls["tools"]}
+    assert {
+        ENTITY_EXTRACT_TOOL_NAME,
+        PUBLISH_QUERY_LABELS_TOOL_NAME,
+        "data_validate_sql",
+        "data_execute_sql",
+        "data_build_chart_spec",
+    } <= {tool.name for tool in calls["tools"]}
