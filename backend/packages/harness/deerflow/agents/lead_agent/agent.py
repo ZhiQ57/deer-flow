@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 
+from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.runnables import RunnableConfig
@@ -310,12 +311,13 @@ def build_middlewares(
     if todo_list_middleware is not None:
         middlewares.append(todo_list_middleware)
 
+    # TODO : 按照 agent_name 加载定制化的 Middleware 配置.
     agent_name = validate_agent_name(cfg.get("agent_name"))  # cfg.get("agent_name")可读取配置的智能体名称
     # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
     is_bootstrap = cfg.get("is_bootstrap", False)
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
 
-    # TODO : 按照 agent_name 加载定制化的 Middleware 配置.
+    
 
     # Add TokenUsageMiddleware when token_usage tracking is enabled
     if resolved_app_config.token_usage.enabled:
@@ -397,6 +399,10 @@ def build_middlewares(
     safety_config = resolved_app_config.safety_finish_reason
     if safety_config.enabled:
         middlewares.append(SafetyFinishReasonMiddleware.from_config(safety_config))
+
+    # TODO : 当agent_name 为 "data-agent" 时，加载定制化的 Middleware 配置.
+    if agent_name == "data-agent":
+        middlewares.append(QueryLabelsMiddleware())
 
     # ClarificationMiddleware should always be last
     middlewares.append(ClarificationMiddleware())

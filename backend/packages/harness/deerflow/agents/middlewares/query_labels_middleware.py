@@ -29,6 +29,25 @@ _LABEL_SOURCES = frozenset(
 class QueryLabelsMiddleware(AgentMiddleware):
     """拦截标签声明工具并把结构化标签写入 runtime 状态。"""
 
+    def __init__(
+        self,
+        *,
+        require_retrieval: bool = False,
+        stage_name: str | None = None,
+    ) -> None:
+        """初始化查询标签 middleware。
+
+        Args:
+            require_retrieval: 是否要求所有标签都在首次有效 TableRAG 检索后发布。
+            stage_name: 标签发布成功后写入的可选业务阶段名。
+
+        Return:
+            None。
+        """
+        super().__init__()
+        self._require_retrieval = require_retrieval
+        self._stage_name = stage_name.strip() if isinstance(stage_name, str) and stage_name.strip() else None
+
     @staticmethod
     def _message_id(tool_call_id: str, payload: Mapping[str, Any] | str) -> str:
         """生成可重试覆盖的稳定 ToolMessage ID。
@@ -143,8 +162,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
         retrieval = state.get("data_retrieval_context")
         return isinstance(retrieval, Mapping) and retrieval.get("ok") is True
 
-    @staticmethod
-    def _build_payload(request: ToolCallRequest) -> dict[str, Any]:
+    def _build_payload(self, request: ToolCallRequest) -> dict[str, Any]:
         """从工具参数构造顶层标签 artifact。
 
         Args:
@@ -167,8 +185,11 @@ class QueryLabelsMiddleware(AgentMiddleware):
         if len(normalized_intent) > 100:
             raise ValueError("intent 不能超过 100 个字符。")
 
-        labels = QueryLabelsMiddleware._normalize_labels(args.get("labels"))
-        if any(item["source"] == "database" for item in labels) and not QueryLabelsMiddleware._has_retrieval_evidence(request):
+        labels = self._normalize_labels(args.get("labels"))
+        has_retrieval = self._has_retrieval_evidence(request)
+        if self._require_retrieval and not has_retrieval:
+            raise ValueError("查询标签只能在首次有效 TableRAG 检索完成后发布。")
+        if any(item["source"] == "database" for item in labels) and not has_retrieval:
             raise ValueError("数据库来源标签只能在成功获得 TableRAG Evidence 后发布。")
 
         payload: dict[str, Any] = {
@@ -205,8 +226,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
         except Exception:
             logger.debug("查询标签 custom stream 输出失败。", exc_info=True)
 
-    @classmethod
-    def _handle_query_labels(cls, request: ToolCallRequest) -> ToolMessage | Command:
+    def _handle_query_labels(self, request: ToolCallRequest) -> ToolMessage | Command:
         """处理标签工具调用并返回状态更新。
 
         Args:
@@ -216,26 +236,27 @@ class QueryLabelsMiddleware(AgentMiddleware):
             成功时返回不终止图执行的 Command，失败时返回错误 ToolMessage。
         """
         try:
-            payload = cls._build_payload(request)
+            payload = self._build_payload(request)
         except ValueError as exc:
-            return cls._error(request, str(exc))
+            return self._error(request, str(exc))
 
         tool_call_id = str(request.tool_call.get("id") or "")
         message = ToolMessage(
-            id=cls._message_id(tool_call_id, payload),
+            id=self._message_id(tool_call_id, payload),
             content=json.dumps({"ok": True, **payload}, ensure_ascii=False),
             tool_call_id=tool_call_id or "missing-tool-call-id",
             name=_PUBLISH_QUERY_LABELS_TOOL_NAME,
             status="success",
             artifact=payload,
         )
-        cls._emit_stream_event(payload)
-        return Command(
-            update={
-                "messages": [message],
-                "data_query_labels": payload,
-            }
-        )
+        self._emit_stream_event(payload)
+        update: dict[str, Any] = {
+            "messages": [message],
+            "data_query_labels": payload,
+        }
+        if self._stage_name is not None:
+            update["data_agent_stage"] = self._stage_name
+        return Command(update=update)
 
     @override
     def wrap_tool_call(
