@@ -309,6 +309,7 @@ def _build_available_subagents_description(available_names: list[str], bash_avai
 def _build_subagent_section(
     max_concurrent: int,
     max_total: int = DEFAULT_MAX_TOTAL_SUBAGENTS_PER_RUN,
+    allowable_subagents: set[str] | None = None,
     *,
     app_config: AppConfig | None = None,
 ) -> str:
@@ -323,7 +324,7 @@ def _build_subagent_section(
     """
     n = clamp_subagent_concurrency(max_concurrent)
     total = clamp_total_subagents_per_run(max_total)
-    available_names = get_available_subagent_names(app_config=app_config) if app_config is not None else get_available_subagent_names()
+    available_names = get_available_subagent_names(app_config=app_config, allowable_subagents=allowable_subagents) if app_config is not None else get_available_subagent_names()
     bash_available = "bash" in available_names
 
     # Dynamically build subagent type descriptions from registry (aligned with Codex's
@@ -985,7 +986,7 @@ def apply_prompt_template(
         subagents_config = getattr(app_config, "subagents", None) if app_config is not None else None
         total = getattr(subagents_config, "max_total_per_run", DEFAULT_MAX_TOTAL_SUBAGENTS_PER_RUN)
     total = clamp_total_subagents_per_run(total)
-    subagent_section = _build_subagent_section(n, total, app_config=app_config) if subagent_enabled else ""
+    subagent_section = _build_subagent_section(n, total, app_config=app_config, allowable_subagents=allowable_subagents) if subagent_enabled else ""
 
     # Add subagent reminder to critical_reminders if enabled
     subagent_reminder = (
