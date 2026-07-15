@@ -1,6 +1,8 @@
+from .builtins.entity_extract_tool import entity_extract_tool
+from .builtins.query_labels_tool import publish_query_labels_tool
 from .tools import get_available_tools
 
-__all__ = ["get_available_tools", "skill_manage_tool"]
+__all__ = ["entity_extract_tool", "get_available_tools", "publish_query_labels_tool", "skill_manage_tool"]
 
 
 def __getattr__(name: str):
