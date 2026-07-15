@@ -10,6 +10,7 @@ from deerflow.tools.builtins.entity_extract_tool import EntityExtractionResult
 DataAgentStage = Literal[
     "query_context",
     "retrieval_completed",
+    "labels_published",
     "sql_validation_failed",
     "sql_validated",
     "sql_execution_failed",
@@ -140,3 +141,4 @@ class DataAgentState(ThreadState):
     data_sql_execution: Annotated[DataSQLExecution | None, replace_value]
     data_last_successful_sql_execution: Annotated[DataSQLExecution | None, replace_value]
     data_chart_spec: Annotated[DataChartSpec | None, replace_value]
+    data_force_final_answer: Annotated[str | None, replace_value]

@@ -43,7 +43,18 @@ extensions_config.json
 # Coverage report
 coverage.xml
 coverage/
-.deer-flow/
+
+# .deer-flow
+.deer-flow/*
+
+*/.deer-flow/data/*
+*/.deer-flow/logs/*
+*/.deer-flow/users/*
+*/.deer-flow/channels/*
+*/.deer-flow/.jwt_secret
+*/.deer-flow/.jwt_secret.key
+
+
 .claude/
 skills/custom/*
 logs/

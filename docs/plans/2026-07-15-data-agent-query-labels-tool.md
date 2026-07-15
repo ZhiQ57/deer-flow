@@ -1,5 +1,9 @@
 # DataAgent 查询标签工具与中间件开发计划
 
+> 后续时序与收敛规则已由
+> `docs/plans/2026-07-15-data-agent-label-flow-recursion.md` 更新：实验性 DataAgent
+> 现在要求首次有效 TableRAG 检索后发布标签，并在 SQL 校验前完成标签展示。
+
 ## 1、需求与边界
 
 - [X] 1.1 保留现有 `entity_extract_tool` 文件、导出和可调用能力。

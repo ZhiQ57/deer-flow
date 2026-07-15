@@ -36,6 +36,7 @@ class DataAgentTurnResetMiddleware(AgentMiddleware):
             "data_sql_execution": None,
             "data_last_successful_sql_execution": None,
             "data_chart_spec": None,
+            "data_force_final_answer": None,
         }
 
     @override

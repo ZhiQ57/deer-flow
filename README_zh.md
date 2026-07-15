@@ -305,10 +305,13 @@ TableRAG 配置和 DSN 注入运行环境。
 如需更直观地观察数据轨迹，可运行
 `python backend\tests\service_agent\test-data-agent\run_data_agent_web.py`。
 该脚本会启动仅监听本机回环地址的调试页面，在同一页面展示简单对话、QueryContext 标签、
-执行阶段、TableRAG 检索、SQL 校验、结果表格、ChartSpec 预览、工具事件和每轮日志路径。
+执行阶段、TableRAG 检索、检索后的用户意图标签、SQL 校验、结果表格、ChartSpec 预览、
+收敛保护、工具事件和每轮日志路径。
 它是独立本地调试应用，不是正式 Gateway 路由。
 该实验图会强制只读 TableRAG 检索、单条 MySQL SQL 校验、受预算保护的真实执行和可选
-ChartSpec；它目前不是原生 custom-agent UI 使用的同一张图。凭据必须通过环境变量注入，
+ChartSpec；查询标签只能在首次有效 TableRAG 检索后发布，单轮默认最多接收 10 个工具结果，
+达到预算后会移除工具并强制模型生成最终回答，避免把 LangGraph recursion limit 当作正常
+停止条件。它目前不是原生 custom-agent UI 使用的同一张图。凭据必须通过环境变量注入，
 生产环境还应使用数据库层只读 MySQL 账号。
 
 #### IM 渠道

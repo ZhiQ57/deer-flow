@@ -80,7 +80,12 @@ async def test_web_page_exposes_chat_and_structured_trace_panels(tmp_path, monke
     assert "DataAgent 结构化调试台" in response.text
     assert 'data-panel="query-context"' in response.text
     assert 'data-panel="query-labels"' in response.text
+    assert 'data-panel="retrieval"' in response.text
+    assert response.text.index('data-panel="retrieval"') < response.text.index('data-panel="query-labels"')
+    assert "TableRAG → 意图标签 → SQL校验 → SQL执行 → 最终回答" in response.text
+    assert "等待首次有效 TableRAG 检索后发布" in response.text
     assert 'data-panel="sql-execution"' in response.text
+    assert 'data-panel="guardrail"' in response.text
     assert 'data-panel="timeline"' in response.text
     assert response.headers["x-frame-options"] == "DENY"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
@@ -221,6 +226,7 @@ def test_web_values_events_expose_data_trajectory_and_deduplicate() -> None:
         },
         "data_last_successful_sql_execution": {"ok": True, "rows": [{"count": 3}]},
         "data_chart_spec": {"type": "kpi", "y": ["count"], "data": [{"count": 3}]},
+        "data_force_final_answer": "单轮工具调用已达到 12 次，必须生成最终回答。",
     }
 
     events = web._values_events(state, observed)
@@ -228,14 +234,16 @@ def test_web_values_events_expose_data_trajectory_and_deduplicate() -> None:
     assert [event["type"] for event in events] == [
         "stage",
         "query_context",
-        "query_labels",
         "retrieval",
+        "query_labels",
         "generated_sql",
         "sql_validation",
         "sql_execution",
         "chart_spec",
+        "force_final",
     ]
     assert events[6]["last_successful"]["rows"] == [{"count": 3}]
+    assert events[-1]["payload"] == "单轮工具调用已达到 12 次，必须生成最终回答。"
     assert web._values_events(state, observed) == []
 
 

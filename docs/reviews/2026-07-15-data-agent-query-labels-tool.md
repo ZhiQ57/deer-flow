@@ -1,5 +1,9 @@
 # DataAgent 查询标签工具与中间件 Review
 
+> 本文记录初始实现。当前行为以
+> `docs/reviews/2026-07-15-data-agent-label-flow-recursion.md` 为准：实验性 DataAgent
+> 已增加检索后标签时序门禁和确定性工具预算收敛。
+
 审查日期：2026-07-15
 
 ## 1、结论

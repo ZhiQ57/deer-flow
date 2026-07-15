@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt.tool_node import ToolCallRequest
@@ -255,6 +256,61 @@ def test_query_labels_middleware_requires_evidence_for_database_labels() -> None
     assert "evidence" in missing_evidence.content
 
 
+def test_data_agent_query_labels_require_successful_retrieval_for_all_sources() -> None:
+    """校验 DataAgent 模式下任何标签都必须在有效 TableRAG 检索后发布。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    middleware = QueryLabelsMiddleware(
+        require_retrieval=True,
+        stage_name="labels_published",
+    )
+    handler = MagicMock()
+
+    blocked = middleware.wrap_tool_call(
+        _tool_request(
+            PUBLISH_QUERY_LABELS_TOOL_NAME,
+            args={
+                "intent": "aggregation",
+                "labels": [
+                    {
+                        "label": "指标",
+                        "value": "病例数",
+                        "source": "user",
+                    }
+                ],
+            },
+        ),
+        handler,
+    )
+    published = middleware.wrap_tool_call(
+        _tool_request(
+            PUBLISH_QUERY_LABELS_TOOL_NAME,
+            state={"data_retrieval_context": {"ok": True}},
+            args={
+                "intent": "aggregation",
+                "labels": [
+                    {
+                        "label": "指标",
+                        "value": "病例数",
+                        "source": "user",
+                    }
+                ],
+            },
+        ),
+        handler,
+    )
+
+    handler.assert_not_called()
+    assert blocked.status == "error"
+    assert "首次有效 TableRAG 检索" in blocked.content
+    assert published.update["data_agent_stage"] == "labels_published"
+
+
 def test_query_labels_middleware_delegates_unrelated_tools_sync_and_async() -> None:
     """校验标签 middleware 不影响其他工具的同步和异步执行。
 
@@ -338,6 +394,7 @@ def test_turn_reset_middleware_only_resets_new_visible_user_turn() -> None:
         "data_query_context": {"original_query": "旧问题"},
         "data_query_labels": {"intent": "旧意图", "labels": []},
         "data_sql_execution": {"ok": True},
+        "data_force_final_answer": "旧轮次预算已耗尽",
     }
 
     update = middleware.before_agent(state, None)
@@ -346,6 +403,7 @@ def test_turn_reset_middleware_only_resets_new_visible_user_turn() -> None:
     assert update["data_query_context"] is None
     assert update["data_query_labels"] is None
     assert update["data_sql_execution"] is None
+    assert update["data_force_final_answer"] is None
     assert middleware.before_agent({"messages": [ToolMessage(content="ok", tool_call_id="call-1")]}, None) is None
 
 
@@ -368,10 +426,19 @@ def test_data_middlewares_insert_before_dynamic_context() -> None:
     class TailMiddleware(AgentMiddleware):
         pass
 
+    data_labels = QueryLabelsMiddleware(
+        require_retrieval=True,
+        stage_name="labels_published",
+    )
     result = _insert_data_middlewares(
-        [FirstMiddleware(), DynamicContextMiddleware(), TailMiddleware()],
+        [
+            FirstMiddleware(),
+            QueryLabelsMiddleware(),
+            DynamicContextMiddleware(),
+            TailMiddleware(),
+        ],
         DataAgentTurnResetMiddleware(),
-        QueryLabelsMiddleware(),
+        data_labels,
         DataAgentOrchestrationMiddleware(subagent_enabled=True),
     )
 
@@ -383,6 +450,8 @@ def test_data_middlewares_insert_before_dynamic_context() -> None:
         "DynamicContextMiddleware",
         "TailMiddleware",
     ]
+    assert sum(isinstance(item, QueryLabelsMiddleware) for item in result) == 1
+    assert result[2] is data_labels
 
 
 def test_load_optional_agent_config_fails_closed_on_invalid_config(monkeypatch) -> None:
@@ -529,7 +598,7 @@ def test_orchestration_allows_non_data_answer_without_query_context_tool() -> No
 
     assert "普通问候" in message.content
     assert f"`{PUBLISH_QUERY_LABELS_TOOL_NAME}`" in message.content
-    assert "标签不是阶段门禁" in message.content
+    assert "检索前不得发布标签" in message.content
 
 
 def test_orchestration_allows_tablerag_without_entity_extract_tool() -> None:
@@ -604,6 +673,29 @@ def test_orchestration_blocks_sql_validation_before_retrieval() -> None:
     handler.assert_not_called()
     assert result.status == "error"
     assert "TableRAG" in result.content
+
+
+def test_orchestration_blocks_sql_validation_before_query_labels() -> None:
+    """校验成功检索后必须先发布标签，再进入 SQL 校验。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    middleware = DataAgentOrchestrationMiddleware()
+    handler = MagicMock()
+    state = _query_context_state(data_retrieval_context={"ok": True})
+
+    result = middleware.wrap_tool_call(
+        _tool_request("data_validate_sql", state=state),
+        handler,
+    )
+
+    handler.assert_not_called()
+    assert result.status == "error"
+    assert PUBLISH_QUERY_LABELS_TOOL_NAME in result.content
 
 
 def test_orchestration_marks_successful_tablerag_retrieval() -> None:
@@ -833,8 +925,9 @@ def test_orchestration_caps_sql_execution_attempts_per_turn() -> None:
     )
 
     handler.assert_not_called()
-    assert result.status == "error"
-    assert "执行次数已达上限" in result.content
+    assert result.update["data_force_final_answer"]
+    assert "2" in result.update["data_force_final_answer"]
+    assert result.update["messages"][0].status == "error"
 
 
 def test_orchestration_blocks_new_validation_after_execution_budget() -> None:
@@ -866,8 +959,86 @@ def test_orchestration_blocks_new_validation_after_execution_budget() -> None:
     )
 
     handler.assert_not_called()
-    assert result.status == "error"
-    assert "不再允许校验新 SQL" in result.content
+    assert result.update["data_force_final_answer"]
+    assert "SQL 已成功执行" in result.update["data_force_final_answer"]
+    assert result.update["messages"][0].status == "error"
+
+
+def test_orchestration_marks_total_tool_budget_for_forced_final_answer() -> None:
+    """校验当前工具执行达到总预算时写入强制最终回答状态。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    state = {
+        "messages": [
+            HumanMessage(content="统计病例数"),
+            ToolMessage(content="{}", tool_call_id="tool-1", name="read_file"),
+            ToolMessage(content="{}", tool_call_id="tool-2", name="tool_search"),
+        ],
+        "data_retrieval_context": {"ok": True},
+        "data_query_labels": {
+            "intent": "aggregation",
+            "labels": [{"label": "指标", "value": "病例数", "source": "user"}],
+        },
+    }
+    middleware = DataAgentOrchestrationMiddleware(max_total_tool_calls=3)
+    handler = MagicMock(
+        return_value=ToolMessage(
+            content='{"ok": true, "result": [{"table_name": "case_info"}]}',
+            tool_call_id="call-1",
+            name="tablerag_tablerag_search_tables",
+        )
+    )
+
+    result = middleware.wrap_tool_call(
+        _tool_request(
+            "tablerag_tablerag_search_tables",
+            state=state,
+            args={"query": "病例数"},
+        ),
+        handler,
+    )
+
+    assert result.update["data_force_final_answer"]
+    assert "3" in result.update["data_force_final_answer"]
+
+
+def test_orchestration_disables_tools_when_total_budget_is_exhausted() -> None:
+    """校验总工具预算耗尽后的下一次模型请求不再暴露工具。
+
+    Args:
+        无。
+
+    Return:
+        None。
+    """
+    state = {
+        "messages": [
+            HumanMessage(content="统计病例数"),
+            ToolMessage(content="{}", tool_call_id="tool-1", name="read_file"),
+            ToolMessage(content="{}", tool_call_id="tool-2", name="tool_search"),
+            ToolMessage(content="{}", tool_call_id="tool-3", name="tablerag_tablerag_retrieve"),
+        ],
+        "data_retrieval_context": {"ok": True},
+    }
+    middleware = DataAgentOrchestrationMiddleware(max_total_tool_calls=3)
+    request = ModelRequest(
+        model=MagicMock(),
+        messages=state["messages"],
+        tools=[_fake_tool("tablerag_tablerag_retrieve")],
+        state=state,
+        runtime=MagicMock(),
+    )
+
+    injected = middleware._inject(request)
+
+    assert injected.tools == []
+    assert "禁止继续调用任何工具" in injected.messages[0].content
+    assert "历史对话或 memory" in injected.messages[0].content
 
 
 def test_execution_stage_requires_validation_and_execution_digest_match() -> None:

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 
-from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.runnables import RunnableConfig
@@ -31,6 +30,7 @@ from deerflow.agents.lead_agent.prompt import apply_prompt_template
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
 from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
+from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from deerflow.agents.middlewares.summarization_middleware import DeerFlowSummarizationMiddleware, create_summarization_middleware
@@ -315,9 +315,8 @@ def build_middlewares(
     agent_name = validate_agent_name(cfg.get("agent_name"))  # cfg.get("agent_name")可读取配置的智能体名称
     # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
     is_bootstrap = cfg.get("is_bootstrap", False)
-    agent_config = load_agent_config(agent_name) if not is_bootstrap else None
-
-    
+    if not is_bootstrap:
+        load_agent_config(agent_name)
 
     # Add TokenUsageMiddleware when token_usage tracking is enabled
     if resolved_app_config.token_usage.enabled:
@@ -416,6 +415,7 @@ def _available_skill_names(agent_config, is_bootstrap: bool) -> set[str] | None:
         return set(agent_config.skills)
     return None
 
+
 def _available_subagents(agent_config, subagent_enabled: bool) -> set[str] | None:
     """读取 custom agent 配置的 allowable_subagents 列表.
     - 如果 subagent_enabled 为 False, 则返回 None
@@ -426,6 +426,7 @@ def _available_subagents(agent_config, subagent_enabled: bool) -> set[str] | Non
     if agent_config and agent_config.allowable_subagents is not None:
         return set(agent_config.allowable_subagents)
     return set(["default"])
+
 
 def _load_enabled_skills_for_tool_policy(available_skills: set[str] | None, *, app_config: AppConfig, user_id: str | None = None) -> list[Skill]:
     try:
@@ -474,8 +475,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     max_total_subagents = cfg.get("max_total_subagents", _default_max_total_subagents(resolved_app_config))
     is_bootstrap = cfg.get("is_bootstrap", False)
     non_interactive = bool(cfg.get("non_interactive", False))
-    agent_name = validate_agent_name(cfg.get("agent_name"))                 # cfg.get("agent_name")可读取配置的智能体名称
-    
+    agent_name = validate_agent_name(cfg.get("agent_name"))  # cfg.get("agent_name")可读取配置的智能体名称
+
     # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
     available_skills = _available_skill_names(agent_config, is_bootstrap)

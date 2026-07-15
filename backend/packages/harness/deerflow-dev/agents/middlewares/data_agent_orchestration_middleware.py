@@ -35,6 +35,8 @@ from agents.middlewares._data_agent_messages import (
 )
 from deerflow.tools.builtins.entity_extract_tool import EntityExtractionResult
 
+_DEFAULT_MAX_TOTAL_TOOL_CALLS = 10
+
 
 class DataAgentOrchestrationMiddleware(AgentMiddleware):
     """DataAgent 阶段提示和工具调用门禁 middleware。"""
@@ -48,6 +50,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         max_sql_validation_calls: int = 4,
         max_sql_execution_calls: int = 2,
         max_chart_calls: int = 2,
+        max_total_tool_calls: int = _DEFAULT_MAX_TOTAL_TOOL_CALLS,
     ) -> None:
         """初始化编排 middleware。
 
@@ -58,6 +61,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             max_sql_validation_calls: 单轮最大 SQL 校验调用数。
             max_sql_execution_calls: 单轮最大 SQL 执行调用数。
             max_chart_calls: 单轮最大 ChartSpec 调用数。
+            max_total_tool_calls: 单轮所有工具结果的最大数量。
 
         Return:
             None。
@@ -69,6 +73,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         self._max_sql_validation_calls = max_sql_validation_calls
         self._max_sql_execution_calls = max_sql_execution_calls
         self._max_chart_calls = max_chart_calls
+        self._max_total_tool_calls = max_total_tool_calls
         self._table_rag_locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
         self._table_rag_locks_guard = threading.Lock()
 
@@ -83,16 +88,22 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         """
         resolved_state = state or {}
         stage = str(resolved_state.get("data_agent_stage") or "not_started")
-        query_context = resolved_state.get("data_query_context")
         query_labels = resolved_state.get("data_query_labels")
-        chart_requested = (isinstance(query_labels, Mapping) and query_labels.get("intent") == "chart") or (isinstance(query_context, Mapping) and query_context.get("intent") == "chart")
+        chart_requested = self._chart_requested(resolved_state)
         chart_ready = isinstance(resolved_state.get("data_chart_spec"), Mapping)
-        if chart_requested and self._execution_completed(resolved_state) and not chart_ready:
+        force_final_reason = self._force_final_reason(resolved_state)
+        if force_final_reason:
+            next_action = f"{force_final_reason} 禁止继续调用任何工具；只能基于当前轮次已经返回的 TableRAG、SQL 校验和 SQL 执行结果生成最终回答。若证据不足，明确说明缺失的表、字段、字段值或业务口径，不得继续猜测。"
+        elif chart_requested and self._execution_completed(resolved_state) and not chart_ready:
             next_action = f"用户已明确要求图表且 SQL 已成功执行；下一步必须调用 `{DATA_BUILD_CHART_SPEC_TOOL_NAME}`。在 ChartSpec 成功前不得输出最终答案，也不得继续检索、改写或重新校验 SQL。"
         elif chart_ready:
             next_action = "ChartSpec 已生成；停止调用数据工具并输出最终答案。"
         elif not self._retrieval_attempted(resolved_state):
-            next_action = f"先判断请求类型；普通问候、能力说明或与数据无关的问题可以直接回答。进入数据流程时直接分析用户问题并组织 TableRAG 检索关键词；可以调用 `{PUBLISH_QUERY_LABELS_TOOL_NAME}` 展示当前意图，但标签不是阶段门禁。"
+            next_action = f"先判断请求类型；普通问候、能力说明或与数据无关的问题可以直接回答。进入数据流程时直接分析用户问题并组织 TableRAG 检索关键词，检索前不得调用 `{PUBLISH_QUERY_LABELS_TOOL_NAME}` 发布标签。"
+        elif self._retrieval_completed(resolved_state) and not isinstance(query_labels, Mapping):
+            next_action = f"当前已有有效 TableRAG 检索结果。先基于数据库真实表、字段、字段值和 Evidence 调用 `{PUBLISH_QUERY_LABELS_TOOL_NAME}` 发布完整意图标签，再生成 SQL 并调用 `{DATA_VALIDATE_SQL_TOOL_NAME}`。"
+        elif self._execution_completed(resolved_state):
+            next_action = "SQL 已成功执行；停止调用工具并输出最终答案。"
         else:
             next_action = "继续完成当前阶段；只有用户明确要求图表或结果确实适合可视化时才进入 ChartSpec。"
         if self._subagent_enabled:
@@ -103,14 +114,15 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         return SystemMessage(
             content=f"""<data_agent_orchestration>
 按以下阶段执行 DataAgent 流程：
-1. IntentLabels：由 lead-agent 自己理解用户问题，并按需调用 `{PUBLISH_QUERY_LABELS_TOOL_NAME}` 展示显式意图或检索后确认的隐式标签；标签不作为流程门禁。
-2. TableRAG：使用名称包含 `tablerag` 的 MCP 工具检索 Evidence、表、列、字段值和 Join Graph；结果差时改写关键词继续检索。
+1. TableRAG：由 lead-agent 先分析用户问题并组织关键词，使用名称包含 `tablerag` 的 MCP 工具检索 Evidence、表、列、字段值和 Join Graph；结果差时改写关键词继续检索。
+2. IntentLabels：获得足以支撑当前意图的有效检索结果后，调用 `{PUBLISH_QUERY_LABELS_TOOL_NAME}` 展示完整意图标签；检索前不得发布标签。
 3. NL2SQL：只基于确认过的 Evidence/表/列/Join 生成只读 SQL，并做语法、字段来源、聚合粒度、过滤条件和 LIMIT 检查。
 4. ChartSpec：当用户要求图表或结果适合可视化时，给出图表类型、x/y/series 字段映射和排序/聚合说明。
 5. FinalAnswer：最终答案必须呈现用户可读结论，并列出待确认项。
 当前持久化阶段：`{stage}`。
-阶段门禁：标签发布和实体抽取都不是前置门禁；必须先成功调用 TableRAG，再调用 `{DATA_VALIDATE_SQL_TOOL_NAME}`；
+阶段门禁：实体抽取不是前置门禁；必须先成功调用 TableRAG，再发布查询标签，之后才能调用 `{DATA_VALIDATE_SQL_TOOL_NAME}`；
 校验成功后把返回的 `executable_sql` 原样传给 `{DATA_EXECUTE_SQL_TOOL_NAME}`；执行成功后才能调用 `{DATA_BUILD_CHART_SPEC_TOOL_NAME}`。
+证据边界：历史对话或 memory 只能帮助理解用户偏好，不能证明当前数据库中的表、字段、字段值、Join 或业务口径；数据库事实只能来自当前用户轮次成功返回的 TableRAG Evidence。
 当前动作约束：{next_action}
 {delegate_line}
 </data_agent_orchestration>""",
@@ -128,6 +140,13 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         """
         state = request.state if isinstance(request.state, Mapping) else None
         messages = insert_after_leading_system_messages(list(request.messages), [self._message(state)])
+        resolved_state = state or {}
+        if self._force_final_reason(resolved_state):
+            return request.override(
+                messages=messages,
+                tools=[],
+                tool_choice=None,
+            )
         return request.override(messages=messages)
 
     def _table_rag_lock(self, request: ToolCallRequest) -> threading.Lock:
@@ -187,6 +206,28 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             name=str(request.tool_call.get("name") or "unknown-tool"),
             status="error",
             additional_kwargs={"data_agent_orchestration_blocked": True},
+        )
+
+    @staticmethod
+    def _block_and_force_final(request: ToolCallRequest, reason: str) -> Command:
+        """阻止工具调用并写入强制最终回答状态。
+
+        Args:
+            request: 工具调用请求。
+            reason: 停止继续调用工具的原因。
+
+        Return:
+            包含错误 ToolMessage 和收敛状态的 Command。
+        """
+        message = DataAgentOrchestrationMiddleware._block(
+            request,
+            f"DataAgent 收敛保护：{reason} 请停止调用工具，基于当前轮次已有证据输出结论或明确待确认项。",
+        )
+        return Command(
+            update={
+                "messages": [message],
+                "data_force_final_answer": reason,
+            }
         )
 
     @staticmethod
@@ -250,6 +291,20 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         return bool(validation_digest) and validation_digest == execution.get("sql_sha256")
 
     @staticmethod
+    def _chart_requested(state: Mapping[str, Any]) -> bool:
+        """判断当前用户意图是否明确要求图表。
+
+        Args:
+            state: 当前图状态。
+
+        Return:
+            查询标签或可选实体抽取结果声明 chart 时返回 True。
+        """
+        query_labels = state.get("data_query_labels")
+        query_context = state.get("data_query_context")
+        return (isinstance(query_labels, Mapping) and query_labels.get("intent") == "chart") or (isinstance(query_context, Mapping) and query_context.get("intent") == "chart")
+
+    @staticmethod
     def _tool_result_count(
         state: Mapping[str, Any],
         predicate: Callable[[str], bool],
@@ -274,7 +329,61 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
                 count += 1
         return count
 
-    def _gate_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
+    def _force_final_reason(self, state: Mapping[str, Any]) -> str | None:
+        """判断当前轮次是否必须停止工具调用并生成最终回答。
+
+        Args:
+            state: 当前图状态。
+
+        Return:
+            需要强制收敛时返回中文原因，否则返回 None。
+        """
+        explicit_reason = state.get("data_force_final_answer")
+        if isinstance(explicit_reason, str) and explicit_reason.strip():
+            return explicit_reason.strip()
+
+        if isinstance(state.get("data_chart_spec"), Mapping):
+            return "ChartSpec 已生成，数据流程已经完成。"
+        if self._execution_completed(state) and not self._chart_requested(state):
+            return "SQL 已成功执行，当前问题已经获得结构化查询结果。"
+
+        total_count = self._tool_result_count(state, lambda _name: True)
+        if total_count >= self._max_total_tool_calls:
+            return f"单轮工具调用已达到 {self._max_total_tool_calls} 次总预算。"
+
+        execution_count = self._tool_result_count(state, lambda name: name == DATA_EXECUTE_SQL_TOOL_NAME)
+        if execution_count >= self._max_sql_execution_calls:
+            return f"SQL 执行已达到 {self._max_sql_execution_calls} 次预算。"
+
+        validation_count = self._tool_result_count(state, lambda name: name == DATA_VALIDATE_SQL_TOOL_NAME)
+        if validation_count >= self._max_sql_validation_calls:
+            return f"SQL 校验已达到 {self._max_sql_validation_calls} 次预算。"
+
+        retrieval_count = self._tool_result_count(state, is_tablerag_retrieval_tool_name)
+        if retrieval_count >= self._max_retrieval_calls:
+            return f"TableRAG 检索已达到 {self._max_retrieval_calls} 次预算。"
+
+        chart_count = self._tool_result_count(state, lambda name: name == DATA_BUILD_CHART_SPEC_TOOL_NAME)
+        if chart_count >= self._max_chart_calls:
+            return f"ChartSpec 生成已达到 {self._max_chart_calls} 次预算。"
+        return None
+
+    def _result_force_final_reason(self, request: ToolCallRequest) -> str | None:
+        """判断当前工具结果写入后是否达到单轮总工具预算。
+
+        Args:
+            request: 当前工具调用请求。
+
+        Return:
+            达到总预算时返回强制最终回答原因，否则返回 None。
+        """
+        state = request.state if isinstance(request.state, Mapping) else {}
+        completed_count = self._tool_result_count(state, lambda _name: True) + 1
+        if completed_count < self._max_total_tool_calls:
+            return None
+        return f"单轮工具调用已达到 {self._max_total_tool_calls} 次总预算。"
+
+    def _gate_tool_call(self, request: ToolCallRequest) -> ToolMessage | Command | None:
         """按阶段阻止越序工具调用。
 
         Args:
@@ -285,6 +394,9 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         """
         name = str(request.tool_call.get("name") or "")
         state = request.state if isinstance(request.state, Mapping) else {}
+        force_final_reason = self._force_final_reason(state)
+        if force_final_reason:
+            return self._block_and_force_final(request, force_final_reason)
         execution_count = self._tool_result_count(state, lambda tool_name: tool_name == DATA_EXECUTE_SQL_TOOL_NAME)
         query_context_count = self._tool_result_count(state, lambda tool_name: tool_name == ENTITY_EXTRACT_TOOL_NAME)
         if name == ENTITY_EXTRACT_TOOL_NAME:
@@ -319,6 +431,11 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             return self._block(request, "DataAgent 阶段门禁：业务问题必须先调用 TableRAG 检索表、字段、字段值或口径；检索后仍不明确再追问用户。")
         if name == DATA_VALIDATE_SQL_TOOL_NAME and not self._retrieval_completed(state):
             return self._block(request, "DataAgent 阶段门禁：调用 data_validate_sql 前必须先成功调用只读 TableRAG 检索工具。")
+        if name == DATA_VALIDATE_SQL_TOOL_NAME and not isinstance(state.get("data_query_labels"), Mapping):
+            return self._block(
+                request,
+                f"DataAgent 阶段门禁：成功检索后必须先调用 {PUBLISH_QUERY_LABELS_TOOL_NAME} 发布完整意图标签，再校验 SQL。",
+            )
         if name == DATA_VALIDATE_SQL_TOOL_NAME:
             if execution_count >= self._max_sql_execution_calls:
                 return self._block(request, "DataAgent 调用预算：本轮 SQL 执行次数已达上限，不再允许校验新 SQL；请保留已有执行结果并输出结论或待确认项。")
@@ -497,10 +614,21 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         """
         name = str(request.tool_call.get("name") or "")
         if name == ENTITY_EXTRACT_TOOL_NAME:
-            return self._attach_entity_extraction_update(result)
-        if is_tablerag_retrieval_tool_name(name):
-            return self._attach_retrieval_update(request, result)
-        return result
+            processed = self._attach_entity_extraction_update(result)
+        elif is_tablerag_retrieval_tool_name(name):
+            processed = self._attach_retrieval_update(request, result)
+        else:
+            processed = result
+
+        force_final_reason = self._result_force_final_reason(request)
+        if force_final_reason is None:
+            return processed
+        return self._merge_tool_update(
+            processed,
+            {
+                "data_force_final_answer": force_final_reason,
+            },
+        )
 
     @override
     def wrap_model_call(

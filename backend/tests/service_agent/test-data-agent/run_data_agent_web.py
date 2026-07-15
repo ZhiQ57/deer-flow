@@ -288,12 +288,13 @@ def _values_events(chunk: Any, observed: dict[str, Any]) -> list[dict[str, Any]]
     events: list[dict[str, Any]] = []
     mappings = (
         ("data_query_context", "query_context"),
-        ("data_query_labels", "query_labels"),
         ("data_retrieval_context", "retrieval"),
+        ("data_query_labels", "query_labels"),
         ("data_generated_sql", "generated_sql"),
         ("data_sql_validation", "sql_validation"),
         ("data_sql_execution", "sql_execution"),
         ("data_chart_spec", "chart_spec"),
+        ("data_force_final_answer", "force_final"),
     )
 
     stage = chunk.get("data_agent_stage")
@@ -503,12 +504,15 @@ def _run_events(runtime: WebRuntime, request: ChatRequest) -> Iterator[dict[str,
         _record_event(output, completed_event)
         yield completed_event
     except Exception as exc:
+        message = str(exc)
+        if exc.__class__.__name__ == "GraphRecursionError":
+            message = f"DataAgent 未能在 LangGraph recursion_limit={recursion_limit} 内完成当前流程，运行已停止。请检查日志中的工具调用顺序和收敛保护状态，不建议仅通过继续提高 recursion_limit 掩盖循环。"
         error_event = {
             "type": "error",
             "run_id": run_id,
             "thread_id": thread_id,
             "error_type": exc.__class__.__name__,
-            "message": _redact_sensitive_text(str(exc)),
+            "message": _redact_sensitive_text(message),
             "traceback": _redact_sensitive_text(traceback.format_exc()),
             "log_file": str(output.log_file),
         }
@@ -958,7 +962,7 @@ _PAGE_HTML = r"""<!doctype html>
     <header>
       <div>
         <h1>DataAgent 结构化调试台</h1>
-        <div class="subtitle">对话、执行阶段、检索、SQL 与结果数据在同一页面联动展示</div>
+        <div class="subtitle">TableRAG → 意图标签 → SQL校验 → SQL执行 → 最终回答</div>
       </div>
       <div class="status-row">
         <span class="pill"><span id="health-dot" class="dot"></span><span id="health-text">检查环境中</span></span>
@@ -1017,13 +1021,13 @@ _PAGE_HTML = r"""<!doctype html>
             <div class="card-head">QueryContext / 可选实体抽取</div>
             <div id="query-context" class="card-body"><span class="empty">等待问题分析</span></div>
           </section>
-          <section class="card" data-panel="query-labels">
-            <div class="card-head">用户意图标签</div>
-            <div id="query-labels" class="card-body"><span class="empty">等待标签发布</span></div>
-          </section>
           <section class="card" data-panel="retrieval">
             <div class="card-head">TableRAG 检索</div>
-            <div id="retrieval" class="card-body"><span class="empty">等待表结构检索</span></div>
+            <div id="retrieval" class="card-body"><span class="empty">正在等待数据库术语与真实字段检索</span></div>
+          </section>
+          <section class="card wide" data-panel="query-labels">
+            <div class="card-head">用户意图标签</div>
+            <div id="query-labels" class="card-body"><span class="empty">等待首次有效 TableRAG 检索后发布</span></div>
           </section>
           <section class="card wide" data-panel="sql">
             <div class="card-head">生成 SQL / 校验结果</div>
@@ -1041,6 +1045,10 @@ _PAGE_HTML = r"""<!doctype html>
             <div class="card-head">工具调用</div>
             <div id="tools" class="card-body"><span class="empty">等待工具调用</span></div>
           </section>
+          <section class="card wide" data-panel="guardrail">
+            <div class="card-head">收敛保护</div>
+            <div id="guardrail" class="card-body"><span class="empty">未触发工具预算保护</span></div>
+          </section>
           <section class="card wide" data-panel="timeline">
             <div class="card-head">原始事件时间线</div>
             <div id="timeline" class="card-body timeline"><span class="empty">等待运行事件</span></div>
@@ -1052,16 +1060,18 @@ _PAGE_HTML = r"""<!doctype html>
 
   <script>
     const stageOrder = [
-      "retrieval_completed", "sql_validated", "sql_executed", "chart_ready"
+      "retrieval_completed", "labels_published", "sql_validated", "sql_executed", "chart_ready"
     ];
     const stageLabels = {
       retrieval_completed: "TableRAG",
+      labels_published: "意图标签",
       sql_validation_failed: "SQL校验失败",
       sql_validated: "SQL已校验",
       sql_execution_failed: "SQL执行失败",
       sql_executed: "SQL已执行",
       chart_failed: "图表失败",
-      chart_ready: "图表就绪"
+      chart_ready: "图表就绪",
+      final_answer: "最终回答"
     };
     const state = {
       busy: false,
@@ -1071,7 +1081,8 @@ _PAGE_HTML = r"""<!doctype html>
       generatedSql: "",
       validation: null,
       eventCount: 0,
-      defaultsLoaded: false
+      defaultsLoaded: false,
+      progressStage: null
     };
 
     function newThreadId() {
@@ -1112,11 +1123,13 @@ _PAGE_HTML = r"""<!doctype html>
       state.generatedSql = "";
       state.validation = null;
       state.eventCount = 0;
+      state.progressStage = null;
       for (const [id, text] of [
-        ["query-context", "等待问题分析"], ["retrieval", "等待表结构检索"],
-        ["query-labels", "等待标签发布"],
+        ["query-context", "等待问题分析"], ["retrieval", "正在等待数据库术语与真实字段检索"],
+        ["query-labels", "等待首次有效 TableRAG 检索后发布"],
         ["sql", "等待 SQL"], ["execution", "等待数据库结果"],
         ["chart", "等待图表数据"], ["tools", "等待工具调用"],
+        ["guardrail", "未触发工具预算保护"],
         ["timeline", "等待运行事件"]
       ]) setEmpty(id, text);
       renderStages(null);
@@ -1125,12 +1138,19 @@ _PAGE_HTML = r"""<!doctype html>
     }
     function renderStages(current) {
       const node = el("stages"); clearNode(node);
-      const currentIndex = stageOrder.indexOf(current);
+      const progressStage = {
+        sql_validation_failed: "labels_published",
+        sql_execution_failed: "sql_validated",
+        chart_failed: "sql_executed"
+      }[current] || current;
+      if (stageOrder.includes(progressStage)) state.progressStage = progressStage;
+      const currentIndex = stageOrder.indexOf(state.progressStage);
+      const finalizing = current === "final_answer" || !stageOrder.includes(current);
       for (const stage of stageOrder) {
         const item = textNode("span", stageLabels[stage] || stage, "stage");
         const index = stageOrder.indexOf(stage);
         if (stage === current) item.classList.add("active");
-        else if (currentIndex >= 0 && index < currentIndex) item.classList.add("done");
+        else if (currentIndex >= 0 && (index < currentIndex || (finalizing && index <= currentIndex))) item.classList.add("done");
         node.appendChild(item);
       }
       if (current && !stageOrder.includes(current)) {
@@ -1171,6 +1191,13 @@ _PAGE_HTML = r"""<!doctype html>
       node.appendChild(textNode("div", "查询：" + (payload.query || "-")));
       const pre = textNode("pre", payload.result_preview || JSON.stringify(payload, null, 2));
       pre.style.marginTop = "8px"; node.appendChild(pre);
+    }
+    function renderForceFinal(reason) {
+      const node = el("guardrail"); clearNode(node);
+      node.appendChild(textNode("div", "已停止继续调用工具", "run-meta"));
+      node.appendChild(textNode("div", String(reason || "工具预算已耗尽，正在生成最终回答。")));
+      el("run-meta").textContent = "收敛保护已触发 · 正在生成最终回答";
+      renderStages("final_answer");
     }
     function renderSql() {
       const node = el("sql"); clearNode(node);
@@ -1305,6 +1332,7 @@ _PAGE_HTML = r"""<!doctype html>
         case "sql_validation": state.validation = event.payload || {}; renderSql(); break;
         case "sql_execution": renderExecution(event.payload || {}, event.last_successful); break;
         case "chart_spec": renderChart(event.payload || {}); break;
+        case "force_final": renderForceFinal(event.payload); break;
         case "tool_call":
         case "tool_result": appendTool(event); break;
         case "preflight":
@@ -1312,6 +1340,7 @@ _PAGE_HTML = r"""<!doctype html>
           break;
         case "run_completed":
           el("run-meta").textContent = `完成 · ${event.elapsed_ms}ms`;
+          renderStages("final_answer");
           break;
         case "error":
           appendMessage("error", `${event.error_type || "Error"}: ${event.message || "运行失败"}`);

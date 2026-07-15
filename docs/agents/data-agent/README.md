@@ -2,10 +2,12 @@
 
 DataAgent 当前包含两条用途不同的路径：
 
-1. `docs/agents/data-agent/config.yaml` 与 `SOUL.md` 是 DeerFlow 原生 custom-agent 模板，可复制到 `.deer-flow/users/{user_id}/agents/data-agent/`。
+1. `docs/agents/data-agent/config.yaml` 与 `SOUL.md` 是 DeerFlow 原生 custom-agent 模板，可复制到 `.deer-flow/users/{user_id}/agents/data-agent/`；当 `agent_name=data-agent` 时，lead-agent middleware 链可加载通用 `QueryLabelsMiddleware`。
 2. `backend/packages/harness/deerflow-dev/` 是实验性、阶段门禁化的 DataAgent 运行层，按照 DeerFlow SDK 的 `agents`、`agents/middlewares`、`tools/builtins`、`subagents` 边界组织，并通过 `create_deerflow_agent(...)` 重新创建图；当前只由测试执行脚本直接启动，不新增 Gateway 路由。
 
-只有第 2 条实验性路径包含本文所述的查询标签工具/中间件、可选 QueryContext Tool、只读 SQL 校验/执行、ChartSpec 和调用预算门禁。原生 UI custom-agent 路径仍使用 lead-agent，不会自动切换到该实验图。
+只有第 2 条实验性路径包含本文所述的**检索后标签门禁**、可选 QueryContext Tool、
+只读 SQL 校验/执行、ChartSpec 和确定性收敛预算。原生 UI custom-agent 路径仍使用
+lead-agent；即使加载通用标签 middleware，也不会自动切换到该实验图或获得 SQL 运行工具。
 
 ## 1. 执行步骤
 
@@ -98,19 +100,20 @@ $env:DATA_AGENT_MYSQL_DATABASE="<business_database>"
 
 实验性运行层复用 lead-agent 的模型、prompt、Skill、MCP 和多数 middleware，并额外增加：
 
-- `DataAgentTurnResetMiddleware`：只在新真实用户轮次开始时重置上一轮 QueryContext、检索、SQL 和图表状态，不执行实体抽取。
+- `DataAgentTurnResetMiddleware`：只在新真实用户轮次开始时重置上一轮 QueryContext、查询标签、检索、SQL、图表和强制收敛状态，不执行实体抽取。
 - `publish_query_labels`：稳定 SDK 中的标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels` 和可选 `summary`，不调用模型。
-- `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`，拦截标签工具，生成顶层 ToolMessage artifact、写入 `data_query_labels`、发送 custom stream 事件，并继续当前图执行；数据库来源标签必须关联成功 TableRAG 检索和 Evidence 摘要。
+- `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`；实验性 DataAgent 使用 `require_retrieval=True` 和 `stage_name="labels_published"`，因此任何标签都必须在首次有效 TableRAG 检索后发布。middleware 会生成顶层 ToolMessage artifact、写入 `data_query_labels`、发送 custom stream 事件并继续当前图执行；数据库来源标签还必须关联 Evidence 摘要。
 - `entity_extract_tool`：现有实体抽取工具继续保留，可在确实需要独立模型抽取时按需调用，但不再是 TableRAG 或 SQL 的前置条件。
-- `DataAgentOrchestrationMiddleware`：允许 lead-agent 直接组织 TableRAG query/keywords；只强制 TableRAG -> SQL 校验 -> SQL 执行 -> 可选 ChartSpec 的阶段顺序，不把标签展示或实体抽取作为门禁。
+- `DataAgentOrchestrationMiddleware`：允许 lead-agent 直接组织 TableRAG query/keywords；强制 `TableRAG -> 查询标签 -> SQL 校验 -> SQL 执行 -> 可选 ChartSpec -> 最终回答` 顺序。实体抽取仍不是前置条件。
 - `data_validate_sql`：只允许单条 MySQL `SELECT/WITH`，拒绝 DDL/DML、多语句、锁、文件写出、危险函数、优化器 Hint、占位符、跨业务库和系统库访问，并自动收紧 `LIMIT`。
 - `data_execute_sql`：只执行最近校验返回的同一条 `executable_sql`；使用只读事务、连接/读取/查询超时、行数、单元格和结果总字符预算。
 - `data_build_chart_spec`：只消费成功 SQL 结果，并校验图表字段和数值轴。
 
 lead-agent 可以直接从用户问题中组织 TableRAG 检索关键词。标签展示由
-`publish_query_labels` 完成：显式意图可在检索前发布，只有通过 TableRAG/SQL
-确认的数据库真实值才应标记为 `source=database`。后续再次调用会替换当前完整
-标签快照。标签展示不会阻塞检索，也不会额外请求模型。
+`publish_query_labels` 完成，但必须在首次有效检索之后：`source=user` 和
+`source=derived` 也不能提前发布，`source=database` 还必须引用当前轮次的
+TableRAG Evidence。后续再次调用会替换当前完整标签快照。标签工具不会额外请求模型，
+也不能把历史对话、memory 或旧 SQL 当成当前数据库 Schema 的证明。
 
 当前代码目录：
 
@@ -156,8 +159,13 @@ deerflow-dev/
 | SQL 校验 | 4 |
 | SQL 执行 | 2 |
 | ChartSpec | 2 |
+| 所有工具结果合计 | 10 |
 
-达到 SQL 执行上限后，不再允许继续检索或校验新 SQL，避免覆盖已有执行结果。状态同时保留最后一次成功执行快照，供失败后的最终解释使用。
+总预算通过 `config.configurable.data_agent_max_total_tool_calls` 配置，默认 `10`，
+允许范围 `1..50`。达到总预算、分阶段硬预算、成功 SQL 结果或完成 ChartSpec 后，
+下一次模型调用会收到 `tools=[]`，只能基于当前轮次已有 Evidence 和执行结果生成最终回答。
+状态通过 `data_force_final_answer` 暴露停止原因，同时保留最后一次成功执行快照，供失败后的
+最终解释使用。不要仅提高 `recursion_limit` 来掩盖工具循环。
 
 ## 5. 控制台运行
 
@@ -241,7 +249,7 @@ backend\.venv\Scripts\python.exe backend\tests\service_agent\test-data-agent\run
 页面提供：
 
 - 同一 `thread_id` 下的简单连续对话；
-- lead-agent 发布的用户意图标签及其 user/database/derived 来源；
+- 首次有效 TableRAG 检索后由 lead-agent 发布的用户意图标签及其 user/database/derived 来源；
 - 可选 QueryContext Tool 产生的归一化问题和实体结果；
 - DataAgent 阶段进度；
 - TableRAG 检索摘要；
@@ -249,6 +257,7 @@ backend\.venv\Scripts\python.exe backend\tests\service_agent\test-data-agent\run
 - SQL 结果表格及最后一次成功结果；
 - KPI、bar、line 等基础 ChartSpec 预览；
 - 工具调用、工具结果和结构化事件时间线；
+- 工具总预算或阶段预算触发后的收敛保护状态；
 - 当前运行的时间戳日志路径。
 
 页面使用进程内 `InMemorySaver` 保存会话，关闭服务后状态清空。为避免实验图和 Python root logging 在多个请求间交叉污染，页面同一时间只执行一个任务。
@@ -279,12 +288,13 @@ backend\.venv\Scripts\python.exe backend\tests\service_agent\test-data-agent\run
 - `data_sql_execution`
 - `data_last_successful_sql_execution`
 - `data_chart_spec`
+- `data_force_final_answer`
 
 成功主路径为：
 
 ```text
-publish_query_labels（可在任意合适阶段发布或更新，不是门禁）
--> retrieval_completed
+retrieval_completed
+-> labels_published
 -> sql_validated
 -> sql_executed
 -> chart_ready（用户要求图表时）

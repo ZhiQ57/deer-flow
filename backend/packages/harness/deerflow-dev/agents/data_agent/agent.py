@@ -246,7 +246,9 @@ def _insert_data_middlewares(
     Return:
         插入 DataAgent middleware 后的新链。
     """
-    result = list(middlewares)
+    # lead-agent 可能按 agent_name 注入通用标签 middleware；实验性 DataAgent
+    # 必须用带检索门禁的专用实例替换它，避免同一工具被两个实例重复拦截。
+    result = [item for item in middlewares if not isinstance(item, QueryLabelsMiddleware)]
     insert_at = next((index for index, item in enumerate(result) if type(item).__name__ == "DynamicContextMiddleware"), len(result))
     result[insert_at:insert_at] = [turn_reset, query_labels, orchestration]
     return result
@@ -266,6 +268,7 @@ def build_data_middlewares(
     max_sql_validation_calls: int = 4,
     max_sql_execution_calls: int = 2,
     max_chart_calls: int = 2,
+    max_total_tool_calls: int = 10,
 ) -> list[AgentMiddleware]:
     """构造 DataAgent middleware 链。
 
@@ -282,6 +285,7 @@ def build_data_middlewares(
         max_sql_validation_calls: 单轮最大 SQL 校验调用数。
         max_sql_execution_calls: 单轮最大 SQL 执行调用数。
         max_chart_calls: 单轮最大 ChartSpec 调用数。
+        max_total_tool_calls: 单轮所有工具结果的最大数量。
     Return:
         DataAgent middleware 实例列表。
     """
@@ -297,7 +301,10 @@ def build_data_middlewares(
     return _insert_data_middlewares(
         lead_middlewares,
         DataAgentTurnResetMiddleware(),
-        QueryLabelsMiddleware(),
+        QueryLabelsMiddleware(
+            require_retrieval=True,
+            stage_name="labels_published",
+        ),
         DataAgentOrchestrationMiddleware(
             subagent_enabled=subagent_enabled,
             allowed_subagents=allowed_subagents,
@@ -305,6 +312,7 @@ def build_data_middlewares(
             max_sql_validation_calls=max_sql_validation_calls,
             max_sql_execution_calls=max_sql_execution_calls,
             max_chart_calls=max_chart_calls,
+            max_total_tool_calls=max_total_tool_calls,
         ),
     )
 
@@ -365,6 +373,7 @@ def build_data_agent(
     max_sql_validation_calls = _runtime_bounded_int(cfg, "data_agent_max_sql_validation_calls", 4, maximum=10)
     max_sql_execution_calls = _runtime_bounded_int(cfg, "data_agent_max_sql_execution_calls", 2, maximum=5)
     max_chart_calls = _runtime_bounded_int(cfg, "data_agent_max_chart_calls", 2, maximum=5)
+    max_total_tool_calls = _runtime_bounded_int(cfg, "data_agent_max_total_tool_calls", 10, maximum=50)
 
     available_skills = _resolve_agent_skills(agent_config)
     tool_groups = _resolve_agent_tool_groups(agent_config)
@@ -394,6 +403,7 @@ def build_data_agent(
             "data_agent_max_sql_validation_calls": max_sql_validation_calls,
             "data_agent_max_sql_execution_calls": max_sql_execution_calls,
             "data_agent_max_chart_calls": max_chart_calls,
+            "data_agent_max_total_tool_calls": max_total_tool_calls,
         }
     )
 
@@ -479,6 +489,7 @@ def build_data_agent(
             max_sql_validation_calls=max_sql_validation_calls,
             max_sql_execution_calls=max_sql_execution_calls,
             max_chart_calls=max_chart_calls,
+            max_total_tool_calls=max_total_tool_calls,
         ),
         system_prompt=system_prompt,
         state_schema=DataAgentState,
