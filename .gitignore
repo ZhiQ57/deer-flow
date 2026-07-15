@@ -75,3 +75,6 @@ config.yaml.bak
 /backend/tests/service_agent/test-data-agent/*.csv
 /backend/tests/service_agent/test-data-agent/logs/
 /backend/tests/service_agent/test-data-agent/log_*.txt
+
+# Monocle agent-observability trace output (local file exporter)
+.monocle/
