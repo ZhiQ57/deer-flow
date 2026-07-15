@@ -2,6 +2,20 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "调试 data-agent 组装工厂 web ",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/tests/service_agent/test-data-agent/run_data_agent_web.py",
+      "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "console": "integratedTerminal",
+      "env": {
+        "TABLERAG_CONFIG": "D:\\A-PythonWork\\AOpenGithub\\deer-flow\\tablerag.yaml",
+        "TABLERAG_MCP_INDEX_DSN": "postgresql://postgres:postgres@127.0.0.1:55433/text2sql",
+        "TABLERAG_MCP_SOURCE_DSN": "postgresql://postgres:postgres@127.0.0.1:55433/text2sql",
+        "DATA_AGENT_MYSQL_DSN": "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql"
+      }
+    },
+    {
       "name": "DeerFlow: 调试 Gateway",
       "type": "debugpy",
       "request": "launch",

@@ -1,0 +1,6 @@
+
+sql_table_rag_config_path: tabelrag.yaml
+
+database:
+  type: mysql
+  host: 
