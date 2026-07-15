@@ -59,3 +59,19 @@
   包含匹配，避免不同 MCP 返回格式造成脆弱耦合。
 - 标签是展示状态，不参与 SQL 安全决策；真实执行仍以 TableRAG 状态、SQL AST 校验、
   校验摘要绑定和数据库只读权限为准。
+
+## 6、TableRAG Text2SQL Skill 补充 Review
+
+- `table-rag-agent` 已扩展为完整的 Text2SQL 生命周期，而不是只描述 TableRAG
+  工具选择。
+- Skill 明确要求先完成 TableRAG 检索，再分析意图并调用
+  `publish_query_labels` 发布用户可见的完整标签快照。
+- MCP Schema 延迟加载通过 `tool_search` 完成；Skill 按工具名后缀解析实际注册名，
+  兼容 `tablerag_retrieve` 和 `tablerag_tablerag_retrieve`。
+- 人工确认仅用于会实质改变 SQL 或查询结果的歧义，并要求先尝试 TableRAG 检索，
+  避免把可自动解析的问题转交给用户。
+- SQL 必须依次经过生成、`data_validate_sql` 校验和 `data_execute_sql` 真实只读
+  执行；校验后的 `executable_sql` 不得跨草稿复用。
+- 用户纠正结果后，Skill 要求替换标签快照，必要时重新检索，并重新生成、校验和
+  执行 SQL；旧结论必须被明确替换。
+- 标签仍然只承担用户侧意图反馈，不成为检索、校验或执行成功的证明。

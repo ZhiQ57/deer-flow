@@ -30,3 +30,11 @@
 - [X] 4.1 更新 DataAgent README、后端架构说明和公共 API 指南。
 - [X] 4.2 新增实现 review，记录设计边界、风险和测试结果。
 - [X] 4.3 运行专项 pytest、Ruff、format、Python 编译和 `git diff --check`。
+
+## 5、TableRAG Text2SQL Skill 工作流
+
+- [X] 5.1 将 `table-rag-agent` 从单纯检索说明扩展为完整 Text2SQL 工作流。
+- [X] 5.2 增加 `tool_search` 延迟 MCP Schema 提升规则，并兼容 MCP Server 工具名前缀。
+- [X] 5.3 固化“检索召回 -> 意图分析 -> 展示标签 -> 可选确认 -> SQL 生成/校验/执行 -> 结果解释”的主流程。
+- [X] 5.4 增加用户结果纠正后的标签替换、重新检索、SQL 重生成、重新校验和执行规则。
+- [X] 5.5 增加只读 SQL、安全停止、空结果复核和最终回答交付规范。

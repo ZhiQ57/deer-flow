@@ -1,41 +1,168 @@
 ---
 name: table-rag-agent
-description: Use when Codex or another LLM agent needs TableRAG NL2SQL/Text2SQL context through the TableRAG MCP server before generating, reviewing, debugging, or explaining SQL; selecting candidate tables/columns; resolving user-mentioned field values; or using Evidence and Join Graph retrieval results.
+description: 用于完成端到端的业务自然语言转 SQL 流程，包括 TableRAG 检索召回、意图分析和可视化查询标签、可选人工确认、只读 SQL 生成、校验与执行、结果解释，以及用户纠正后的 SQL 重新生成。用户提出自然语言数据问题，并且指标口径、表、字段、字段值、过滤条件、聚合粒度、时间范围、排序规则或表关联路径需要数据库 Evidence 证据支撑时，应使用本 Skill。
 ---
 
-# TableRAG Agent
+# TableRAG 自然语言转 SQL 智能体
 
-## Workflow
+## 目标
 
-Use the TableRAG MCP server before SQL generation whenever the user asks a data question and the relevant schema, business rule, field value, or join path is not already certain.
+完成完整的自然语言转 SQL 闭环：
 
-1. Call `tablerag_retrieve` first for normal NL2SQL work.
-2. Read `result.evidences` as business rules and SQL-generation constraints.
-3. Read `result.tables` as candidate tables, not guaranteed final truth.
-4. Read `result.columns` as candidate metrics, dimensions, filters, and join keys.
-5. Read `result.values` to align user phrases with real database values.
-6. Read `result.join_graphs` for join paths before drafting multi-table SQL.
-7. Generate SQL only after explaining which retrieved evidence, tables, columns, values, and joins you used.
+`用户问题 → TableRAG 检索召回 → 意图分析 → 展示查询标签 → 可选人工确认 → SQL 生成与校验 → SQL 执行 → 结果解释 → 可选人工纠正 → SQL 重新生成、校验和执行 → 正确结论`
 
-## Tool Selection
+对于普通问候、能力说明、通用 SQL 语法解释或与业务数据查询无关的请求，不要进入本流程。
 
-- Use `tablerag_retrieve` for complete context with query parsing and reranking.
-- Use `tablerag_raw_retrieve` when debugging recall quality or comparing raw multi-route results.
-- Use `tablerag_search_evidences` when the question is mainly about business definitions,口径, constraints, or metric rules.
-- Use `tablerag_search_tables` when only candidate tables are needed.
-- Use `tablerag_search_columns` when table choice is known but metric/filter fields are unclear.
-- Use `tablerag_search_values` when the user mentions real-world entities, regions, product names, customer names, statuses, or aliases.
-- Use `tablerag_expand_join_graph` when candidate tables are known and join paths are needed.
-- Use `tablerag_validate_index` for health checks before debugging retrieval failures.
+## 运行时工具发现
 
-## Safety Rules
+TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Server 前缀。
 
-- Do not invent tables, columns, field values, joins, or Evidence that the MCP result did not return.
-- Treat low-score results as hints; ask for confirmation or run narrower tools when retrieval is ambiguous.
-- Do not call `tablerag_initialize_indexes` or `tablerag_sync_field_values` unless the user explicitly asks for index administration or synchronization.
-- Do not bypass the MCP server to connect directly to the database unless the user explicitly asks for backend debugging.
-- Preserve sensitive DSNs and connection details; never include them in user-facing SQL reasoning.
+1. 查找实际注册名称等于 `tablerag_retrieve` 或以 `_tablerag_retrieve` 结尾的工具。
+2. 如果该工具的 Schema 尚未加载，先调用 `tool_search`，参数使用 `select:<实际工具名>`，然后再调用该工具。
+3. 每次只提升当前确实需要的工具，不要一次加载全部 TableRAG 工具 Schema。
+4. 对 `_tablerag_search_values`、`_tablerag_expand_join_graph` 等单路工具采用相同的后缀匹配规则。
+5. 如果必需工具不存在，必须明确说明缺少的能力，不得声称已经完成检索、校验或执行。
 
-## References
+## 端到端工作流
 
-Read `references/mcp-tool-contract.md` when you need exact tool inputs, expected result fields, or fallback behavior.
+### 1. 检索数据库上下文
+
+普通自然语言转 SQL 请求应优先使用 TableRAG 完整检索工具。
+
+- 检索问题必须保留用户要求的指标、维度、过滤条件、时间范围、对比对象、排序要求和输出形式。
+- 将 `result.evidences` 作为业务定义和 SQL 生成约束。
+- 将 `result.tables` 作为候选表，不得直接视为最终确定结果。
+- 将 `result.columns` 作为候选指标、维度、过滤字段、分组字段和 Join Key。
+- 使用 `result.values` 将用户表达映射到数据库中的真实字段值。
+- 生成多表 SQL 前必须读取 `result.join_graphs`。
+- 如果完整检索结果缺失、冲突或置信度较低，只调用必要的单路检索工具补充信息，然后重新判断。
+
+对于 TableRAG 能够合理解析的信息，不要直接要求用户补充。请求人工确认前，必须至少尝试一次检索。
+
+### 2. 分析意图并发布可视化标签
+
+获得第一次有效检索结果后，分析用户的查询意图并调用 `publish_query_labels`。
+
+意图可以使用 `aggregation`、`ranking`、`trend`、`comparison`、`detail` 或 `chart` 等类型。每次调用都必须发布当前完整标签快照，不得只提交增量变化。
+
+推荐展示的标签包括：
+
+- 指标或业务口径；
+- 维度和分组粒度；
+- 时间范围和时间粒度；
+- 地区、组织、商品、客户、状态或其他过滤条件；
+- 排序方向和 Top N；
+- 对比对象；
+- 聚合方式；
+- 图表或明细输出偏好。
+
+标签来源规则：
+
+- `source=user`：用户在原始问题中明确提出的内容。
+- `source=database`：已经由 TableRAG 确认的数据库信息，必须填写简洁的 Evidence 摘要。
+- `source=derived`：基于用户问题和检索上下文推导出的意图，但不是数据库中的直接字段值。
+- 未经检索验证的猜测不得标记为 `database`。
+
+标签工具只用于向用户展示当前意图解析结果，不能替代 TableRAG 检索、SQL 校验、SQL 执行或人工确认。
+
+### 3. 可选人工确认
+
+当用户意图和检索上下文足够明确时，应自动继续执行，不要无故中断流程。
+
+只有尚未解决的歧义会实质改变 SQL 或查询结果时，才请求人工确认，例如：
+
+- 存在多个互不兼容的指标口径；
+- 时间范围、对比周期、聚合粒度或 Top N 不明确；
+- 同一用户表达对应多个可能的数据库字段值；
+- 过滤条件或业务规则相互冲突；
+- 存在多条语义不同但均可执行的 Join 路径。
+
+需要人工确认时：
+
+1. 展示当前理解和查询标签。
+2. 只提供最小且明确的候选选项。
+3. 每次只提出一个聚焦问题。
+4. 用户确认后，先发布替换后的完整标签快照，再生成 SQL。
+
+如果非交互运行环境不支持澄清，应明确列出尚未解决的假设。当某个假设可能导致结果产生实质性误导时，不得继续执行 SQL。
+
+### 4. 生成只读 SQL
+
+只能基于当前用户问题、TableRAG Evidence、已解析标签和已确认假设生成 SQL。
+
+- 只能生成单条 `SELECT` 或 `WITH` 语句。
+- 必须严格使用检索返回的真实表名和字段名。
+- 需要过滤数据库字段值时，应使用已经确认的真实值。
+- 多表查询必须使用检索返回的 Join Graph。
+- 必须保持用户要求的聚合粒度和过滤条件。
+- 明细查询应设置合理的 `LIMIT`，除非运行时已经强制限制。
+- 不得编造表、字段、字段值、Join 条件、业务定义或 Evidence。
+
+### 5. 校验并执行 SQL
+
+1. 使用生成的 SQL 调用 `data_validate_sql`。
+2. 如果校验失败，根据工具返回的问题修复 SQL，并重新校验新 SQL。
+3. 校验成功后，将工具返回的 `executable_sql` 原样传给 `data_execute_sql`。
+4. 不得直接执行未经校验的草稿 SQL，也不得复用其他 SQL 草稿产生的 `executable_sql`。
+5. 达到运行时调用预算后必须停止重试，并报告当前最佳校验状态和剩余问题。
+
+### 6. 检查并解释执行结果
+
+SQL 执行成功后：
+
+- 检查结果结构是否符合目标指标、维度、粒度、过滤条件和排序要求；
+- 区分“SQL 执行成功但结果为空”和“SQL 执行失败”；
+- 如果空结果或异常结果可能由字段值、过滤条件、Join 路径或聚合粒度错误导致，应先执行针对性的 TableRAG 检索，再重新生成 SQL；
+- 不得仅为了获得更好看或更符合预期的数值而随意改变查询条件；
+- 如果用户要求图表，并且运行时提供 `data_build_chart_spec`，只能在 SQL 成功执行后调用该工具。
+
+### 7. 处理用户结果纠正
+
+用户对结果提出纠正时，应将纠正内容视为新的权威约束，而不是要求模型为之前的答案辩护。
+
+1. 确认用户纠正的是意图标签、业务口径、字段值、过滤条件、时间范围、聚合粒度还是预期结果。
+2. 发布反映纠正内容的新完整标签快照。
+3. 如果纠正影响数据库术语、Schema 选择、字段值、Evidence 或 Join 语义，必须重新执行 TableRAG 检索。
+4. 基于纠正后的状态重新生成 SQL。
+5. 重新调用 `data_validate_sql`。
+6. 只能执行新校验结果返回的 `executable_sql`。
+7. 必要时比较纠正前后的查询含义和结果，并明确说明新结论已经替代旧结论。
+
+发生实质性纠正后，不得复用过期的检索上下文、SQL 校验结果或 SQL 执行结果。
+
+### 8. 输出最终答案
+
+最终回答应包含：
+
+1. 对用户问题的简洁理解；
+2. 最终意图标签或标签摘要；
+3. 对查询产生实质影响的 Evidence、表、字段、过滤条件、字段值和 Join 路径；
+4. 实际执行的 SQL；
+5. 用户可读的结果摘要和明确结论；
+6. 重要假设、限制或仍待确认的问题；
+7. 如果发生过纠正，说明修改了什么，以及哪个新结论替代了旧结论。
+
+## 工具选择
+
+- `tablerag_retrieve`：用于带查询解析和重排的完整上下文检索，普通自然语言转 SQL 场景优先使用。
+- `tablerag_raw_retrieve`：用于排查召回质量或对比重排前的多路原始结果。
+- `tablerag_search_evidences`：用于检索业务定义、指标口径、约束条件和 SQL 生成规则。
+- `tablerag_search_tables`：只需要确定候选表时使用。
+- `tablerag_search_columns`：表已确定，但指标、维度或过滤字段仍不明确时使用。
+- `tablerag_search_values`：用户提到地区、商品、客户、状态、类型、别名或其他真实业务值时使用。
+- `tablerag_expand_join_graph`：候选表已确定，但 Join 路径仍不明确时使用。
+- `tablerag_validate_index`：排查检索失败前，用于检查 TableRAG 索引健康状态。
+
+## 安全规则
+
+- 不得编造 MCP 检索结果中不存在的表、字段、字段值、Join 路径或 Evidence。
+- 低分结果只能作为提示；存在歧义时，应缩小检索范围或请求用户确认。
+- 除非用户明确要求进行索引管理或同步，否则不得调用 `tablerag_initialize_indexes` 或 `tablerag_sync_field_values`。
+- 除非用户明确要求排查后端问题，否则不得绕过 MCP Server 直接连接数据库。
+- 不得执行 `INSERT`、`UPDATE`、`DELETE`、`MERGE`、`TRUNCATE`、`DROP`、`ALTER`、`CREATE`、`SET`、事务控制、锁表、文件操作或多语句 SQL。
+- 已展示查询标签不代表 TableRAG 检索、SQL 校验或 SQL 执行已经成功。
+- 必须保护敏感 DSN 和数据库连接信息，不得在面向用户的 SQL 解释中泄露。
+
+## 参考资料
+
+需要查看工具精确输入参数、返回字段或失败回退规则时，读取 `references/mcp-tool-contract.md`。
