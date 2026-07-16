@@ -17,6 +17,7 @@ export type HumanInputRequest = {
   source: "ask_clarification" | string;
   request_id: string;
   tool_call_id?: string;
+  snapshot_id?: string;
   clarification_type?: string;
   title?: string;
   question: string;
@@ -158,6 +159,9 @@ export function parseHumanInputRequest(
     request_id: value.request_id,
     ...(readOptionalString(value.tool_call_id)
       ? { tool_call_id: readOptionalString(value.tool_call_id) }
+      : {}),
+    ...(readOptionalString(value.snapshot_id)
+      ? { snapshot_id: readOptionalString(value.snapshot_id) }
       : {}),
     ...(readOptionalString(value.clarification_type)
       ? { clarification_type: readOptionalString(value.clarification_type) }

@@ -83,6 +83,77 @@ test("aggregates token usage messages once per assistant turn", () => {
   ).toEqual([null, null, ["ai-1", "ai-2"], null, ["ai-3"]]);
 });
 
+test("renders DataAgent intent and SQL artifacts as dedicated groups", () => {
+  const messages = [
+    { id: "human-1", type: "human", content: "查询销售额" },
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "",
+      tool_calls: [{ id: "labels-1", name: "publish_query_labels", args: {} }],
+    },
+    {
+      id: "labels-1-result",
+      type: "tool",
+      name: "publish_query_labels",
+      tool_call_id: "labels-1",
+      content: "{}",
+      artifact: {
+        version: 1,
+        kind: "data_query_labels",
+        service_name: "data_query",
+        snapshot_id: "sha256:snapshot",
+        data_source_id: "sales-pg",
+        turn_id: "human-1",
+        retrieval_digest: "sha256:retrieval",
+        binding_fingerprint: "sha256:binding",
+        intent: "ranking",
+        ambiguities: [],
+        labels: [{ label: "指标", value: "销售额", source: "user", evidence_refs: [] }],
+        evidence: [{ ref: "evidence:sha256:metric", kind: "evidence", summary: "销售额口径" }],
+        approval: {
+          version: 1,
+          snapshot_id: "sha256:snapshot",
+          status: "approved",
+          action: "execute",
+          source: "model",
+        },
+      },
+    },
+    {
+      id: "sql-result",
+      type: "tool",
+      name: "task",
+      tool_call_id: "task-1",
+      content: "{}",
+      artifact: {
+        version: 1,
+        kind: "data_query_sql_result",
+        service_name: "data_query",
+        snapshot_id: "sha256:snapshot",
+        data_source_id: "sales-pg",
+        validation: {
+          valid: true,
+          executable_sql: "SELECT region FROM orders LIMIT 500",
+          sql_sha256: "sha256:sql",
+          validation_digest: "sha256:validation",
+          snapshot_id: "sha256:snapshot",
+          database_type: "postgresql",
+          binding_fingerprint: "sha256:binding",
+        },
+        execution: null,
+      },
+    },
+  ] as Message[];
+
+  expect(getMessageGroups(messages).map((group) => group.type)).toEqual([
+    "human",
+    "assistant:processing",
+    "assistant:query-intent",
+    "assistant:query-result",
+  ]);
+});
+
 describe("branchable assistant groups", () => {
   const messages = [
     { id: "human-1", type: "human", content: "First question" },

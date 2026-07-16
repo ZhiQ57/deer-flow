@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deer-flow/data-query/service-state.v1",
+  "title": "DataQueryServiceStateV1",
+  "type": "object",
+  "required": ["service_name", "version", "turn_id", "stage", "payload", "updated_at"],
+  "properties": {
+    "service_name": {"const": "data_query"},
+    "version": {"const": 1},
+    "turn_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "snapshot_id": {"type": "string", "maxLength": 200},
+    "data_source_id": {"type": "string", "maxLength": 128},
+    "stage": {"type": "string", "enum": ["idle", "retrieving", "needs_refinement", "labels_published", "awaiting_confirmation", "approved", "sql_generating", "sql_validating", "sql_ready", "executing", "succeeded", "failed", "cancelled"]},
+    "payload": {"type": "object"},
+    "updated_at": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": true
+}

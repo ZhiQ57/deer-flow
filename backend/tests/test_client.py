@@ -1012,6 +1012,76 @@ class TestEnsureAgent:
         assert called_middlewares[-2] is mock_custom_middleware
         assert called_middlewares[-1] is mock_clarification
 
+    def test_data_query_service_ability_is_wired_on_embedded_client(self, client):
+        """DeerFlowClient 必须与 Gateway 一样装配 DataAgent 工具、middleware 和 SQL SubAgent 上下文。"""
+        mock_agent = MagicMock()
+        ability_tool = MagicMock()
+        ability_tool.name = "publish_query_labels"
+        ability = MagicMock()
+        ability.config.sql_subagent_name = "sql-subagent"
+        ability.config.model_dump.return_value = {
+            "type": "data_query",
+            "version": 1,
+            "sql_subagent_name": "sql-subagent",
+        }
+        ability.build_tools.return_value = [ability_tool]
+        agent_config = MagicMock()
+        agent_config.service_ability = {"type": "data_query", "version": 1}
+        agent_config.allowable_subagents = ["sql-subagent"]
+        config = client._get_runnable_config("t-data-agent")
+
+        with (
+            patch("deerflow.client.load_agent_config", return_value=agent_config),
+            patch("deerflow.client.resolve_service_ability_safely", return_value=ability),
+            patch("deerflow.client.create_chat_model"),
+            patch("deerflow.client.create_agent", return_value=mock_agent) as mock_create_agent,
+            patch("deerflow.client.build_middlewares", return_value=[]) as mock_build_middlewares,
+            patch("deerflow.client.apply_prompt_template", return_value="prompt") as mock_apply_prompt,
+            patch("deerflow.client.get_enabled_skills_for_config", return_value=[]),
+            patch.object(client, "_get_tools", return_value=[]),
+            patch("deerflow.runtime.checkpointer.get_checkpointer", return_value=MagicMock()),
+        ):
+            client._agent_name = "data-agent"
+            client._ensure_agent(config)
+
+        assert ability_tool in mock_create_agent.call_args.kwargs["tools"]
+        assert mock_build_middlewares.call_args.kwargs["service_ability"] is ability
+        assert mock_apply_prompt.call_args.kwargs["allowable_subagents"] == {"sql-subagent"}
+        assert config["context"]["data_query_service_ability"]["type"] == "data_query"
+        assert config["context"]["data_query_sql_subagent_allowed"] is True
+        assert config["context"]["subagent_enabled"] is True
+
+    def test_data_query_sql_subagent_requires_explicit_custom_agent_allowlist(self, client):
+        """手动开启 subagent 不能替代 custom-agent 对 SQL SubAgent 的显式授权。"""
+        ability_tool = MagicMock()
+        ability_tool.name = "publish_query_labels"
+        ability = MagicMock()
+        ability.config.sql_subagent_name = "sql-subagent"
+        ability.config.model_dump.return_value = {"type": "data_query", "version": 1}
+        ability.config.model_dump_json.return_value = '{"type":"data_query","version":1}'
+        ability.build_tools.return_value = [ability_tool]
+        agent_config = MagicMock()
+        agent_config.service_ability = {"type": "data_query", "version": 1}
+        agent_config.allowable_subagents = ["default"]
+        config = client._get_runnable_config("t-data-agent-no-sql", subagent_enabled=True)
+
+        with (
+            patch("deerflow.client.load_agent_config", return_value=agent_config),
+            patch("deerflow.client.resolve_service_ability_safely", return_value=ability),
+            patch("deerflow.client.create_chat_model"),
+            patch("deerflow.client.create_agent", return_value=MagicMock()),
+            patch("deerflow.client.build_middlewares", return_value=[]),
+            patch("deerflow.client.apply_prompt_template", return_value="prompt"),
+            patch("deerflow.client.get_enabled_skills_for_config", return_value=[]),
+            patch.object(client, "_get_tools", return_value=[]),
+            patch("deerflow.runtime.checkpointer.get_checkpointer", return_value=MagicMock()),
+        ):
+            client._agent_name = "data-agent"
+            client._ensure_agent(config)
+
+        assert config["context"]["data_query_service_ability"]["type"] == "data_query"
+        assert config["context"]["data_query_sql_subagent_allowed"] is False
+
     def test_skips_default_checkpointer_when_unconfigured(self, client):
         mock_agent = MagicMock()
         config = client._get_runnable_config("t1")
@@ -1033,7 +1103,7 @@ class TestEnsureAgent:
         """_ensure_agent does not recreate if config key unchanged."""
         mock_agent = MagicMock()
         client._agent = mock_agent
-        client._agent_config_key = (None, True, False, False, None, None, None, None)
+        client._agent_config_key = (None, True, False, False, None, None, None, None, None, None)
 
         config = client._get_runnable_config("t1")
         client._ensure_agent(config)

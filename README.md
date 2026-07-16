@@ -681,6 +681,8 @@ uv run python -m deerflow.skills.review.cli ../skills/public/data-analysis --for
 
 Tools follow the same philosophy. DeerFlow comes with a core toolset — web search, web fetch, rendered web capture, file operations, bash execution — and supports custom tools via MCP servers and Python functions. Swap anything. Add anything.
 
+Custom agents may also declare a versioned `service_ability`. The `data_query` v1 ability keeps the normal `lead_agent` route while dynamically adding TableRAG-backed intent labels, optional human confirmation, and a server-allowlisted read-only PostgreSQL/MySQL SQL subagent. It requires the custom agent to allowlist that subagent, keeps SQL tools scoped to the approved snapshot, rejects stale state transitions, and supports same-target bindings plus explicit logical bindings such as a PostgreSQL TableRAG index mapped to a MySQL business source. See `docs/agents/data-agent/README.md` for the configuration and security boundaries.
+
 Gateway-generated follow-up suggestions now normalize both plain-string model output and block/list-style rich content before parsing the JSON array response, so provider-specific content wrappers do not silently drop suggestions.
 
 The Web UI composer can polish draft input before sending. The rewrite runs as a short Gateway LLM request using the `input_polish` model configuration, keeps slash skill prefixes such as `/data-analysis`, and only replaces the local draft after the user clicks the polish button; it does not create a thread run or persist a message.

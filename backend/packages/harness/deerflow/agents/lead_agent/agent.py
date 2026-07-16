@@ -30,7 +30,6 @@ from deerflow.agents.lead_agent.prompt import apply_prompt_template
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
 from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
-from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from deerflow.agents.middlewares.summarization_middleware import DeerFlowSummarizationMiddleware, create_summarization_middleware
@@ -40,6 +39,7 @@ from deerflow.agents.middlewares.todo_middleware import TodoMiddleware
 from deerflow.agents.middlewares.token_usage_middleware import TokenUsageMiddleware
 from deerflow.agents.middlewares.tool_error_handling_middleware import build_lead_runtime_middlewares
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
+from deerflow.agents.service_agent.registry import ServiceAbilityAdapter, resolve_service_ability_safely
 from deerflow.agents.thread_state import ThreadState
 from deerflow.config.agents_config import load_agent_config, validate_agent_name
 from deerflow.config.app_config import AppConfig, get_app_config
@@ -247,6 +247,7 @@ def build_middlewares(
     deferred_setup=None,
     mcp_routing_middleware: AgentMiddleware | None = None,
     user_id: str | None = None,
+    service_ability: ServiceAbilityAdapter | None = None,
 ):
     """Build the lead-agent middleware chain based on runtime configuration.
 
@@ -311,12 +312,12 @@ def build_middlewares(
     if todo_list_middleware is not None:
         middlewares.append(todo_list_middleware)
 
-    # TODO : 按照 agent_name 加载定制化的 Middleware 配置.
+    # ADD: 按 service_ability 动态加载定制化 middleware，普通 Agent 不进入业务分支。
     agent_name = validate_agent_name(cfg.get("agent_name"))  # cfg.get("agent_name")可读取配置的智能体名称
-    # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
     is_bootstrap = cfg.get("is_bootstrap", False)
-    if not is_bootstrap:
-        load_agent_config(agent_name)
+    if service_ability is None and not is_bootstrap and agent_name:
+        agent_config = load_agent_config(agent_name, user_id=user_id) if user_id is not None else load_agent_config(agent_name)
+        service_ability = resolve_service_ability_safely(agent_config.service_ability if agent_config else None)
 
     # Add TokenUsageMiddleware when token_usage tracking is enabled
     if resolved_app_config.token_usage.enabled:
@@ -381,9 +382,13 @@ def build_middlewares(
 
         middlewares.append(TokenBudgetMiddleware.from_config(token_budget_config))
 
-    # Inject custom middlewares before ClarificationMiddleware
+    # Inject custom middlewares before terminal/safety middleware.
     if custom_middlewares:
         middlewares.extend(custom_middlewares)
+
+    # ADD: 将 DataAgent service ability 放入现有业务扩展槽，保持默认 middleware 链和末端 Clarification 不变。
+    if service_ability is not None:
+        middlewares.extend(service_ability.build_middlewares())
 
     # A provider may return an empty AIMessage after tool execution. Retry the
     # final response once, then persist a visible error fallback rather than
@@ -398,10 +403,6 @@ def build_middlewares(
     safety_config = resolved_app_config.safety_finish_reason
     if safety_config.enabled:
         middlewares.append(SafetyFinishReasonMiddleware.from_config(safety_config))
-
-    # ADD : 当agent_name 为 "data-agent" 时，加载定制化的 Middleware 配置.
-    if agent_name == "data-agent":
-        middlewares.append(QueryLabelsMiddleware())
 
     # ClarificationMiddleware should always be last
     middlewares.append(ClarificationMiddleware())
@@ -478,7 +479,22 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     agent_name = validate_agent_name(cfg.get("agent_name"))  # cfg.get("agent_name")可读取配置的智能体名称
 
     # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
-    agent_config = load_agent_config(agent_name) if not is_bootstrap else None
+    agent_config = (load_agent_config(agent_name, user_id=resolved_user_id) if resolved_user_id is not None else load_agent_config(agent_name)) if not is_bootstrap else None
+    # ADD: 由 service_ability 合同决定 DataAgent 是否启用业务工具和 middleware。
+    service_ability = resolve_service_ability_safely(agent_config.service_ability if agent_config else None)
+    # ADD: 只有 custom-agent 显式 allowlist SQL SubAgent 时才开启现有 task 工具。
+    sql_subagent_allowed = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents and service_ability.config.sql_subagent_name in agent_config.allowable_subagents)
+    if sql_subagent_allowed:
+        subagent_enabled = True
+    # ADD: 把解析后的能力配置放入本次运行上下文，供显式 sql-subagent 工具装配使用；不写 checkpoint。
+    if service_ability is not None:
+        context = config.setdefault("context", {})
+        if isinstance(context, dict):
+            context["data_query_service_ability"] = service_ability.config.model_dump(mode="json") if hasattr(service_ability, "config") else None
+            context["data_query_sql_subagent_allowed"] = sql_subagent_allowed
+            context["subagent_enabled"] = subagent_enabled
+            # ADD: 将可信运行模式传给 DataAgent 标签门禁，非交互运行不得进入 human-input 等待。
+            context["non_interactive"] = non_interactive
     available_skills = _available_skill_names(agent_config, is_bootstrap)
     available_subagents = _available_subagents(agent_config, subagent_enabled)
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
@@ -521,6 +537,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             "subagent_enabled": subagent_enabled,
             "tool_groups": agent_config.tool_groups if agent_config else None,
             "available_skills": sorted(available_skills) if available_skills is not None else None,
+            # ADD: 仅写脱敏 service ability metadata，不包含 DSN/Secret。
+            "service_ability": service_ability.public_metadata() if service_ability is not None else None,
         }
     )
 
@@ -581,6 +599,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
                 deferred_setup=setup,
                 mcp_routing_middleware=mcp_routing_middleware,
                 user_id=resolved_user_id,
+                service_ability=service_ability,
             ),
             system_prompt=apply_prompt_template(
                 subagent_enabled=subagent_enabled,
@@ -623,6 +642,9 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     extra_tools = [update_agent] if agent_name and not is_webhook_channel else []
     # Default lead agent (unchanged behavior)
     raw_tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, app_config=resolved_app_config)
+    # ADD: 业务工具只追加到当前 DataAgent 实例，不进入全局 builtin 工具集合。
+    if service_ability is not None:
+        raw_tools.extend(service_ability.build_tools())
     filtered = filter_tools_by_skill_allowed_tools(raw_tools + extra_tools, skills_for_tool_policy, always_allowed_tool_names=ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES)
     if non_interactive:
         filtered = [tool for tool in filtered if tool.name not in _NON_INTERACTIVE_DISABLED_TOOL_NAMES]
@@ -649,6 +671,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             deferred_setup=setup,
             mcp_routing_middleware=mcp_routing_middleware,
             user_id=resolved_user_id,
+            service_ability=service_ability,
         ),
         system_prompt=apply_prompt_template(
             subagent_enabled=subagent_enabled,

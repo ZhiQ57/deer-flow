@@ -1,5 +1,10 @@
 import type { AIMessage, Message } from "@langchain/langgraph-sdk";
 
+import {
+  isDataQueryLabelsToolMessage,
+  isDataQuerySqlResultToolMessage,
+} from "./data-query";
+
 interface GenericMessageGroup<T = string> {
   type: T;
   id: string | undefined;
@@ -16,6 +21,10 @@ interface AssistantPresentFilesGroup extends GenericMessageGroup<"assistant:pres
 
 interface AssistantClarificationGroup extends GenericMessageGroup<"assistant:clarification"> {}
 
+interface AssistantQueryIntentGroup extends GenericMessageGroup<"assistant:query-intent"> {}
+
+interface AssistantQueryResultGroup extends GenericMessageGroup<"assistant:query-result"> {}
+
 interface AssistantSubagentGroup extends GenericMessageGroup<"assistant:subagent"> {}
 
 export type MessageGroup =
@@ -24,6 +33,8 @@ export type MessageGroup =
   | AssistantMessageGroup
   | AssistantPresentFilesGroup
   | AssistantClarificationGroup
+  | AssistantQueryIntentGroup
+  | AssistantQueryResultGroup
   | AssistantSubagentGroup;
 
 const HIDDEN_CONTROL_MESSAGE_NAMES = new Set([
@@ -48,7 +59,9 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
       last &&
       last.type !== "human" &&
       last.type !== "assistant" &&
-      last.type !== "assistant:clarification"
+      last.type !== "assistant:clarification" &&
+      last.type !== "assistant:query-intent" &&
+      last.type !== "assistant:query-result"
     ) {
       return last;
     }
@@ -73,6 +86,22 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
         groups.push({
           id: message.id,
           type: "assistant:clarification",
+          messages: [message],
+        });
+      } else if (isDataQueryLabelsToolMessage(message)) {
+        // ADD: DataAgent 标签 artifact 独立成卡片，同时保留前置工具轨迹。
+        lastOpenGroup()?.messages.push(message);
+        groups.push({
+          id: message.id,
+          type: "assistant:query-intent",
+          messages: [message],
+        });
+      } else if (isDataQuerySqlResultToolMessage(message)) {
+        // ADD: SQL 子代理结果单独成结果卡片，保持普通工具轨迹不变。
+        lastOpenGroup()?.messages.push(message);
+        groups.push({
+          id: message.id,
+          type: "assistant:query-result",
           messages: [message],
         });
       } else {

@@ -13,7 +13,6 @@ from deerflow.tools.builtins import (
     review_skill_package,
     task_tool,
     view_image_tool,
-    publish_query_labels_tool
 )
 from deerflow.tools.mcp_metadata import tag_mcp_tool
 from deerflow.tools.sync import make_sync_tool_wrapper
@@ -25,8 +24,7 @@ BUILTIN_TOOLS = [
     ask_clarification_tool,
     review_skill_package,
     entity_extract_tool,
-
-    publish_query_labels_tool,          # ADD: 注册标签工具
+    # ADD: DataAgent 标签和 SQL 工具由 service_ability 按实例动态装配，不注册到全局工具面。
 ]
 
 SUBAGENT_TOOLS = [

@@ -31,6 +31,10 @@ import { Button } from "@/components/ui/button";
 import { extractArtifactsFromThread } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import {
+  extractDataQueryLabelsArtifact,
+  extractDataQuerySqlResultArtifact,
+} from "@/core/messages/data-query";
+import {
   deriveHumanInputThreadState,
   extractHumanInputRequest,
   shouldClearPendingHumanInputOnThreadError,
@@ -86,6 +90,8 @@ import {
   MessageTokenUsageDebugList,
   MessageTokenUsageList,
 } from "./message-token-usage";
+import { QueryIntentCard } from "./query-intent-card";
+import { QueryResultCard } from "./query-result-card";
 import { MessageListSkeleton } from "./skeleton";
 import { SubtaskCard } from "./subtask-card";
 
@@ -862,6 +868,52 @@ export function MessageList({
                 );
               }
               return null;
+            } else if (group.type === "assistant:query-intent") {
+              const message = group.messages[0];
+              if (!message) return null;
+              const artifact = extractDataQueryLabelsArtifact(message);
+              if (!artifact) return null;
+              const humanInputRequest = extractHumanInputRequest(message);
+              const answeredResponse = humanInputRequest
+                ? (humanInputState.answeredResponses.get(humanInputRequest.request_id) ?? null)
+                : null;
+              const pending = humanInputRequest
+                ? pendingHumanInputRequestIds.has(humanInputRequest.request_id)
+                : false;
+              return (
+                <div key={group.id} className="w-full">
+                  <QueryIntentCard
+                    artifact={artifact}
+                    request={humanInputRequest}
+                    answeredResponse={answeredResponse}
+                    pending={pending}
+                    disabled={
+                      !humanInputRequest ||
+                      thread.isLoading ||
+                      pending ||
+                      Boolean(answeredResponse) ||
+                      humanInputState.latestOpenRequestId !== humanInputRequest.request_id ||
+                      !onSubmitHumanInput
+                    }
+                    onSubmit={
+                      humanInputRequest && onSubmitHumanInput
+                        ? (response) => handleSubmitHumanInput(humanInputRequest, response)
+                        : undefined
+                    }
+                  />
+                  {renderTokenUsage({ messages: group.messages, turnUsageMessages })}
+                </div>
+              );
+            } else if (group.type === "assistant:query-result") {
+              const message = group.messages[0];
+              const artifact = message ? extractDataQuerySqlResultArtifact(message) : null;
+              if (!artifact) return null;
+              return (
+                <div key={group.id} className="w-full">
+                  <QueryResultCard artifact={artifact} />
+                  {renderTokenUsage({ messages: group.messages, turnUsageMessages })}
+                </div>
+              );
             } else if (group.type === "assistant:present-files") {
               const files: string[] = [];
               for (const message of group.messages) {

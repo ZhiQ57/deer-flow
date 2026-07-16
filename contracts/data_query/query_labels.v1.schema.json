@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deer-flow/data-query/query-labels.v1",
+  "title": "DataQueryLabelsArtifactV1",
+  "type": "object",
+  "required": ["version", "kind", "service_name", "snapshot_id", "data_source_id", "turn_id", "retrieval_digest", "binding_fingerprint", "intent", "ambiguities", "labels", "evidence", "approval"],
+  "properties": {
+    "version": {"const": 1},
+    "kind": {"const": "data_query_labels"},
+    "service_name": {"const": "data_query"},
+    "snapshot_id": {"type": "string", "minLength": 1},
+    "data_source_id": {"type": "string", "minLength": 1},
+    "turn_id": {"type": "string", "minLength": 1},
+    "retrieval_digest": {"type": "string", "minLength": 1},
+    "binding_fingerprint": {"type": "string", "minLength": 1},
+    "intent": {"type": "string", "minLength": 1, "maxLength": 100},
+    "summary": {"type": ["string", "null"], "maxLength": 500},
+    "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "ambiguities": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+    "labels": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"$ref": "#/$defs/label"}},
+    "evidence": {"type": "array", "maxItems": 30, "items": {"$ref": "#/$defs/evidence"}},
+    "approval": {"$ref": "#/$defs/approval"},
+    "human_input": {"type": "object"}
+  },
+  "$defs": {
+    "label": {
+      "type": "object",
+      "required": ["label", "value", "source", "evidence_refs"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1, "maxLength": 50},
+        "value": {"type": "string", "minLength": 1, "maxLength": 200},
+        "source": {"enum": ["user", "database", "derived"]},
+        "normalized": {"type": "string", "maxLength": 200},
+        "evidence_refs": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 200}}
+      },
+      "additionalProperties": false
+    },
+    "approval": {
+      "type": "object",
+      "required": ["version", "snapshot_id", "status", "action", "source"],
+      "properties": {
+        "version": {"const": 1},
+        "snapshot_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["approved", "awaiting_confirmation", "cancelled"]},
+        "action": {"enum": ["execute", "sql_only", "cancel", null]},
+        "source": {"enum": ["model", "human", null]}
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["ref", "kind", "summary"],
+      "properties": {
+        "ref": {"type": "string", "minLength": 1, "maxLength": 200},
+        "kind": {"type": "string", "minLength": 1, "maxLength": 50},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
