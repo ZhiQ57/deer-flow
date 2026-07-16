@@ -399,7 +399,7 @@ def build_middlewares(
     if safety_config.enabled:
         middlewares.append(SafetyFinishReasonMiddleware.from_config(safety_config))
 
-    # TODO : 当agent_name 为 "data-agent" 时，加载定制化的 Middleware 配置.
+    # ADD : 当agent_name 为 "data-agent" 时，加载定制化的 Middleware 配置.
     if agent_name == "data-agent":
         middlewares.append(QueryLabelsMiddleware())
 

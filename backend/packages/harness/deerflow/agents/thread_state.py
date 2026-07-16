@@ -235,12 +235,31 @@ def merge_skill_context(existing: list[SkillEntry] | None, new: list[SkillEntry]
         merged = merged[-_SKILL_CONTEXT_MAX_ENTRIES:]
     return merged
 
+# ADD: 定制化业务字段 Pydantic
+class ServiceState(TypedDict):
+    label: str
+    description: NotRequired[str]
+    color: NotRequired[str]
+
+# ADD: 按需加载方法
+def merge_service_states(existing: list[ServiceState] | None, new: list[ServiceState] | None) -> list[ServiceState]:
+    """Reducer for service states - merges and deduplicates states."""
+    if existing is None:
+        return new or []
+    if new is None:
+        return existing
+    # Use dict.fromkeys to deduplicate while preserving order
+    merged = list(dict.fromkeys(existing + new))
+    return merged
+
 
 class ThreadState(AgentState):
     sandbox: SandboxStateField
     thread_data: NotRequired[ThreadDataState | None]
     title: NotRequired[str | None]
     artifacts: Annotated[list[str], merge_artifacts]
+    # ADD: 定制化业务字段
+    service_states: Annotated[list[ServiceState], merge_service_states]
     todos: Annotated[list | None, merge_todos]
     goal: Annotated[GoalState | None, merge_goal]
     uploaded_files: NotRequired[list[dict] | None]
