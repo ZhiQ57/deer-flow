@@ -227,7 +227,9 @@ export function extractHumanInputRequest(
   if (message.type !== "tool") {
     return null;
   }
-  const artifact = Reflect.get(message, "artifact");
+  const directArtifact = Reflect.get(message, "artifact");
+  const additionalKwargs = message.additional_kwargs;
+  const artifact = directArtifact ?? (isRecord(additionalKwargs) ? additionalKwargs.artifact : undefined);
   if (!isRecord(artifact)) {
     return null;
   }

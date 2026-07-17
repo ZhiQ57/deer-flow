@@ -13,6 +13,7 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
@@ -25,6 +26,7 @@ from deerflow.agents.service_agent.sql_tools import build_sql_tools, execute_sql
 from deerflow.agents.service_agent.state import (
     build_query_approval_request,
     build_query_label_snapshot,
+    build_query_review_items,
     build_retrieval_context,
     decide_query_approval,
     merge_retrieval_contexts,
@@ -329,6 +331,7 @@ def test_confirmation_policy_is_fail_closed(
             "retrieval_digest": "sha256:retrieval",
             "binding_fingerprint": "sha256:target",
             "constraints_complete": True,
+            "ambiguities_declared": True,
         },
     )
 
@@ -351,6 +354,23 @@ def test_approval_request_reuses_human_input_v1_without_response_snapshot_field(
     assert request["request_id"].startswith("data-query:")
     assert request["snapshot_id"] == "sha256:snapshot"
     assert [item["id"] for item in request["options"]] == ["execute", "sql_only", "cancel"]
+
+
+def test_query_review_items_have_stable_ids_and_are_bound_to_request() -> None:
+    """每个 ambiguity 都生成稳定 ID，并随确认请求绑定当前 snapshot。"""
+    snapshot = {
+        "snapshot_id": "sha256:snapshot",
+        "summary": "查询销售额",
+        "ambiguities": ["时间范围不明确", "是否排除退款"],
+    }
+    first = build_query_review_items(snapshot)
+    second = build_query_review_items(snapshot)
+    request = build_query_approval_request(snapshot, tool_call_id="labels-1")
+
+    assert first == second
+    assert len(first) == 2
+    assert request["review_items"] == first
+    assert all(item["status"] == "pending" for item in first)
 
 
 def _tool_request(name: str, *, state: dict | None = None) -> ToolCallRequest:
@@ -592,6 +612,58 @@ def test_query_approval_text_revision_invalidates_old_query_snapshot() -> None:
     }
 
 
+def test_query_approval_accepts_all_structured_review_items_before_sql() -> None:
+    """逐项审核全部接受后才推进 approved，修改项则重新检索。"""
+    review_items = [
+        {"id": "ambiguity:time", "question": "时间范围不明确", "status": "pending"},
+        {"id": "ambiguity:refund", "question": "是否排除退款", "status": "pending"},
+    ]
+    payload = {
+        "approval": {"version": 1, "status": "awaiting_confirmation", "action": None},
+        "approval_request": {"source": "ask_clarification", "request_id": "data-query:review"},
+        "review_items": review_items,
+    }
+    response = {
+        "version": 1,
+        "kind": "human_input_response",
+        "source": "ask_clarification",
+        "request_id": "data-query:review",
+        "response_kind": "text",
+        "value": json.dumps(
+            {
+                "kind": "data_query_review_response",
+                "snapshot_id": "sha256:snapshot",
+                "final_action": "execute",
+                "items": [
+                    {"id": "ambiguity:time", "decision": "accept"},
+                    {"id": "ambiguity:refund", "decision": "accept"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    }
+    state = {
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-1",
+                "snapshot_id": "sha256:snapshot",
+                "stage": "awaiting_confirmation",
+                "data_source_id": "sales-pg",
+                "payload": payload,
+            }
+        ],
+        "messages": [HumanMessage(content="确认", additional_kwargs={"human_input_response": response})],
+    }
+
+    result = QueryApprovalMiddleware(_config()).before_agent(state, MagicMock())
+
+    assert result["service_states"][0]["stage"] == "approved"
+    assert result["service_states"][0]["payload"]["approval"]["action"] == "execute"
+    assert all(item["status"] == "accepted" for item in result["service_states"][0]["payload"]["review_items"])
+
+
 def test_query_labels_service_mode_publishes_versioned_artifact_without_legacy_state() -> None:
     """DataAgent 标签只能写入 service_states，并携带服务端 snapshot_id。"""
     retrieval = build_retrieval_context(
@@ -646,6 +718,59 @@ def test_query_labels_service_mode_publishes_versioned_artifact_without_legacy_s
     assert artifact["snapshot_id"].startswith("sha256:")
     assert "data_query_labels" not in result.update
     assert result.update["service_states"][0]["stage"] == "approved"
+
+
+def test_query_labels_missing_ambiguities_field_requires_confirmation() -> None:
+    """模型省略 ambiguities 时必须进入确认，不能用高置信度绕过。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="tablerag_retrieve",
+        turn_id="turn-missing-ambiguities",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    request = ToolCallRequest(
+        tool_call={
+            "name": "publish_query_labels",
+            "id": "labels-missing-ambiguities",
+            "args": {
+                "intent": "aggregation",
+                "summary": "查询销售额",
+                "confidence": 0.99,
+                "labels": [
+                    {
+                        "label": "指标",
+                        "value": "销售额",
+                        "source": "database",
+                        "evidence_refs": [retrieval["evidences"][0]["ref"]],
+                    }
+                ],
+            },
+        },
+        tool=None,
+        state={
+            "messages": [HumanMessage(id="turn-missing-ambiguities", content="查询销售额")],
+            "service_states": [
+                {
+                    "service_name": "data_query",
+                    "version": 1,
+                    "turn_id": "turn-missing-ambiguities",
+                    "stage": "retrieving",
+                    "data_source_id": "sales-pg",
+                    "payload": {"retrieval": retrieval},
+                }
+            ],
+        },
+        runtime=MagicMock(context={"thread_id": "thread-1"}),
+    )
+
+    result = QueryLabelsMiddleware(require_retrieval=True, service_ability=_config()).wrap_tool_call(
+        request,
+        lambda _request: pytest.fail("placeholder tool must not run"),
+    )
+
+    assert result.update["messages"][0].artifact["approval"]["status"] == "awaiting_confirmation"
+    assert result.update["service_states"][0]["payload"]["labels"]["ambiguities_declared"] is False
 
 
 def test_query_labels_middleware_keeps_one_label_snapshot_per_model_response() -> None:
@@ -1420,3 +1545,202 @@ def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch:
     assert active["stage"] == "succeeded"
     assert [artifact["kind"] for artifact in artifacts] == ["data_query_labels", "data_query_sql_result"]
     assert final_state["messages"][-1].content == "查询成功，结果为空。"
+
+
+def test_fake_agent_stops_with_review_card_before_sql_when_ambiguity_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """存在结构化 ambiguity 时图必须停在确认卡，不能直接生成最终回答。"""
+    monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_SOURCE_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    config = _config("on_ambiguity")
+    binding = resolve_data_source_binding(config)
+    expected_retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="tablerag_retrieve",
+        turn_id="expected-turn",
+        data_source_id="sales-pg",
+        binding=binding,
+    )
+    evidence_ref = expected_retrieval["evidences"][0]["ref"]
+
+    @tool("tablerag_retrieve")
+    def fake_tablerag(query: str) -> str:
+        """返回固定 TableRAG 检索结果。"""
+        return json.dumps(_retrieval_payload(), ensure_ascii=False)
+
+    model = _DataQueryFlowModel(
+        responses=[
+            AIMessage(content="", tool_calls=[{"name": "tablerag_retrieve", "id": "rag-review-1", "args": {"query": "查询华东销售额"}}]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "publish_query_labels",
+                        "id": "labels-review-1",
+                        "args": {
+                            "intent": "ranking",
+                            "summary": "查询华东销售额",
+                            "confidence": 0.95,
+                            "ambiguities": ["是否排除退款"],
+                            "labels": [
+                                {
+                                    "label": "指标",
+                                    "value": "销售额",
+                                    "source": "database",
+                                    "evidence_refs": [evidence_ref],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            ),
+        ]
+    )
+    ability = DataAgentServiceAbility(config)
+    graph = create_agent(
+        model=model,
+        tools=[fake_tablerag, publish_query_labels_tool],
+        middleware=ability.build_middlewares(),
+        state_schema=ThreadState,
+    )
+
+    final_state = graph.invoke({"messages": [HumanMessage(id="turn-review-1", content="查询华东销售额")]})
+
+    active = final_state["service_states"][0]
+    label_message = next(message for message in final_state["messages"] if isinstance(message, ToolMessage) and message.name == "publish_query_labels")
+    assert active["stage"] == "awaiting_confirmation"
+    assert label_message.artifact["human_input"]["source"] == "ask_clarification"
+    assert label_message.artifact["ambiguity_items"][0]["question"] == "是否排除退款"
+    assert not any(getattr(message, "type", None) == "ai" and getattr(message, "content", "") == "查询成功，结果为空。" for message in final_state["messages"])
+
+
+# ADD: 验证 human-input v1 隐藏回复可以从 checkpoint 恢复，并在逐项确认后继续 SQL 闭环。
+def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """人工逐项确认后，图应恢复 approved 状态并继续 SQL SubAgent。"""
+    monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_SOURCE_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    config = _config("on_ambiguity")
+    binding = resolve_data_source_binding(config)
+    expected_retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="tablerag_retrieve",
+        turn_id="expected-turn",
+        data_source_id="sales-pg",
+        binding=binding,
+    )
+    evidence_ref = expected_retrieval["evidences"][0]["ref"]
+
+    @tool("tablerag_retrieve")
+    def fake_tablerag(query: str) -> str:
+        """返回固定 TableRAG 检索结果。"""
+        return json.dumps(_retrieval_payload(), ensure_ascii=False)
+
+    @tool("task")
+    def fake_task(description: str, prompt: str, subagent_type: str) -> str:
+        """返回固定 SQL 子代理结构化结果。"""
+        envelope = json.loads(prompt)
+        validation = validate_sql(
+            "SELECT orders.region FROM public.orders LIMIT 500",
+            config=config,
+            retrieval=expected_retrieval,
+            snapshot_id=envelope["snapshot_id"],
+        )
+        result = {
+            "version": 1,
+            "kind": "data_query_sql_result",
+            "snapshot_id": envelope["snapshot_id"],
+            "data_source_id": envelope["data_source_id"],
+            "validation": validation,
+            "execution": {
+                "version": 1,
+                "ok": True,
+                "snapshot_id": envelope["snapshot_id"],
+                "validation_digest": validation["validation_digest"],
+                "columns": ["region"],
+                "rows": [],
+                "row_count": 0,
+                "returned_row_count": 0,
+                "truncated": False,
+                "empty": True,
+            },
+        }
+        return f"Task Succeeded. Result: {json.dumps(result, ensure_ascii=False)}"
+
+    model = _DataQueryFlowModel(
+        responses=[
+            AIMessage(content="", tool_calls=[{"name": "tablerag_retrieve", "id": "rag-resume-1", "args": {"query": "查询华东销售额"}}]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "publish_query_labels",
+                        "id": "labels-resume-1",
+                        "args": {
+                            "intent": "ranking",
+                            "summary": "查询华东销售额",
+                            "confidence": 0.95,
+                            "ambiguities": ["是否排除退款"],
+                            "labels": [
+                                {
+                                    "label": "指标",
+                                    "value": "销售额",
+                                    "source": "database",
+                                    "evidence_refs": [evidence_ref],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            ),
+            AIMessage(content="", tool_calls=[{"name": "task", "id": "task-resume-1", "args": {"description": "SQL", "prompt": "ignored", "subagent_type": "sql-subagent"}}]),
+            AIMessage(content="查询成功，结果为空。"),
+        ]
+    )
+    ability = DataAgentServiceAbility(config)
+    graph = create_agent(
+        model=model,
+        tools=[fake_tablerag, publish_query_labels_tool, fake_task],
+        middleware=ability.build_middlewares(),
+        state_schema=ThreadState,
+        checkpointer=InMemorySaver(),
+    )
+    run_config = {"configurable": {"thread_id": "data-query-review-resume"}}
+
+    paused_state = graph.invoke({"messages": [HumanMessage(id="turn-resume-1", content="查询华东销售额")]}, config=run_config)
+    paused_service = paused_state["service_states"][0]
+    review_items = paused_service["payload"]["review_items"]
+    response = {
+        "version": 1,
+        "kind": "human_input_response",
+        "source": "ask_clarification",
+        "request_id": paused_service["payload"]["approval_request"]["request_id"],
+        "response_kind": "text",
+        "value": json.dumps(
+            {
+                "kind": "data_query_review_response",
+                "snapshot_id": paused_service["snapshot_id"],
+                "final_action": "execute",
+                "items": [{"id": item["id"], "decision": "accept"} for item in review_items],
+            },
+            ensure_ascii=False,
+        ),
+    }
+
+    resumed_state = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(
+                    id="hidden-review-resume-1",
+                    content="已确认",
+                    additional_kwargs={"hide_from_ui": True, "human_input_response": response},
+                )
+            ]
+        },
+        config=run_config,
+    )
+
+    active = resumed_state["service_states"][0]
+    artifacts = [message.artifact for message in resumed_state["messages"] if isinstance(message, ToolMessage) and message.artifact]
+    assert paused_service["stage"] == "awaiting_confirmation"
+    assert active["stage"] == "succeeded"
+    assert [artifact["kind"] for artifact in artifacts] == ["data_query_labels", "data_query_sql_result"]
+    assert resumed_state["messages"][-1].content == "查询成功，结果为空。"

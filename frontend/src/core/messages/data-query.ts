@@ -1,5 +1,7 @@
 import type { Message } from "@langchain/langgraph-sdk";
 
+import type { HumanInputRequest, HumanInputResponse } from "./human-input";
+
 export type QueryLabelSource = "user" | "database" | "derived";
 
 export type QueryIntentLabel = {
@@ -14,6 +16,13 @@ export type QueryIntentEvidence = {
   ref: string;
   kind: string;
   summary: string;
+};
+
+export type QueryIntentReviewItem = {
+  id: string;
+  question: string;
+  status: "pending" | "accepted" | "modified";
+  options: { id: "accept" | "modify"; label: string; value: string }[];
 };
 
 export type QueryIntentApproval = {
@@ -37,6 +46,7 @@ export type QueryIntentArtifact = {
   summary?: string | null;
   confidence?: number | null;
   ambiguities: string[];
+  ambiguity_items: QueryIntentReviewItem[];
   labels: QueryIntentLabel[];
   evidence: QueryIntentEvidence[];
   approval: QueryIntentApproval;
@@ -84,6 +94,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function readMessageArtifact(message: Message): unknown {
+  const direct = Reflect.get(message, "artifact");
+  if (direct !== undefined) return direct;
+  const additionalKwargs = message.additional_kwargs;
+  return isRecord(additionalKwargs) ? additionalKwargs.artifact : undefined;
+}
+
 function isBoundedString(value: unknown, max: number): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= max;
 }
@@ -111,6 +128,34 @@ function parseEvidence(value: unknown): QueryIntentEvidence | null {
   return { ref: value.ref, kind: value.kind, summary: value.summary };
 }
 
+function parseReviewItems(value: unknown, ambiguities: string[]): QueryIntentReviewItem[] | null {
+  if (value === undefined) {
+    return ambiguities.map((question, index) => ({
+      id: `legacy-ambiguity-${index}`,
+      question,
+      status: "pending",
+      options: [
+        { id: "accept", label: "按当前理解继续", value: "accept" },
+        { id: "modify", label: "修改这一项", value: "modify" },
+      ],
+    }));
+  }
+  if (!Array.isArray(value) || value.length > 20) return null;
+  const items: QueryIntentReviewItem[] = [];
+  for (const item of value) {
+    if (!isRecord(item) || !isBoundedString(item.id, 200) || !isBoundedString(item.question, 500)) return null;
+    if (item.status !== "pending" && item.status !== "accepted" && item.status !== "modified") return null;
+    if (!Array.isArray(item.options) || item.options.length < 2 || item.options.length > 4) return null;
+    const options = item.options.map((option) => {
+      if (!isRecord(option) || (option.id !== "accept" && option.id !== "modify") || !isBoundedString(option.label, 100) || !isBoundedString(option.value, 100)) return null;
+      return { id: option.id, label: option.label, value: option.value };
+    });
+    if (options.some((option) => option === null)) return null;
+    items.push({ id: item.id, question: item.question, status: item.status, options: options as QueryIntentReviewItem["options"] });
+  }
+  return items;
+}
+
 export function parseDataQueryLabelsArtifact(value: unknown): QueryIntentArtifact | null {
   if (!isRecord(value)) return null;
   if (
@@ -129,6 +174,8 @@ export function parseDataQueryLabelsArtifact(value: unknown): QueryIntentArtifac
   if (value.summary !== undefined && value.summary !== null && !isBoundedString(value.summary, 500)) return null;
   if (value.confidence !== undefined && value.confidence !== null && (typeof value.confidence !== "number" || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1)) return null;
   if (!Array.isArray(value.ambiguities) || value.ambiguities.length > 20 || value.ambiguities.some((item) => !isBoundedString(item, 200))) return null;
+  const ambiguityItems = parseReviewItems(value.ambiguity_items, value.ambiguities);
+  if (ambiguityItems?.length !== value.ambiguities.length) return null;
   if (!Array.isArray(value.labels) || value.labels.length === 0 || value.labels.length > 30) return null;
   if (!Array.isArray(value.evidence) || value.evidence.length > 30) return null;
   const labels = value.labels.map(parseLabel);
@@ -154,6 +201,7 @@ export function parseDataQueryLabelsArtifact(value: unknown): QueryIntentArtifac
     summary: value.summary === undefined ? undefined : value.summary,
     confidence: value.confidence === undefined ? undefined : value.confidence,
     ambiguities: value.ambiguities,
+    ambiguity_items: ambiguityItems,
     labels: labels as QueryIntentLabel[],
     evidence: evidence as QueryIntentEvidence[],
     approval: {
@@ -169,7 +217,7 @@ export function parseDataQueryLabelsArtifact(value: unknown): QueryIntentArtifac
 
 export function extractDataQueryLabelsArtifact(message: Message): QueryIntentArtifact | null {
   if (message.type !== "tool" || message.name !== "publish_query_labels") return null;
-  return parseDataQueryLabelsArtifact(Reflect.get(message, "artifact"));
+  return parseDataQueryLabelsArtifact(readMessageArtifact(message));
 }
 
 export function isDataQueryLabelsToolMessage(message: Message): boolean {
@@ -265,9 +313,69 @@ export function parseDataQuerySqlResultArtifact(value: unknown): QuerySqlResultA
 
 export function extractDataQuerySqlResultArtifact(message: Message): QuerySqlResultArtifact | null {
   if (message.type !== "tool" || message.name !== "task") return null;
-  return parseDataQuerySqlResultArtifact(Reflect.get(message, "artifact"));
+  return parseDataQuerySqlResultArtifact(readMessageArtifact(message));
 }
 
 export function isDataQuerySqlResultToolMessage(message: Message): boolean {
   return extractDataQuerySqlResultArtifact(message) !== null;
+}
+
+export type QueryIntentReviewDecision = {
+  id: string;
+  decision: "accept" | "modify";
+  value?: string;
+};
+
+export function createDataQueryReviewResponse(
+  request: HumanInputRequest,
+  artifact: QueryIntentArtifact,
+  decisions: QueryIntentReviewDecision[],
+  finalAction: "execute" | "sql_only" | "cancel",
+): HumanInputResponse {
+  return {
+    version: 1,
+    kind: "human_input_response",
+    source: request.source,
+    request_id: request.request_id,
+    response_kind: "text",
+    value: JSON.stringify(
+      {
+        kind: "data_query_review_response",
+        snapshot_id: artifact.snapshot_id,
+        final_action: finalAction,
+        items: decisions,
+      },
+      null,
+      0,
+    ),
+  };
+}
+
+export function parseDataQueryReviewFinalAction(response: HumanInputResponse | null): "execute" | "sql_only" | "cancel" | "modify" | null {
+  if (!response) return null;
+  if (response.response_kind === "option") {
+    return response.option_id === "execute" || response.option_id === "sql_only" || response.option_id === "cancel" ? response.option_id : null;
+  }
+  try {
+    const value: unknown = JSON.parse(response.value);
+    if (isRecord(value) && value.kind === "data_query_review_response" && (value.final_action === "execute" || value.final_action === "sql_only" || value.final_action === "cancel")) return value.final_action;
+  } catch {
+    return "modify";
+  }
+  return "modify";
+}
+
+export function parseDataQueryReviewDecisions(response: HumanInputResponse | null): Record<string, QueryIntentReviewDecision> {
+  if (response?.response_kind !== "text") return {};
+  try {
+    const value: unknown = JSON.parse(response.value);
+    if (!isRecord(value) || value.kind !== "data_query_review_response" || !Array.isArray(value.items)) return {};
+    return Object.fromEntries(
+      value.items
+        .filter((item): item is Record<string, unknown> => isRecord(item) && typeof item.id === "string" && (item.decision === "accept" || item.decision === "modify"))
+        .map((item) => [item.id, { id: item.id as string, decision: item.decision as "accept" | "modify", ...(typeof item.value === "string" ? { value: item.value } : {}) }]),
+    );
+  } catch {
+    return {};
+  }
 }

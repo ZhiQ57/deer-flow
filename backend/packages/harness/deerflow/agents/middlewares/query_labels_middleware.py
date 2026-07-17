@@ -19,6 +19,7 @@ from langgraph.types import Command
 from deerflow.agents.service_agent.state import (
     build_query_approval_request,
     build_query_label_snapshot,
+    build_query_review_items,
     decide_query_approval,
     get_active_service_state,
     make_service_state,
@@ -269,7 +270,12 @@ class QueryLabelsMiddleware(AgentMiddleware):
                 raise ValueError(f"labels[{index}] 必须是对象。")
             normalized_labels.append(dict(item))
         confidence = args.get("confidence")
-        ambiguities = args.get("ambiguities") or []
+        # ADD: 缺失 ambiguities 不能默认为空数组，否则模型可用高 confidence 绕过人工确认。
+        ambiguities_declared = "ambiguities" in args and args.get("ambiguities") is not None
+        ambiguities = args.get("ambiguities") if ambiguities_declared else []
+        if not ambiguities_declared:
+            # ADD: 给前端一个明确的审核项，避免模型只在自由文本中表达疑问时页面没有确认入口。
+            ambiguities = ["AI 未明确提交歧义清单，请确认当前理解是否可以用于生成 SQL。"]
         if isinstance(ambiguities, str):
             try:
                 ambiguities = json.loads(ambiguities)
@@ -288,6 +294,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
             summary=args.get("summary") if isinstance(args.get("summary"), str) else None,
             confidence=confidence,
             ambiguities=ambiguities,
+            ambiguities_declared=ambiguities_declared,
         )
         approval = decide_query_approval(self._service_ability, snapshot)
         runtime_context = getattr(request.runtime, "context", None)
@@ -327,6 +334,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
             "summary": snapshot.get("summary"),
             "confidence": snapshot.get("confidence"),
             "ambiguities": snapshot["ambiguities"],
+            "ambiguity_items": build_query_review_items(snapshot),
             "labels": snapshot["labels"],
             "evidence": evidence,
             "retrieval_digest": snapshot["retrieval_digest"],
@@ -337,6 +345,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
             "retrieval": dict(retrieval),
             "labels": dict(snapshot),
             "approval": dict(approval),
+            "review_items": build_query_review_items(snapshot),
         }
         if approval_error_code is not None:
             service_payload["approval_error_code"] = approval_error_code

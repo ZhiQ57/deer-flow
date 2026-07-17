@@ -399,15 +399,20 @@ class DeerFlowClient:
     @staticmethod
     def _tool_message_event(msg: ToolMessage) -> "StreamEvent":
         """Build a ``messages-tuple`` tool-result event from a ToolMessage."""
+        data: dict[str, Any] = {
+            "type": "tool",
+            "content": DeerFlowClient._extract_text(msg.content),
+            "name": msg.name,
+            "tool_call_id": msg.tool_call_id,
+            "id": msg.id,
+        }
+        # ADD: DataAgent 标签、确认和 SQL 结果依赖 ToolMessage artifact，必须随实时消息传给前端。
+        artifact = getattr(msg, "artifact", None)
+        if isinstance(artifact, dict):
+            data["artifact"] = artifact
         return StreamEvent(
             type="messages-tuple",
-            data={
-                "type": "tool",
-                "content": DeerFlowClient._extract_text(msg.content),
-                "name": msg.name,
-                "tool_call_id": msg.tool_call_id,
-                "id": msg.id,
-            },
+            data=data,
         )
 
     @staticmethod
@@ -430,6 +435,10 @@ class DeerFlowClient:
                 "tool_call_id": getattr(msg, "tool_call_id", None),
                 "id": getattr(msg, "id", None),
             }
+            # ADD: values/checkpoint 之外的嵌入式 Client 消息也必须保留业务 artifact。
+            artifact = getattr(msg, "artifact", None)
+            if isinstance(artifact, dict):
+                d["artifact"] = artifact
             if additional_kwargs := DeerFlowClient._serialize_additional_kwargs(msg):
                 d["additional_kwargs"] = additional_kwargs
             return d

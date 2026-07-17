@@ -843,3 +843,12 @@ data_source_id, stage, payload, updated_at
 - [ ] 19.4.8 真实 Gateway/Frontend Docker 线程与浏览器 E2E：2026-07-16 再次尝试启动 `deer-flow-dev` compose 服务时被执行额度策略拒绝，未使用绕过方式；待环境授权恢复后继续。
 
 > 结论：本轮已完成可进入联调的核心生产闭环代码，但第 19.3 节属于发布前必做验收。未完成这些项目之前，不应勾选第 15.11～15.14、16.7 或宣称已满足生产发布条件。
+
+## 19.5 2026-07-17 本轮问题修复与继续 TODO
+
+- [X] 19.5.1 修复 `DeerFlowClient` 嵌入式消息序列化：`ToolMessage.artifact` 同时进入 `messages-tuple` 和 `values/history`，前端可以从实时消息、checkpoint 和历史恢复中读取 `data_query_labels`、human-input 与 SQL 结果。
+- [X] 19.5.2 修复 DataAgent 待确认状态的图控制：`QueryApprovalMiddleware` 在下一次模型调用前通过 DeerFlow 原生 `before_model + jump_to=end` 闸门停止固定 `create_agent` 工具边缘，避免标签发布后继续调用 SQL 或直接生成回答。
+- [X] 19.5.3 增加真实 `create_agent + InMemorySaver` 恢复测试：初次运行停留在 `awaiting_confirmation`，提交隐藏 `human_input v1` 逐项确认后才进入 SQL SubAgent，并生成结构化 SQL 结果与最终回答。
+- [X] 19.5.4 完成后端 DataAgent 定向回归：144 项通过；前端全量单元测试 634 项通过；前端 ESLint 与 TypeScript 检查通过；Ruff check/format check 与 `git diff --check` 通过。
+- [ ] 19.5.5 使用真实 Gateway RunManager、Docker 服务和浏览器页面完成标签卡、逐项确认、普通输入禁用、checkpoint 恢复、断线重连及 SQL 结果卡验收；当前本机浏览器策略拒绝访问 `http://localhost:2026`，不能把该项标记为通过。
+- [ ] 19.5.6 在独立环境完成 backend 全量 `make test`；本机 SkillScan 被终端安全软件隔离，导致与本需求无关的技能安装测试失败，不能将全量结果误报为通过。

@@ -323,8 +323,13 @@ def build_query_label_snapshot(
     summary: str | None,
     confidence: float | None,
     ambiguities: Sequence[str],
+    ambiguities_declared: bool = True,
 ) -> dict[str, Any]:
-    """构造 DataAgent 查询标签快照。"""
+    """构造 DataAgent 查询标签快照。
+
+    Args:
+        ambiguities_declared: 模型是否明确提交了 ambiguities 字段；缺失字段不能被当作“无歧义”。
+    """
     if retrieval.get("ok") is not True or retrieval.get("data_source_id") != data_source_id:
         raise ValueError("标签快照的数据源与当前 TableRAG 检索上下文不一致。")
     retrieval_digest = retrieval.get("retrieval_digest")
@@ -361,6 +366,7 @@ def build_query_label_snapshot(
         "confidence": float(confidence) if confidence is not None else None,
         "labels": normalized_labels,
         "ambiguities": normalized_ambiguities,
+        "ambiguities_declared": bool(ambiguities_declared),
     }
     return {
         "version": 1,
@@ -384,6 +390,7 @@ def decide_query_approval(
         and snapshot.get("constraints_complete") is True
         and isinstance(snapshot.get("labels"), list)
         and bool(snapshot.get("labels"))
+        and snapshot.get("ambiguities_declared") is True
         and isinstance(confidence, (int, float))
         and not isinstance(confidence, bool)
         and float(confidence) >= config.min_auto_confidence
@@ -400,6 +407,32 @@ def decide_query_approval(
     }
 
 
+# ADD: 为每个结构化 ambiguity 生成稳定审核项，前端逐项确认时不能依赖数组下标作为持久化身份。
+def build_query_review_items(snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """从标签快照生成有限长度的逐项审核合同。"""
+    snapshot_id = snapshot.get("snapshot_id")
+    ambiguities = snapshot.get("ambiguities")
+    if not isinstance(snapshot_id, str) or not isinstance(ambiguities, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for index, question in enumerate(ambiguities[:20]):
+        if not isinstance(question, str) or not question.strip():
+            continue
+        item_id = _sha256_id("ambiguity", f"{snapshot_id}\n{index}\n{question.strip()}").removeprefix("ambiguity:")
+        items.append(
+            {
+                "id": item_id,
+                "question": question.strip(),
+                "status": "pending",
+                "options": [
+                    {"id": "accept", "label": "按当前理解继续", "value": "accept"},
+                    {"id": "modify", "label": "修改这一项", "value": "modify"},
+                ],
+            }
+        )
+    return items
+
+
 # ADD: 复用 DeerFlow human-input v1 请求并把 snapshot 绑定保留在服务端 artifact。
 def build_query_approval_request(snapshot: Mapping[str, Any], *, tool_call_id: str) -> dict[str, Any]:
     """构造 DataAgent 查询确认请求。"""
@@ -410,6 +443,7 @@ def build_query_approval_request(snapshot: Mapping[str, Any], *, tool_call_id: s
     ambiguities = snapshot.get("ambiguities") if isinstance(snapshot.get("ambiguities"), list) else []
     summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), str) else "请确认当前查询意图。"
     context = "；".join(str(item) for item in ambiguities) if ambiguities else None
+    review_items = build_query_review_items(snapshot)
     return {
         "version": 1,
         "kind": "human_input_request",
@@ -426,4 +460,5 @@ def build_query_approval_request(snapshot: Mapping[str, Any], *, tool_call_id: s
             {"id": "sql_only", "label": "仅生成 SQL", "value": "sql_only"},
             {"id": "cancel", "label": "取消查询", "value": "cancel"},
         ],
+        "review_items": review_items,
     }

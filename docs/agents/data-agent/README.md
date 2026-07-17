@@ -148,7 +148,7 @@ service_ability:
 实验性运行层复用 lead-agent 的模型、prompt、Skill、MCP 和多数 middleware，并额外增加：
 
 - `DataAgentTurnResetMiddleware`：只在新真实用户轮次开始时重置上一轮 QueryContext、查询标签、检索、SQL、图表和强制收敛状态，不执行实体抽取。
-- `publish_query_labels`：稳定 SDK 中的标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels` 和可选 `summary`，不调用模型。
+- `publish_query_labels`：稳定 SDK 中的标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels`、`confidence` 和显式 `ambiguities`，不调用模型。没有歧义时必须传 `ambiguities: []`，不能省略或只在最终回答中描述待确认项。
 - `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`；实验性 DataAgent 使用 `require_retrieval=True` 和 `stage_name="labels_published"`，因此任何标签都必须在首次有效 TableRAG 检索后发布。middleware 会生成顶层 ToolMessage artifact、写入 `data_query_labels`、发送 custom stream 事件并继续当前图执行；数据库来源标签还必须关联 Evidence 摘要。
 - `entity_extract_tool`：现有实体抽取工具继续保留，可在确实需要独立模型抽取时按需调用，但不再是 TableRAG 或 SQL 的前置条件。
 - `DataAgentOrchestrationMiddleware`：允许 lead-agent 直接组织 TableRAG query/keywords；强制 `TableRAG -> 查询标签 -> SQL 校验 -> SQL 执行 -> 可选 ChartSpec -> 最终回答` 顺序。实体抽取仍不是前置条件。
@@ -159,8 +159,9 @@ service_ability:
 lead-agent 可以直接从用户问题中组织 TableRAG 检索关键词。标签展示由
 `publish_query_labels` 完成，但必须在首次有效检索之后：`source=user` 和
 `source=derived` 也不能提前发布，`source=database` 还必须引用当前轮次的
-TableRAG Evidence。后续再次调用会替换当前完整标签快照。标签工具不会额外请求模型，
-也不能把历史对话、memory 或旧 SQL 当成当前数据库 Schema 的证明。
+TableRAG Evidence。后续再次调用会替换当前完整标签快照，并生成可逐项审核的
+`ambiguity_items`。标签工具不会额外请求模型，也不能把历史对话、memory 或旧 SQL
+当成当前数据库 Schema 的证明。实时消息和历史 values 都必须携带 artifact，否则前端会退化为普通工具轨迹。
 
 当前代码目录：
 

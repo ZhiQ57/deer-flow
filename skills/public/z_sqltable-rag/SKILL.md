@@ -51,6 +51,12 @@ TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Se
 
 意图可以使用 `aggregation`、`ranking`、`trend`、`comparison`、`detail` 或 `chart` 等类型。每次调用都必须发布当前完整标签快照，不得只提交增量变化。
 
+`publish_query_labels` 的 `confidence` 和 `ambiguities` 是服务端确认门禁输入：
+
+- 必须显式提交 `ambiguities` 字段；没有歧义时传 `[]`，不能省略、传 `null` 或只在最终自然语言中描述“待确认项”。
+- 任何可能改变 SQL 的不确定点都必须写入 `ambiguities`，并等待前端逐项审核完成后再生成 SQL。
+- 最终回答不得新增未写入 `ambiguities` 的假设；如果推理过程中发现新疑问，必须重新发布标签快照。
+
 推荐展示的标签包括：
 
 - 指标或业务口径；

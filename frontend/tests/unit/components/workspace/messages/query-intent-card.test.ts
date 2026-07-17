@@ -19,6 +19,17 @@ const artifact: QueryIntentArtifact = {
   summary: "查询华东销售额最高的商品",
   confidence: 0.92,
   ambiguities: ["是否排除退款"],
+  ambiguity_items: [
+    {
+      id: "ambiguity:sha256:refund",
+      question: "是否排除退款",
+      status: "pending",
+      options: [
+        { id: "accept", label: "按当前理解继续", value: "accept" },
+        { id: "modify", label: "修改这一项", value: "modify" },
+      ],
+    },
+  ],
   labels: [
     { label: "地区", value: "华东", source: "user", evidence_refs: [] },
     { label: "指标", value: "销售额", source: "database", evidence_refs: ["evidence:sha256:metric"] },
@@ -39,7 +50,23 @@ describe("QueryIntentCard", () => {
       createElement(
         I18nContext.Provider,
         { value: { locale: "zh-CN", setLocale: () => undefined } },
-        createElement(QueryIntentCard, { artifact }),
+        createElement(QueryIntentCard, {
+          artifact,
+          request: {
+            version: 1,
+            kind: "human_input_request",
+            source: "ask_clarification",
+            request_id: "data-query:req",
+            question: "确认查询意图",
+            input_mode: "choice_with_other",
+            options: [
+              { id: "execute", label: "确认并执行", value: "execute" },
+              { id: "sql_only", label: "仅生成 SQL", value: "sql_only" },
+              { id: "cancel", label: "取消查询", value: "cancel" },
+            ],
+          },
+          onSubmit: () => undefined,
+        }),
       ),
     );
 
@@ -49,6 +76,9 @@ describe("QueryIntentCard", () => {
     expect(html).toContain("是否排除退款");
     expect(html).toContain("92%");
     expect(html).toContain("待确认");
+    expect(html).toContain("AI 需要你确认的理解");
+    expect(html).toContain("按当前理解继续");
+    expect(html).toContain("确认并生成 SQL");
   });
 
   it("derives confirmed, modified, and cancelled display states from persisted responses", () => {

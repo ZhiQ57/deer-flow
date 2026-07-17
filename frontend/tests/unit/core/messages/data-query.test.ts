@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@rstest/core";
 
 import {
+  createDataQueryReviewResponse,
+  parseDataQueryReviewDecisions,
   parseDataQueryLabelsArtifact,
   parseDataQuerySqlResultArtifact,
 } from "@/core/messages/data-query";
@@ -19,6 +21,7 @@ function artifact() {
     summary: "查询华东销售额最高的商品",
     confidence: 0.92,
     ambiguities: [],
+    ambiguity_items: [],
     labels: [
       {
         label: "指标",
@@ -68,6 +71,40 @@ describe("parseDataQueryLabelsArtifact", () => {
         labels: [{ label: "指标", value: "x", source: "database", evidence_refs: "forged" }],
       }),
     ).toBeNull();
+  });
+
+  it("builds and parses a bounded per-item review response", () => {
+    const parsed = parseDataQueryLabelsArtifact({
+      ...artifact(),
+      ambiguities: ["时间范围不明确"],
+      ambiguity_items: [
+        {
+          id: "ambiguity:time",
+          question: "时间范围不明确",
+          status: "pending",
+          options: [
+            { id: "accept", label: "按当前理解继续", value: "accept" },
+            { id: "modify", label: "修改这一项", value: "modify" },
+          ],
+        },
+      ],
+    });
+    const response = createDataQueryReviewResponse(
+      {
+        version: 1,
+        kind: "human_input_request",
+        source: "ask_clarification",
+        request_id: "data-query:req",
+        question: "确认",
+        input_mode: "choice_with_other",
+      },
+      parsed!,
+      [{ id: "ambiguity:time", decision: "accept" }],
+      "execute",
+    );
+
+    expect(parseDataQueryReviewDecisions(response)["ambiguity:time"]?.decision).toBe("accept");
+    expect(response.value).toContain('"final_action":"execute"');
   });
 });
 
