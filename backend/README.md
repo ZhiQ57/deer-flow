@@ -240,7 +240,7 @@ backend/
 │       │   └── registry.py     # Agent registry
 │       ├── tools/builtins/     # Built-in tools
 │       ├── mcp/                # MCP protocol integration
-│       ├── models/             # Model factory
+│       ├── models/             # Model factory and provider adapters
 │       ├── skills/             # Skill discovery & loading
 │       ├── config/             # Configuration system
 │       ├── runtime/            # Embedded run execution (RunManager, StreamBridge)

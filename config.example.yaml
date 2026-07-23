@@ -91,6 +91,29 @@ max_recursion_limit: 1000
 #                                      # (optional; omit → hits billed at miss price)
 
 models:
+  # Example: Alibaba Cloud Model Studio Qwen with explicit prompt caching
+  # - name: qwen3.6-plus
+  #   display_name: Qwen3.6-Plus
+  #   use: deerflow.models.qwen_provider:QwenChatModel
+  #   model: qwen3.6-plus
+  #   api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
+  #   api_key: $DASHSCOPE_API_KEY
+  #   timeout: 600.0
+  #   max_retries: 2
+  #   enable_prompt_caching: true
+  #   prompt_cache_ttl: "5m" # Supported values: "5m" or "1h"
+  #   supports_thinking: true
+  #   supports_vision: true
+  #   supports_reasoning_effort: true
+  #   when_thinking_enabled:
+  #     extra_body:
+  #       thinking:
+  #         type: enabled
+  #   when_thinking_disabled:
+  #     extra_body:
+  #       thinking:
+  #         type: disabled
+
   # Example: Volcengine (Doubao) model
   # - name: doubao-seed-1.8
   #   display_name: Doubao-Seed-1.8

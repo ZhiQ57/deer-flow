@@ -175,6 +175,16 @@ That prompt is intended for coding agents. It tells the agent to clone the repo 
          extra_body:
            chat_template_kwargs:
              enable_thinking: true
+
+     - name: qwen3.6-plus
+       display_name: Qwen3.6-Plus (DashScope)
+       use: deerflow.models.qwen_provider:QwenChatModel
+       model: qwen3.6-plus
+       api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
+       api_key: $DASHSCOPE_API_KEY
+       enable_prompt_caching: true
+       prompt_cache_ttl: "5m"
+       supports_thinking: true
    ```
 
    OpenRouter and similar OpenAI-compatible gateways should be configured with `langchain_openai:ChatOpenAI` plus `base_url`. If you prefer a provider-specific environment variable name, point `api_key` at that variable explicitly (for example `api_key: $OPENROUTER_API_KEY`).
@@ -182,6 +192,8 @@ That prompt is intended for coding agents. It tells the agent to clone the repo 
    To route OpenAI models through `/v1/responses`, keep using `langchain_openai:ChatOpenAI` and set `use_responses_api: true` with `output_version: responses/v1`.
 
    For vLLM 0.19.0, use `deerflow.models.vllm_provider:VllmChatModel`. For Qwen-style reasoning models, DeerFlow toggles reasoning with `extra_body.chat_template_kwargs.enable_thinking` and preserves vLLM's non-standard `reasoning` field across multi-turn tool-call conversations. Legacy `thinking` configs are normalized automatically for backward compatibility. Reasoning models may also require the server to be started with `--reasoning-parser ...`. If your local vLLM deployment accepts any non-empty API key, you can still set `VLLM_API_KEY` to a placeholder value.
+
+   For Alibaba Cloud Model Studio, use `deerflow.models.qwen_provider:QwenChatModel` to retain the existing multi-turn reasoning replay while optionally enabling DashScope explicit prompt caching. Caching is disabled by default; set `enable_prompt_caching: true` and choose `prompt_cache_ttl: "5m"` or `"1h"`. The provider marks only the final text block of the last system message, so ordinary user and tool messages remain dynamic.
 
    CLI-backed provider examples:
 

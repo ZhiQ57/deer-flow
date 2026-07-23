@@ -1,5 +1,15 @@
 # Used API Guide
 
+## Qwen 显式提示词缓存
+
+- **Provider 入口**：`deerflow.models.qwen_provider.QwenChatModel`，配置路径使用 `deerflow.models.qwen_provider:QwenChatModel`。
+- **继承关系**：`QwenChatModel` 继承 `PatchedChatDeepSeek`，继续保留多轮工具调用中的 `reasoning_content` 回放。
+- **启用方式**：模型配置增加 `enable_prompt_caching: true`；默认值为 `false`，未配置时请求载荷保持原样。
+- **缓存有效期**：`prompt_cache_ttl` 仅接受 `"5m"` 或 `"1h"`，默认 `"5m"`。
+- **缓存范围**：Provider 只在最后一条系统消息的最后一个非空文本块添加 DashScope `cache_control`，不标记用户消息、工具结果、SQL结果或人工审核内容。
+- **命中统计**：DashScope 返回的 `prompt_tokens_details.cached_tokens` 由现有 LangChain 适配转换为 `usage_metadata.input_token_details.cache_read`，继续进入 DeerFlow `cache_read_tokens` 聚合。
+- **主流程边界**：该能力仅通过模型反射扩展点启用，不增加 Agent 图、DataAgent 中间件、Gateway 路由或新的 ThreadState 字段。
+
 ## DataAgent Text2SQL
 
 - **Custom-agent loader**：`deerflow.config.agents_config.load_agent_config()` 和 `load_agent_soul()` 读取 `.deer-flow/users/{user_id}/agents/{agent_name}/config.yaml` 与 `SOUL.md`。

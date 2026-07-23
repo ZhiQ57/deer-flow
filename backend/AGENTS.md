@@ -494,6 +494,14 @@ Lets a caller pass per-request, short-lived end-user credentials (e.g. an ERP to
 - Config values starting with `$` resolved as environment variables
 - Missing provider modules surface actionable install hints from reflection resolvers (for example `uv add langchain-google-genai`)
 
+### DashScope Qwen Provider (`packages/harness/deerflow/models/qwen_provider.py`)
+
+- `QwenChatModel` subclasses `PatchedChatDeepSeek`, preserving multi-turn `reasoning_content` replay for DashScope's OpenAI-compatible API
+- Explicit prompt caching is opt-in through `enable_prompt_caching: true`; the provider defaults to no payload change for backward compatibility
+- `prompt_cache_ttl` accepts `"5m"` or `"1h"` and is serialized as DashScope `cache_control` on the last non-empty text block of the final system message
+- User messages, dynamic memory/date reminders, tool results, SQL results, and approval content are never marked by the provider
+- DashScope `prompt_tokens_details.cached_tokens` continues through langchain-openai as `usage_metadata.input_token_details.cache_read`, so the existing runtime journal and console cache-hit accounting require no new execution path
+
 ### vLLM Provider (`packages/harness/deerflow/models/vllm_provider.py`)
 
 - `VllmChatModel` subclasses `langchain_openai:ChatOpenAI` for vLLM 0.19.0 OpenAI-compatible endpoints
