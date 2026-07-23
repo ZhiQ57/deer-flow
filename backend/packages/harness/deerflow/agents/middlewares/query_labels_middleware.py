@@ -1,4 +1,8 @@
-"""用户意图标签的展示中间件。"""
+"""用户意图标签的展示中间件.
+暂时供 DeerFlow DataAgent 使用，后续可默认设置 Lead-Agent .
+
+
+"""
 
 from __future__ import annotations
 

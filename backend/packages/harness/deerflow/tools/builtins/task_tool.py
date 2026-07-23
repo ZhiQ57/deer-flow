@@ -469,10 +469,10 @@ async def task_tool(
     service_ability_raw = parent_context.get("data_query_service_ability")
     # ADD: SQL 工具装配必须同时满足服务端 custom-agent allowlist 判定，客户端开关或模型目标名都不能替代授权。
     if isinstance(service_ability_raw, dict) and parent_context.get("data_query_sql_subagent_allowed") is True:
-        from deerflow.agents.service_agent.registry import resolve_service_ability
+        from deerflow.agents.service_agent.registry import resolve_service_ability_safely
         from deerflow.agents.service_agent.sql_tools import build_sql_tools
 
-        service_ability = resolve_service_ability(service_ability_raw)
+        service_ability = resolve_service_ability_safely(service_ability_raw)
         active_states = runtime.state.get("service_states") if runtime is not None and isinstance(runtime.state, dict) else None
         active_state = next(
             (item for item in reversed(active_states or []) if isinstance(item, dict) and item.get("service_name") == "data_query" and item.get("stage") == "approved"),

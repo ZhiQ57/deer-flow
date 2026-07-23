@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import BaseTool
 
-from .config import DataQueryServiceAbilityConfig, parse_service_ability
+from .config import DataQueryServiceAbilityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +53,11 @@ class DataAgentServiceAbility:
         from .approval_middleware import QueryApprovalMiddleware
         from .sql_stage_middleware import SqlStageMiddleware
         from .table_rag_middleware import TableRagStageMiddleware
-        from .turn_reset_middleware import DataAgentTurnResetMiddleware
+        # from .turn_reset_middleware import DataAgentTurnResetMiddleware
 
         # ADD: 业务 middleware 只挂在 DataAgent 适配器，默认 lead-agent 不受影响。
         return [
-            DataAgentTurnResetMiddleware(self.config),
+            # DataAgentTurnResetMiddleware(self.config),
             TableRagStageMiddleware(self.config),
             QueryLabelsMiddleware(require_retrieval=True, service_ability=self.config),
             QueryApprovalMiddleware(self.config),
@@ -68,29 +68,36 @@ class DataAgentServiceAbility:
         """返回能力的脱敏前端/运行 metadata。"""
         return self.config.public_metadata()
 
-
-def resolve_service_ability(raw: Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
-    """严格解析 service ability，冲突和未知能力均 fail closed。
-
-    Args:
-        raw: AgentConfig.service_ability 原始配置。
-
-    Returns:
-        DataAgentServiceAbility 或 None。
-    """
-    config = parse_service_ability(raw)
-    if config is None:
-        return None
-    if config.type == "data_query" and config.version == 1:
-        return DataAgentServiceAbility(config)
-    raise ValueError(f"不支持的 service_ability 合同：{config.type}/v{config.version}")
-
-
-# ADD: 运行时安全解析能力，非法扩展只停用业务能力，不阻断默认 Agent。
+    
+# ADD: 安全解析 custom agent 定制智能体的 service_ability 参数 
 def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
-    """尝试解析 service ability，配置错误时记录脱敏修复信息并返回空适配器。"""
+    """尝试解析 service ability 参数, 配置错误时记录脱敏修复信息并返回空适配器。
+    Args:
+        raw: AgentConfig.service_ability 原始配置
+    Returns:
+        DataAgentServiceAbility
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise TypeError("service_ability 必须是对象。")
+    
+    # ADD: 解析 DataAgent service ability 参数
     try:
-        return resolve_service_ability(raw)
+        config = DataQueryServiceAbilityConfig.model_validate(dict(raw))
+        extra_fields = sorted((config.model_extra or {}).keys())
+        sql_extra_fields = sorted((config.sql_execution.model_extra or {}).keys())
+        if extra_fields or sql_extra_fields:
+            # ADD: 出现未知扩展字段, 打印提示
+            logger.debug("DataAgent service_ability 包含未识别扩展字段：top=%s sql_execution=%s", extra_fields, sql_extra_fields)
+
+        if config is None:
+            return None
+        # TODO: 该位置只支持 data-agent, 未来扩展到所有定制化智能体
+        if config.type == "data_query" and config.version == 1:
+            # ADD: 已经加入 middleware 了
+            return DataAgentServiceAbility(config)
+        raise ValueError(f"不支持的 service_ability 合同：{config.type}/v{config.version}")
     except (TypeError, ValueError) as exc:
         # ADD: 只输出字段路径和约束类型，不输出 Pydantic input 或原始配置值，避免误填 DSN 泄密。
         issues: list[str] = []

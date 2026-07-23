@@ -484,9 +484,9 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     service_ability = resolve_service_ability_safely(agent_config.service_ability if agent_config else None)
     # ADD: 只有 custom-agent 显式 allowlist SQL SubAgent 时才开启现有 task 工具。
     sql_subagent_allowed = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents and service_ability.config.sql_subagent_name in agent_config.allowable_subagents)
-    if sql_subagent_allowed:
-        subagent_enabled = True
-    # ADD: 把解析后的能力配置放入本次运行上下文，供显式 sql-subagent 工具装配使用；不写 checkpoint。
+    # if sql_subagent_allowed:
+    #     subagent_enabled = True
+    # ADD: service_ability 参数值=>存储=>系统运行时(runtime), 供显式 sql-subagent 工具装配使用   # TODO: 能否放入 checkpoint ?
     if service_ability is not None:
         context = config.setdefault("context", {})
         if isinstance(context, dict):
@@ -537,7 +537,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             "subagent_enabled": subagent_enabled,
             "tool_groups": agent_config.tool_groups if agent_config else None,
             "available_skills": sorted(available_skills) if available_skills is not None else None,
-            # ADD: 仅写脱敏 service ability metadata，不包含 DSN/Secret。
+
+            # ADD: public_metadata()即注册 DataAgentServiceAbility
             "service_ability": service_ability.public_metadata() if service_ability is not None else None,
         }
     )
@@ -642,7 +643,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     extra_tools = [update_agent] if agent_name and not is_webhook_channel else []
     # Default lead agent (unchanged behavior)
     raw_tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, app_config=resolved_app_config)
-    # ADD: 业务工具只追加到当前 DataAgent 实例，不进入全局 builtin 工具集合。
+    
+    # ADD: service_ability 读取授权工具集
     if service_ability is not None:
         raw_tools.extend(service_ability.build_tools())
     filtered = filter_tools_by_skill_allowed_tools(raw_tools + extra_tools, skills_for_tool_policy, always_allowed_tool_names=ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES)

@@ -28,6 +28,21 @@ def _repo_root() -> Path:
 REPO_ROOT = _repo_root()
 DATA_AGENT_DOCS_DIR = REPO_ROOT / "docs" / "agents" / "data-agent"
 
+# ADD: DataAgent 生产查询闭环提示词的关键工具合同，防止运行时与模板再次分叉。
+DATA_AGENT_SOUL_PATHS = (
+    REPO_ROOT / "backend" / ".deer-flow" / "agents" / "data-agent" / "SOUL.md",
+    DATA_AGENT_DOCS_DIR / "SOUL.md",
+)
+DATA_AGENT_SOUL_REQUIRED_MARKERS = (
+    "publish_query_labels",
+    "ambiguities",
+    "awaiting_confirmation",
+    "sql-subagent",
+    "data_validate_sql",
+    "data_execute_sql",
+    "不得直接执行 SQL",
+)
+
 
 def test_data_agent_template_matches_custom_agent_schema() -> None:
     """校验 DataAgent 模板符合 DeerFlow 原生 custom-agent 配置结构。
@@ -72,6 +87,22 @@ def test_data_agent_skill_whitelist_references_installed_public_skills() -> None
             discovered_skill_names.add(metadata["name"].strip())
 
     assert expected_skill_names <= discovered_skill_names
+
+
+# ADD: 验证运行时 SOUL 与可复制模板都包含结构化 DataAgent 查询闭环规则。
+def test_data_agent_souls_enforce_structured_query_flow() -> None:
+    """校验 DataAgent 提示词不会允许绕过标签审核和 SQL SubAgent。
+
+    Args:
+        无。
+
+    Return:
+        None。缺少任一关键合同标记时测试失败。
+    """
+    for soul_path in DATA_AGENT_SOUL_PATHS:
+        soul = soul_path.read_text(encoding="utf-8")
+        missing = [marker for marker in DATA_AGENT_SOUL_REQUIRED_MARKERS if marker not in soul]
+        assert not missing, f"{soul_path} 缺少 DataAgent 查询闭环规则：{missing}"
 
 
 def test_extensions_example_contains_disabled_tablerag_mcp_server() -> None:

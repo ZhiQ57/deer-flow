@@ -90,7 +90,7 @@ class SqlExecutionConfig(BaseModel):
 
 
 class DataQueryServiceAbilityConfig(BaseModel):
-    """DataAgent 查询闭环 service ability v1 配置。"""
+    """DataAgent service ability 配置参数"""
 
     # ADD: 为 DataAgent 固定能力类型和版本，阻止适配器猜测配置含义。
     model_config = ConfigDict(extra="allow")
@@ -163,10 +163,12 @@ def parse_service_ability(raw: Mapping[str, Any] | None) -> DataQueryServiceAbil
         return None
     if not isinstance(raw, Mapping):
         raise TypeError("service_ability 必须是对象。")
+    
+    # ADD: 解析 DataAgent service ability 参数
     parsed = DataQueryServiceAbilityConfig.model_validate(dict(raw))
     extra_fields = sorted((parsed.model_extra or {}).keys())
     sql_extra_fields = sorted((parsed.sql_execution.model_extra or {}).keys())
     if extra_fields or sql_extra_fields:
-        # ADD: 未知扩展字段只记录字段名，不回显字段值或改变工具权限。
+        # ADD: 出现未知扩展字段, 打印提示
         logger.debug("DataAgent service_ability 包含未识别扩展字段：top=%s sql_execution=%s", extra_fields, sql_extra_fields)
     return parsed
