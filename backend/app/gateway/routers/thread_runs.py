@@ -147,6 +147,8 @@ class ThreadTokenUsageResponse(BaseModel):
     total_tokens: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    # ADD: 提示词缓存前端展示需求新增
+    total_cache_read_tokens: int = Field(default=0, description="Prompt-cache-hit input tokens accumulated across this thread")
     total_runs: int = 0
     by_model: dict[str, ThreadTokenUsageModelBreakdown] = Field(default_factory=dict)
     by_caller: ThreadTokenUsageCallerBreakdown = Field(default_factory=ThreadTokenUsageCallerBreakdown)

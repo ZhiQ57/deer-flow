@@ -67,6 +67,7 @@ export interface ThreadTokenUsageResponse {
   total_tokens: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  total_cache_read_tokens?: number;
   total_runs: number;
   by_model: Record<string, { tokens: number; runs: number }>;
   by_caller: {

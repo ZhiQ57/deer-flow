@@ -499,6 +499,10 @@ export interface Translations {
     input: string;
     output: string;
     total: string;
+    cacheRead: string;
+    cacheShort: string;
+    uncachedInput: string;
+    cacheHitRate: string;
     view: string;
     unavailable: string;
     unavailableShort: string;

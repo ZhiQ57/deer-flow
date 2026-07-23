@@ -586,12 +586,16 @@ export const zhCN: Translations = {
     input: "输入",
     output: "输出",
     total: "总计",
+    cacheRead: "缓存命中",
+    cacheShort: "缓存",
+    uncachedInput: "未缓存输入",
+    cacheHitRate: "缓存命中率",
     view: "显示方式",
     unavailable:
       "暂无 Token 用量。只有模型成功返回且供应商提供 usage_metadata 时才会显示。",
     unavailableShort: "未返回用量",
     collecting: "统计中",
-    note: "顶部总量优先使用后端持久化的线程用量；当当前回复仍在流式返回时，还会叠加可见的进行中用量。每轮和调试用量只来自当前可见消息，可能与平台账单页不完全一致。",
+    note: "顶部总量优先使用后端持久化的线程用量；当当前回复仍在流式返回时，还会叠加可见的进行中用量。缓存明细仅在供应商返回缓存命中 Token 后显示。每轮和调试用量只来自当前可见消息，可能与平台账单页不完全一致。",
     presets: {
       off: "关闭",
       summary: "总览",

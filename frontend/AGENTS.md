@@ -76,6 +76,8 @@ Human input requests are a structured message protocol layered on normal chat hi
 
 Tool-calling AI messages can contain user-visible text as well as `tool_calls`. `core/messages/utils.ts` keeps these turns in an `assistant:processing` group, and `components/workspace/messages/message-group.tsx` must render the visible text as a processing step instead of treating the message as only tool metadata. This preserves provider text such as error explanations or "trying another approach" notes during tool-heavy runs.
 
+The original header token counter remains the sole cache-usage UI surface. `components/workspace/token-usage-indicator.tsx` extends its existing button/dropdown with persisted prompt-cache hits, uncached input, and hit rate from `GET /api/threads/{thread_id}/token-usage -> total_cache_read_tokens`. Per-turn and debug token summaries keep their existing layout and do not duplicate cache data.
+
 ### Key Patterns
 
 - **Server Components by default**, `"use client"` only for interactive components

@@ -609,12 +609,16 @@ export const enUS: Translations = {
     input: "Input",
     output: "Output",
     total: "Total",
+    cacheRead: "Cache read",
+    cacheShort: "Cache",
+    uncachedInput: "Uncached input",
+    cacheHitRate: "Cache hit rate",
     view: "Display",
     unavailable:
       "No token usage yet. Usage appears only after a successful model response when the provider returns usage_metadata.",
     unavailableShort: "No usage returned",
     collecting: "Collecting tokens",
-    note: "Header totals use persisted thread usage, plus visible in-flight usage while a run is still streaming. Per-turn and debug usage come from currently visible messages only. Totals may differ from provider billing pages.",
+    note: "Header totals use persisted thread usage, plus visible in-flight usage while a run is still streaming. Cache details appear only when the provider reports cache-hit tokens. Per-turn and debug usage come from currently visible messages only. Totals may differ from provider billing pages.",
     presets: {
       off: "Off",
       summary: "Summary",

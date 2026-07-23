@@ -390,6 +390,8 @@ class RunRepository(RunStore):
             rows = (await session.execute(stmt)).all()
 
         total_tokens = total_input = total_output = total_runs = 0
+        # ADD: 提示词缓存前端展示需求新增
+        total_cache_read_tokens = 0
         lead_agent = subagent = middleware = 0
         by_model: dict[str, dict] = {}
         for r in rows:
@@ -407,9 +409,12 @@ class RunRepository(RunStore):
             usage_by_model = r.token_usage_by_model or {}
             if usage_by_model:
                 for model, usage in usage_by_model.items():
+                    if not isinstance(usage, dict):
+                        continue
                     entry = by_model.setdefault(model, {"tokens": 0, "runs": 0})
                     entry["tokens"] += usage.get("total_tokens", 0)
                     entry["runs"] += 1
+                    total_cache_read_tokens += max(int(usage.get("cache_read_tokens", 0) or 0), 0)
             else:
                 model = r.model_name or "unknown"
                 entry = by_model.setdefault(model, {"tokens": 0, "runs": 0})
@@ -420,6 +425,7 @@ class RunRepository(RunStore):
             "total_tokens": total_tokens,
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
+            "total_cache_read_tokens": total_cache_read_tokens,
             "total_runs": total_runs,
             "by_model": by_model,
             "by_caller": {

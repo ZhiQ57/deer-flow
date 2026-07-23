@@ -500,6 +500,8 @@ class TestRunRepository:
             "total_tokens": 0,
             "total_input_tokens": 0,
             "total_output_tokens": 0,
+            # ADD: 提示词缓存前端展示需求新增
+            "total_cache_read_tokens": 0,
             "total_runs": 0,
             "by_model": {},
             "by_caller": {"lead_agent": 0, "subagent": 0, "middleware": 0},

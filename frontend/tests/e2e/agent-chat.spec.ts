@@ -58,6 +58,75 @@ test.describe("Agent chat", () => {
     ).toBeVisible({ timeout: 15_000 });
   });
 
+  test("agent chat shows prompt cache usage in token indicator", async ({
+    page,
+  }) => {
+    mockLangGraphAPI(page, {
+      agents: MOCK_AGENTS,
+      threads: [
+        {
+          thread_id: MOCK_THREAD_ID,
+          title: "Cached conversation",
+          agent_name: "test-agent",
+          messages: [
+            {
+              type: "human",
+              id: "msg-human-cache",
+              content: "Use the cached context",
+            },
+            {
+              type: "ai",
+              id: "msg-ai-cache",
+              content: "Cached answer",
+            },
+          ],
+        },
+      ],
+    });
+    await page.route("**/api/models", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          models: [],
+          token_usage: { enabled: true },
+        }),
+      }),
+    );
+    await page.route(`**/api/threads/${MOCK_THREAD_ID}/token-usage`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          thread_id: MOCK_THREAD_ID,
+          total_input_tokens: 150,
+          total_output_tokens: 15,
+          total_tokens: 165,
+          total_cache_read_tokens: 110,
+          total_runs: 2,
+          by_model: {},
+          by_caller: {
+            lead_agent: 165,
+            subagent: 0,
+            middleware: 0,
+          },
+        }),
+      }),
+    );
+
+    await page.goto(`/workspace/agents/test-agent/chats/${MOCK_THREAD_ID}`);
+
+    const tokenButton = page.getByRole("button", { name: /Tokens/ });
+    await expect(tokenButton).toContainText("165");
+    await expect(tokenButton).toContainText("Cache 110");
+    await tokenButton.click();
+
+    await expect(page.getByText("Cache read")).toBeVisible();
+    await expect(page.getByText("Uncached input")).toBeVisible();
+    await expect(page.getByText("Cache hit rate")).toBeVisible();
+    await expect(page.getByText("73.3%")).toBeVisible();
+  });
+
   test("agent chat can regenerate its latest response", async ({ page }) => {
     const humanMessage = {
       type: "human",

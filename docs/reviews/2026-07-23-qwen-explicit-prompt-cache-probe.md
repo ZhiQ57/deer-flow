@@ -97,3 +97,33 @@
   - `backend/packages/harness/deerflow/skills/skillscan/__init__.py` 导入排序。
   - `backend/packages/harness/deerflow/subagents/registry.py` 格式差异。
 - 全量 pytest 在收集 `test_skillscan_native.py` 时触发 Windows 安全软件对反向 Shell/密钥测试样本的隔离，报 `OSError: [Errno 9] Bad file descriptor`；测试前该文件无修改，已从当前提交恢复，未修改其内容。为避免再次被隔离，本轮以模型相关定向回归作为交付验证。
+
+## 前端缓存用量展示
+
+### 展示位置
+
+严格复用 DeerFlow 原始聊天页顶部 `TokenUsageIndicator`：
+
+- 顶部按钮在开启总量显示且存在缓存命中时，追加“缓存 + Token数”。
+- 点击原有 Token 按钮后，在同一个下拉框中增加：
+  - 缓存命中 Token。
+  - 未缓存输入 Token。
+  - 缓存命中率。
+- 没有缓存命中时保持原始页面效果，不增加空卡片。
+- 每轮 Token 汇总与调试 Token 明细保持原样，不在其他消息区域重复展示缓存数据。
+
+### 数据链
+
+1. `RunJournal` 已将厂商缓存命中保存到 `token_usage_by_model[*].cache_read_tokens`。
+2. Memory/SQL RunStore 在现有 `aggregate_tokens_by_thread()` 中汇总为 `total_cache_read_tokens`。
+3. `GET /api/threads/{thread_id}/token-usage` 返回该字段，不新增数据库列或迁移。
+4. 前端 `threadTokenUsageToTokenUsage()` 映射累计缓存命中。
+5. 原始 `TokenUsageIndicator` 计算未缓存输入和命中率并完成展示。
+
+### 验证
+
+- 后端 Qwen Provider、模型工厂、用量聚合与线程 API 定向回归：164 passed。
+- 前端完整单元测试：626 passed。
+- `pnpm check`：ESLint 与 TypeScript 检查通过。
+- 新增 Playwright E2E 已被测试发现器识别，覆盖原始 Token 按钮与下拉框中的缓存数、未缓存输入和命中率。
+- 本机 E2E 运行环境缺少 Playwright Chromium；改用系统 Chrome 时，正在运行的 Next 开发实例启用了登录且占用项目开发锁，未停止用户现有调试服务。该限制属于本地运行环境，不是断言失败；E2E 会在标准安装浏览器且以 `DEER_FLOW_AUTH_DISABLED=1` 启动的测试环境执行。

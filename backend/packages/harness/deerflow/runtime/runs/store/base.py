@@ -158,13 +158,15 @@ class RunStore(abc.ABC):
         """Return persisted runs that are still ``pending`` or ``running``."""
         pass
 
+    # ADD: 提示词缓存前端展示需求新增
     @abc.abstractmethod
     async def aggregate_tokens_by_thread(self, thread_id: str, *, include_active: bool = False) -> dict[str, Any]:
         """Aggregate token usage for completed runs in a thread.
 
         Returns a dict with keys: total_tokens, total_input_tokens,
-        total_output_tokens, total_runs, by_model (model_name → {tokens, runs}),
-        by_caller ({lead_agent, subagent, middleware}).
+        total_output_tokens, total_cache_read_tokens, total_runs,
+        by_model (model_name → {tokens, runs}), by_caller
+        ({lead_agent, subagent, middleware}).
         """
         pass
 

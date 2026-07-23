@@ -74,9 +74,12 @@ the header and optional per-turn or debug summaries in the message list.
 
 - **Header total**: the persisted thread-level total from the backend. While the
   current run is still streaming, the header may also include the visible
-  in-flight usage for that unfinished response.
+  in-flight usage for that unfinished response. When the provider reports
+  prompt-cache hits, this same header counter and dropdown show cache-read
+  tokens, uncached input, and the cache hit rate.
 - **Per-turn / debug usage**: usage derived from the assistant messages that are
-  currently visible in the conversation view.
+  currently visible in the conversation view. These summaries keep their
+  existing token layout and do not duplicate the cache breakdown.
 
 This means the header total and the visible per-turn totals do **not** need to
 add up exactly. The header is a thread ledger; the per-turn view is a rendering

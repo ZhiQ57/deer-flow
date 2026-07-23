@@ -294,8 +294,9 @@ _RUN_FIXTURES = [
         sub=150,
         mw=50,
         by_model={
-            "lead-model": {"input_tokens": 60, "output_tokens": 40, "total_tokens": 100},
-            "subagent-model": {"input_tokens": 90, "output_tokens": 60, "total_tokens": 150},
+            # ADD: 提示词缓存前端展示需求新增
+            "lead-model": {"input_tokens": 60, "output_tokens": 40, "total_tokens": 100, "cache_read_tokens": 40},
+            "subagent-model": {"input_tokens": 90, "output_tokens": 60, "total_tokens": 150, "cache_read_tokens": 60},
             "middleware-model": {"input_tokens": 30, "output_tokens": 20, "total_tokens": 50},
         },
     ),
@@ -306,7 +307,8 @@ _RUN_FIXTURES = [
         total_tokens=80,
         lead=80,
         by_model={
-            "lead-model-b": {"input_tokens": 50, "output_tokens": 30, "total_tokens": 80},
+            # ADD: 提示词缓存前端展示需求新增
+            "lead-model-b": {"input_tokens": 50, "output_tokens": 30, "total_tokens": 80, "cache_read_tokens": 10},
         },
     ),
     # 3. Legacy row written before this fix: empty token_usage_by_model. Must
@@ -331,6 +333,8 @@ def _assert_aggregate_shape(agg: dict) -> None:
     """Pin the contract that powers /api/threads/{id}/token-usage."""
     # The headline totals stay the simple SUMs.
     assert agg["total_tokens"] == 300 + 80 + 42
+    # ADD: 提示词缓存前端展示需求新增
+    assert agg["total_cache_read_tokens"] == 110
     assert agg["total_runs"] == 3
     assert agg["by_caller"] == {
         "lead_agent": 100 + 80 + 42,

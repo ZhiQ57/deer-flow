@@ -1,7 +1,11 @@
 import type { Message } from "@langchain/langgraph-sdk";
 import { expect, test } from "@rstest/core";
 
-import { accumulateUsage, selectHeaderTokenUsage } from "@/core/messages/usage";
+import {
+  accumulateUsage,
+  getPromptCacheMetrics,
+  selectHeaderTokenUsage,
+} from "@/core/messages/usage";
 import {
   getAssistantTurnUsageMessages,
   getMessageGroups,
@@ -61,6 +65,75 @@ test("reads usage metadata from additional kwargs when the SDK nests it there", 
     outputTokens: 3,
     totalTokens: 11,
   });
+});
+
+test("reads and accumulates prompt cache hits from usage metadata", () => {
+  const messages = [
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "First answer",
+      usage_metadata: {
+        input_tokens: 100,
+        output_tokens: 10,
+        total_tokens: 110,
+        input_token_details: { cache_read: 80 },
+      },
+    },
+    {
+      id: "ai-2",
+      type: "ai",
+      content: "Second answer",
+      usage_metadata: {
+        input_tokens: 50,
+        output_tokens: 5,
+        total_tokens: 55,
+        input_token_details: { cache_read: 30 },
+      },
+    },
+  ] as Message[];
+
+  expect(accumulateUsage(messages)).toEqual({
+    inputTokens: 150,
+    outputTokens: 15,
+    totalTokens: 165,
+    cacheReadTokens: 110,
+  });
+});
+
+test("computes prompt cache hit tokens, uncached input, and hit rate", () => {
+  expect(
+    getPromptCacheMetrics({
+      inputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
+      cacheReadTokens: 80,
+    }),
+  ).toEqual({
+    cacheReadTokens: 80,
+    uncachedInputTokens: 20,
+    hitRate: 0.8,
+  });
+
+  expect(
+    getPromptCacheMetrics({
+      inputTokens: 50,
+      outputTokens: 5,
+      totalTokens: 55,
+      cacheReadTokens: 80,
+    }),
+  ).toEqual({
+    cacheReadTokens: 50,
+    uncachedInputTokens: 0,
+    hitRate: 1,
+  });
+  expect(
+    getPromptCacheMetrics({
+      inputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
+    }),
+  ).toBeNull();
 });
 
 test("keeps header and per-turn aggregation consistent for a reasoning+answer message", () => {
@@ -140,7 +213,12 @@ test("adds current in-flight message usage to backend header totals", () => {
 
   expect(
     selectHeaderTokenUsage({
-      backendUsage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+      backendUsage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        cacheReadTokens: 60,
+      },
       messages: completedMessages,
       pendingMessages: [completedMessages[1]!],
     }),
@@ -148,6 +226,7 @@ test("adds current in-flight message usage to backend header totals", () => {
     inputTokens: 104,
     outputTokens: 56,
     totalTokens: 160,
+    cacheReadTokens: 60,
   });
 });
 

@@ -12,9 +12,14 @@ export function threadTokenUsageToTokenUsage(
   if (!usage) {
     return null;
   }
-  return {
+  const result: TokenUsage = {
     inputTokens: usage.total_input_tokens ?? 0,
     outputTokens: usage.total_output_tokens ?? 0,
     totalTokens: usage.total_tokens ?? 0,
   };
+  const cacheReadTokens = usage.total_cache_read_tokens ?? 0;
+  if (cacheReadTokens > 0) {
+    result.cacheReadTokens = cacheReadTokens;
+  }
+  return result;
 }

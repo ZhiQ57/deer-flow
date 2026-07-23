@@ -17,6 +17,7 @@ import {
 import { useI18n } from "@/core/i18n/hooks";
 import {
   formatTokenCount,
+  getPromptCacheMetrics,
   selectHeaderTokenUsage,
   type TokenUsage,
 } from "@/core/messages/usage";
@@ -61,6 +62,7 @@ export function TokenUsageIndicator({
     [backendUsage, messages, pendingMessages, threadId],
   );
   const preset = getTokenUsageViewPreset(preferences);
+  const cacheMetrics = getPromptCacheMetrics(usage);
 
   if (!enabled) {
     return null;
@@ -86,6 +88,12 @@ export function TokenUsageIndicator({
                 : "-"
               : t.tokenUsage.presets[presetKeyToTranslationKey(preset)]}
           </span>
+          {preferences.headerTotal && cacheMetrics && (
+            <span className="text-emerald-600 dark:text-emerald-400">
+              {t.tokenUsage.cacheShort}{" "}
+              {formatTokenCount(cacheMetrics.cacheReadTokens)}
+            </span>
+          )}
           <ChevronDownIcon className="size-3" />
         </Button>
       </DropdownMenuTrigger>
@@ -100,6 +108,28 @@ export function TokenUsageIndicator({
                   {formatTokenCount(usage.inputTokens)}
                 </span>
               </div>
+              {cacheMetrics && (
+                <div className="space-y-1 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-2 py-1.5 text-emerald-700 dark:text-emerald-300">
+                  <div className="flex justify-between gap-4">
+                    <span>{t.tokenUsage.cacheRead}</span>
+                    <span className="font-mono font-medium">
+                      {formatTokenCount(cacheMetrics.cacheReadTokens)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <span>{t.tokenUsage.uncachedInput}</span>
+                    <span className="font-mono">
+                      {formatTokenCount(cacheMetrics.uncachedInputTokens)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <span>{t.tokenUsage.cacheHitRate}</span>
+                    <span className="font-mono font-medium">
+                      {formatCacheHitRate(cacheMetrics.hitRate)}
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="flex justify-between gap-4">
                 <span>{t.tokenUsage.output}</span>
                 <span className="font-mono">
@@ -163,4 +193,11 @@ function presetKeyToTranslationKey(preset: TokenUsageViewPreset) {
     default:
       return preset;
   }
+}
+
+function formatCacheHitRate(rate: number) {
+  return new Intl.NumberFormat(undefined, {
+    style: "percent",
+    maximumFractionDigits: 1,
+  }).format(rate);
 }

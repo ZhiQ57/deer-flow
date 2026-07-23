@@ -77,6 +77,14 @@ pnpm start
 
 ## Configuration
 
+### Token and prompt-cache usage
+
+When backend token tracking is enabled, the existing token counter in the chat
+header shows the thread input, output, and total tokens. If the provider reports
+prompt-cache hits, the same counter and dropdown also show cached input tokens,
+uncached input tokens, and the cache hit rate. Cache data is not duplicated into
+the per-turn or debug message summaries.
+
 ### Environment Variables
 
 Key environment variables (see `.env.example` for full list):

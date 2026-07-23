@@ -24,6 +24,8 @@ def test_thread_token_usage_returns_stable_shape():
             "total_tokens": 150,
             "total_input_tokens": 90,
             "total_output_tokens": 60,
+            # ADD: 提示词缓存前端展示需求新增
+            "total_cache_read_tokens": 45,
             "total_runs": 2,
             "by_model": {"unknown": {"tokens": 150, "runs": 2}},
             "by_caller": {
@@ -44,6 +46,7 @@ def test_thread_token_usage_returns_stable_shape():
         "total_tokens": 150,
         "total_input_tokens": 90,
         "total_output_tokens": 60,
+        "total_cache_read_tokens": 45,
         "total_runs": 2,
         "by_model": {"unknown": {"tokens": 150, "runs": 2}},
         "by_caller": {
@@ -62,6 +65,8 @@ def test_thread_token_usage_can_include_active_runs():
             "total_tokens": 175,
             "total_input_tokens": 120,
             "total_output_tokens": 55,
+            # ADD: 提示词缓存前端展示需求新增
+            "total_cache_read_tokens": 30,
             "total_runs": 3,
             "by_model": {"unknown": {"tokens": 175, "runs": 3}},
             "by_caller": {

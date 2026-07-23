@@ -4,6 +4,16 @@ export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens?: number;
+}
+
+interface RawUsageMetadata {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  input_token_details?: {
+    cache_read?: number;
+  };
 }
 
 /**
@@ -16,27 +26,24 @@ export function getUsageMetadata(message: Message): TokenUsage | null {
   }
   const usage =
     ((message as Record<string, unknown>).usage_metadata as
-      | {
-          input_tokens?: number;
-          output_tokens?: number;
-          total_tokens?: number;
-        }
+      | RawUsageMetadata
       | undefined) ??
-    (message.additional_kwargs?.usage_metadata as
-      | {
-          input_tokens?: number;
-          output_tokens?: number;
-          total_tokens?: number;
-        }
-      | undefined);
+    (message.additional_kwargs?.usage_metadata as RawUsageMetadata | undefined);
   if (!usage) {
     return null;
   }
-  return {
+  const result: TokenUsage = {
     inputTokens: usage.input_tokens ?? 0,
     outputTokens: usage.output_tokens ?? 0,
     totalTokens: usage.total_tokens ?? 0,
   };
+  const cacheReadTokens = nonNegativeNumber(
+    usage.input_token_details?.cache_read,
+  );
+  if (cacheReadTokens !== undefined && cacheReadTokens > 0) {
+    result.cacheReadTokens = cacheReadTokens;
+  }
+  return result;
 }
 
 /**
@@ -73,6 +80,10 @@ export function accumulateUsage(messages: Message[]): TokenUsage | null {
     cumulative.inputTokens += usage.inputTokens;
     cumulative.outputTokens += usage.outputTokens;
     cumulative.totalTokens += usage.totalTokens;
+    if (usage.cacheReadTokens !== undefined && usage.cacheReadTokens > 0) {
+      cumulative.cacheReadTokens =
+        (cumulative.cacheReadTokens ?? 0) + usage.cacheReadTokens;
+    }
   }
   return hasUsage ? cumulative : null;
 }
@@ -122,10 +133,42 @@ export function hasNonZeroUsage(
 }
 
 export function addUsage(base: TokenUsage, delta: TokenUsage): TokenUsage {
-  return {
+  const result: TokenUsage = {
     inputTokens: base.inputTokens + delta.inputTokens,
     outputTokens: base.outputTokens + delta.outputTokens,
     totalTokens: base.totalTokens + delta.totalTokens,
+  };
+  const cacheReadTokens =
+    (base.cacheReadTokens ?? 0) + (delta.cacheReadTokens ?? 0);
+  if (cacheReadTokens > 0) {
+    result.cacheReadTokens = cacheReadTokens;
+  }
+  return result;
+}
+
+export interface PromptCacheMetrics {
+  cacheReadTokens: number;
+  uncachedInputTokens: number;
+  hitRate: number;
+}
+
+export function getPromptCacheMetrics(
+  usage: TokenUsage | null | undefined,
+): PromptCacheMetrics | null {
+  if (!usage || usage.inputTokens <= 0 || !usage.cacheReadTokens) {
+    return null;
+  }
+  const cacheReadTokens = Math.min(
+    Math.max(usage.cacheReadTokens, 0),
+    usage.inputTokens,
+  );
+  if (cacheReadTokens <= 0) {
+    return null;
+  }
+  return {
+    cacheReadTokens,
+    uncachedInputTokens: Math.max(usage.inputTokens - cacheReadTokens, 0),
+    hitRate: cacheReadTokens / usage.inputTokens,
   };
 }
 

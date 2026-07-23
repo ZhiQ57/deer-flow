@@ -165,13 +165,18 @@ class MemoryRunStore(RunStore):
         run_ids = self._runs_by_thread.get(thread_id) or ()
         completed = [run for run_id in run_ids if (run := self._runs.get(run_id)) is not None and run.get("status") in statuses]
         by_model: dict[str, dict] = {}
+        # ADD: 提示词缓存前端展示需求新增
+        total_cache_read_tokens = 0
         for r in completed:
             usage_by_model = r.get("token_usage_by_model") or {}
             if usage_by_model:
                 for model, usage in usage_by_model.items():
+                    if not isinstance(usage, dict):
+                        continue
                     entry = by_model.setdefault(model, {"tokens": 0, "runs": 0})
                     entry["tokens"] += usage.get("total_tokens", 0)
                     entry["runs"] += 1
+                    total_cache_read_tokens += max(int(usage.get("cache_read_tokens", 0) or 0), 0)
             else:
                 # Fallback for rows written before per-model accounting landed:
                 # attribute the whole run to its single ``model_name``. Keeps
@@ -185,6 +190,7 @@ class MemoryRunStore(RunStore):
             "total_tokens": sum(r.get("total_tokens", 0) for r in completed),
             "total_input_tokens": sum(r.get("total_input_tokens", 0) for r in completed),
             "total_output_tokens": sum(r.get("total_output_tokens", 0) for r in completed),
+            "total_cache_read_tokens": total_cache_read_tokens,
             "total_runs": len(completed),
             "by_model": by_model,
             "by_caller": {

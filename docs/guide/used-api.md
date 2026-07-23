@@ -8,6 +8,8 @@
 - **缓存有效期**：`prompt_cache_ttl` 仅接受 `"5m"` 或 `"1h"`，默认 `"5m"`。
 - **缓存范围**：Provider 只在最后一条系统消息的最后一个非空文本块添加 DashScope `cache_control`，不标记用户消息、工具结果、SQL结果或人工审核内容。
 - **命中统计**：DashScope 返回的 `prompt_tokens_details.cached_tokens` 由现有 LangChain 适配转换为 `usage_metadata.input_token_details.cache_read`，继续进入 DeerFlow `cache_read_tokens` 聚合。
+- **线程用量 API**：`GET /api/threads/{thread_id}/token-usage` 增加 `total_cache_read_tokens`，由现有 `token_usage_by_model` JSON聚合，不增加数据库字段或迁移。
+- **前端展示边界**：仅扩展 DeerFlow 原始顶部 `TokenUsageIndicator` 按钮及下拉框，展示缓存命中 Token、未缓存输入和命中率；每轮与调试 Token 明细保持原样。
 - **主流程边界**：该能力仅通过模型反射扩展点启用，不增加 Agent 图、DataAgent 中间件、Gateway 路由或新的 ThreadState 字段。
 
 ## DataAgent Text2SQL
