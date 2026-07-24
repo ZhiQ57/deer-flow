@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from ...configs import ColumnRetrievalSettings, IndexStoreSettings
 from ...providers.embedding import EmbeddingProvider, embed_query_vector
-
+from ...schemas import ColumnRetrievalResult, ColumnTableMapping, RetrievalOptions
 from ..base import ColumnRetrieverBase
-from ..utils import merge_column_keyword_hits, normalize_retrieval_keywords
+from ..utils import merge_column_keyword_hits, parallel_search_keywords
 from .postgres_common import (
     ConnectionProvider,
     execute_sql,
@@ -18,8 +19,6 @@ from .postgres_common import (
     require_sql,
     retrieval_candidate_limit,
 )
-from ...schemas import ColumnRetrievalResult, ColumnTableMapping, RetrievalOptions
-from ...configs import ColumnRetrievalSettings, IndexStoreSettings
 
 
 class PostgresColumnIndexRetriever(ColumnRetrieverBase):
@@ -91,7 +90,7 @@ class PostgresColumnIndexRetriever(ColumnRetrieverBase):
         keywords: Sequence[str],
         options: RetrievalOptions,
     ) -> list[ColumnRetrievalResult]:
-        """按关键词列表逐个召回候选字段并融合去重。
+        """按关键词列表并行召回候选字段并融合去重。
 
         Args:
             keywords: 已抽取好的关键词列表。
@@ -100,11 +99,11 @@ class PostgresColumnIndexRetriever(ColumnRetrieverBase):
         Returns:
             融合后的字段召回结果列表。
         """
-        clean_keywords = normalize_retrieval_keywords(keywords)
-        if not clean_keywords:
-            return []
         return merge_column_keyword_hits(
-            [(keyword, self.search_columns(keyword, options)) for keyword in clean_keywords]
+            parallel_search_keywords(
+                keywords,
+                lambda keyword: self.search_columns(keyword, options),
+            )
         )[: options.column_top_k]
 
     def tables_for_columns(self, column_names: Sequence[str]) -> list[ColumnTableMapping]:
@@ -187,9 +186,7 @@ class PostgresColumnIndexRetriever(ColumnRetrieverBase):
             )
             """
         )
-        entity_score = sql.SQL("CASE WHEN {entity_match} THEN 1.0 ELSE 0.0 END").format(
-            entity_match=entity_match
-        )
+        entity_score = sql.SQL("CASE WHEN {entity_match} THEN 1.0 ELSE 0.0 END").format(entity_match=entity_match)
         # 中文字段注释和业务别名使用显式包含匹配。
         keyword_match = sql.SQL(
             """
@@ -202,25 +199,18 @@ class PostgresColumnIndexRetriever(ColumnRetrieverBase):
             )
             """
         )
-        keyword_score = sql.SQL("CASE WHEN {keyword_match} THEN 1.0 ELSE 0.0 END").format(
-            keyword_match=keyword_match
-        )
+        keyword_score = sql.SQL("CASE WHEN {keyword_match} THEN 1.0 ELSE 0.0 END").format(keyword_match=keyword_match)
         bm25_match = sql.SQL("FALSE")
         bm25_expr = sql.SQL("0.0::double precision")
         if self.index_store.enable_bm25:
             bm25_match = sql.SQL("retrieval_text ||| %(query)s")
             bm25_expr = sql.SQL("pdb.score(id)")
-        fuzzy_expr = sql.SQL(
-            "{trigram_score} + {entity_score} + {keyword_score}"
-        ).format(
+        fuzzy_expr = sql.SQL("{trigram_score} + {entity_score} + {keyword_score}").format(
             trigram_score=trigram_score,
             entity_score=entity_score,
             keyword_score=keyword_score,
         )
-        aggregate_score_expr = sql.SQL(
-            "(MAX(bm25_score) * %(bm25_weight)s + MAX(fuzzy_score) * %(fuzzy_weight)s + "
-            "MAX(vector_score) * %(vector_weight)s)"
-        )
+        aggregate_score_expr = sql.SQL("(MAX(bm25_score) * %(bm25_weight)s + MAX(fuzzy_score) * %(fuzzy_weight)s + MAX(vector_score) * %(vector_weight)s)")
         statement = sql.SQL(
             """
             WITH bm25_hits AS (

@@ -12,7 +12,7 @@
 - `expand-join-graph` 只使用 `table_names`。
 - raw 召回、索引校验、索引初始化和字段值同步不再进入 DataAgent 工具面。
 - 默认 MCP Server 行为保持向后兼容；只有显式配置 `tool_name_prefix=false` 的 Server 才关闭前缀。
-- 本次只适配 DeerFlow 和 DataAgent；不复制外部 TableRAG 仓库源码。
+- 最新 `dev` 已通过提交 `397aca05` 同步 vendored TableRAG 单工具实现；本分支负责 DeerFlow/DataAgent 适配，不重复复制外部仓库源码。
 
 ## TODO
 
@@ -21,6 +21,7 @@
 - [X] 1.1 检查 `dev`、工作区和现有 DataAgent/MCP 实现。
 - [X] 1.2 从本地最新 `dev` 创建 `refactor/data-agent-sqlrag-retrieve` 分支。
 - [X] 1.3 阅读新版 TableRAG MCP 示例、工具签名和统一返回结构。
+- [X] 1.4 开发期间 `dev` 前进后重新合并最新 `dev`，纳入 vendored TableRAG 单工具实现。
 
 ### 2. MCP 工具名适配
 

@@ -9,7 +9,7 @@ from ...configs import IndexStoreSettings, ValueIndexSearchOptions
 from ...schemas import RetrievalOptions, ValueRetrievalResult
 from ...utils.text import simple_text_normalize
 from ..base import ValueRetrieverBase
-from ..utils import merge_value_keyword_hits, normalize_retrieval_keywords
+from ..utils import merge_value_keyword_hits, parallel_search_keywords
 from .postgres_common import (
     ConnectionProvider,
     execute_sql,
@@ -58,7 +58,7 @@ class PostgresValueIndexRetriever(ValueRetrieverBase):
         keywords: Sequence[str],
         options: RetrievalOptions,
     ) -> list[ValueRetrievalResult]:
-        """按关键词列表逐个召回候选字段值并融合去重。
+        """按关键词列表并行召回候选字段值并融合去重。
 
         Args:
             keywords: 已抽取好的关键词列表。
@@ -67,11 +67,11 @@ class PostgresValueIndexRetriever(ValueRetrieverBase):
         Returns:
             融合后的字段值召回结果列表。
         """
-        clean_keywords = normalize_retrieval_keywords(keywords)
-        if not clean_keywords:
-            return []
         return merge_value_keyword_hits(
-            [(keyword, self.search_values(keyword, options)) for keyword in clean_keywords]
+            parallel_search_keywords(
+                keywords,
+                lambda keyword: self.search_values(keyword, options),
+            )
         )[: options.value_top_k]
 
     def search(self, query: str, options: ValueIndexSearchOptions | None = None) -> list[ValueRetrievalResult]:
@@ -135,9 +135,7 @@ class PostgresValueIndexRetriever(ValueRetrieverBase):
             )
             """
         )
-        contains_score = sql.SQL("CASE WHEN {contains_clause} THEN 1.0 ELSE 0.0 END").format(
-            contains_clause=contains_clause
-        )
+        contains_score = sql.SQL("CASE WHEN {contains_clause} THEN 1.0 ELSE 0.0 END").format(contains_clause=contains_clause)
 
         trigram_clause = sql.SQL("FALSE")
         trigram_score = sql.SQL("0.0::double precision")
@@ -183,9 +181,7 @@ class PostgresValueIndexRetriever(ValueRetrieverBase):
                 """
             )
 
-        fuzzy_order_expr = sql.SQL(
-            "({trigram_score} + {word_similarity_score} + {contains_score})"
-        ).format(
+        fuzzy_order_expr = sql.SQL("({trigram_score} + {word_similarity_score} + {contains_score})").format(
             trigram_score=trigram_score,
             word_similarity_score=word_similarity_score,
             contains_score=contains_score,

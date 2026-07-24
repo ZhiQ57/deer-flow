@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from ...configs import IndexStoreSettings, TableRetrievalSettings
 from ...providers.embedding import EmbeddingProvider, embed_query_vector
-
+from ...schemas import RetrievalOptions, TableRetrievalResult
 from ..base import TableRetrieverBase
-from ..utils import merge_table_keyword_hits, normalize_retrieval_keywords
+from ..utils import merge_table_keyword_hits, parallel_search_keywords
 from .postgres_common import (
     ConnectionProvider,
     execute_sql,
@@ -17,8 +18,6 @@ from .postgres_common import (
     require_sql,
     retrieval_candidate_limit,
 )
-from ...schemas import RetrievalOptions, TableRetrievalResult
-from ...configs import IndexStoreSettings, TableRetrievalSettings
 
 
 class PostgresTableIndexRetriever(TableRetrieverBase):
@@ -93,7 +92,7 @@ class PostgresTableIndexRetriever(TableRetrieverBase):
         keywords: Sequence[str],
         options: RetrievalOptions,
     ) -> list[TableRetrievalResult]:
-        """按关键词列表逐个召回候选表并融合去重。
+        """按关键词列表并行召回候选表并融合去重。
 
         Args:
             keywords: 已抽取好的关键词列表。
@@ -102,11 +101,11 @@ class PostgresTableIndexRetriever(TableRetrieverBase):
         Returns:
             融合后的表结构召回结果列表。
         """
-        clean_keywords = normalize_retrieval_keywords(keywords)
-        if not clean_keywords:
-            return []
         return merge_table_keyword_hits(
-            [(keyword, self.search_tables(keyword, options)) for keyword in clean_keywords]
+            parallel_search_keywords(
+                keywords,
+                lambda keyword: self.search_tables(keyword, options),
+            )
         )[: options.table_top_k]
 
     def _build_search_sql(
@@ -149,7 +148,7 @@ class PostgresTableIndexRetriever(TableRetrieverBase):
             # psycopg 参数格式要求把 trigram 的 % 操作符写成 %%。
             trigram_clause = sql.SQL("schema_summary %% %(query)s")
             trigram_score = sql.SQL("similarity(schema_summary, %(query)s)")
-        
+
         # 中文业务名使用显式包含匹配，稳定命中表标签和表名。
         keyword_match = sql.SQL(
             """
@@ -162,24 +161,17 @@ class PostgresTableIndexRetriever(TableRetrieverBase):
             )
             """
         )
-        keyword_score = sql.SQL("CASE WHEN {keyword_match} THEN 1.0 ELSE 0.0 END").format(
-            keyword_match=keyword_match
-        )
+        keyword_score = sql.SQL("CASE WHEN {keyword_match} THEN 1.0 ELSE 0.0 END").format(keyword_match=keyword_match)
         bm25_match = sql.SQL("FALSE")
         bm25_expr = sql.SQL("0.0::double precision")
         if self.index_store.enable_bm25:
             bm25_match = sql.SQL("schema_summary ||| %(query)s")
             bm25_expr = sql.SQL("pdb.score(id)")
-        fuzzy_expr = sql.SQL(
-            "{trigram_score} + {keyword_score}"
-        ).format(
+        fuzzy_expr = sql.SQL("{trigram_score} + {keyword_score}").format(
             trigram_score=trigram_score,
             keyword_score=keyword_score,
         )
-        aggregate_score_expr = sql.SQL(
-            "(MAX(bm25_score) * %(bm25_weight)s + MAX(fuzzy_score) * %(fuzzy_weight)s + "
-            "MAX(vector_score) * %(vector_weight)s)"
-        )
+        aggregate_score_expr = sql.SQL("(MAX(bm25_score) * %(bm25_weight)s + MAX(fuzzy_score) * %(fuzzy_weight)s + MAX(vector_score) * %(vector_weight)s)")
         statement = sql.SQL(
             """
             WITH bm25_hits AS (

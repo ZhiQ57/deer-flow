@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Mapping
-
 
 _SUPPORTED_TRANSPORTS = {"stdio", "sse", "streamable-http"}
 _SUPPORTED_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -17,7 +16,6 @@ class TableRAGMCPSettings:
 
     config_path: str | None = None
     index_dsn: str | None = None
-    source_dsn: str | None = None
     transport: str = "stdio"
     host: str = "127.0.0.1"
     port: int = 8000
@@ -31,8 +29,6 @@ class TableRAGMCPSettings:
     stateless_http: bool = False
     max_top_k: int = 100
     max_join_hops: int = 5
-    allow_initialize_indexes: bool = False
-    allow_sync_values: bool = False
 
     def __post_init__(self) -> None:
         """校验 MCP 服务配置。"""
@@ -52,7 +48,7 @@ class TableRAGMCPSettings:
         object.__setattr__(self, "log_level", normalized_log_level)
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str] | None = None) -> "TableRAGMCPSettings":
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> TableRAGMCPSettings:
         """从环境变量读取 MCP 服务配置。
 
         Args:
@@ -65,7 +61,6 @@ class TableRAGMCPSettings:
         return cls(
             config_path=_first(env, "TABLERAG_MCP_CONFIG", "TABLERAG_CONFIG"),
             index_dsn=_first(env, "TABLERAG_MCP_INDEX_DSN", "TABLERAG_INDEX_DSN"),
-            source_dsn=_first(env, "TABLERAG_MCP_SOURCE_DSN", "TABLERAG_SOURCE_DSN"),
             transport=_first(env, "TABLERAG_MCP_TRANSPORT") or "stdio",
             host=_first(env, "TABLERAG_MCP_HOST") or "127.0.0.1",
             port=_int(env, "TABLERAG_MCP_PORT", 8000),
@@ -79,11 +74,9 @@ class TableRAGMCPSettings:
             stateless_http=_bool(env, "TABLERAG_MCP_STATELESS_HTTP", False),
             max_top_k=_int(env, "TABLERAG_MCP_MAX_TOP_K", 100),
             max_join_hops=_int(env, "TABLERAG_MCP_MAX_JOIN_HOPS", 5),
-            allow_initialize_indexes=_bool(env, "TABLERAG_MCP_ALLOW_INITIALIZE", False),
-            allow_sync_values=_bool(env, "TABLERAG_MCP_ALLOW_SYNC_VALUES", False),
         )
 
-    def with_overrides(self, **kwargs: object) -> "TableRAGMCPSettings":
+    def with_overrides(self, **kwargs: object) -> TableRAGMCPSettings:
         """返回覆盖部分字段后的配置副本。"""
         clean = {key: value for key, value in kwargs.items() if value is not None}
         return replace(self, **clean)
