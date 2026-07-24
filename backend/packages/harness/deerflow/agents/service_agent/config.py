@@ -32,6 +32,7 @@ class SqlExecutionConfig(BaseModel):
     dsn_env: str
     readonly: Literal[True] = True
     statement_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    max_execution_attempts: int = Field(default=3, ge=1, le=5)
     max_rows: int = Field(default=500, ge=1, le=10_000)
     max_cell_chars: int = Field(default=2_000, ge=100, le=100_000)
     max_result_chars: int = Field(default=100_000, ge=1_000, le=1_000_000)
@@ -42,6 +43,7 @@ class SqlExecutionConfig(BaseModel):
     # ADD: 阻止 Pydantic 把 Python bool 静默转换成 SQL 数值预算 1/0。
     @field_validator(
         "statement_timeout_seconds",
+        "max_execution_attempts",
         "max_rows",
         "max_cell_chars",
         "max_result_chars",
@@ -163,7 +165,7 @@ def parse_service_ability(raw: Mapping[str, Any] | None) -> DataQueryServiceAbil
         return None
     if not isinstance(raw, Mapping):
         raise TypeError("service_ability 必须是对象。")
-    
+
     # ADD: 解析 DataAgent service ability 参数
     parsed = DataQueryServiceAbilityConfig.model_validate(dict(raw))
     extra_fields = sorted((parsed.model_extra or {}).keys())

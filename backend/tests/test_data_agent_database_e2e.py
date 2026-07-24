@@ -11,7 +11,8 @@ from table_rag.mcp.settings import TableRAGMCPSettings
 
 from deerflow.agents.service_agent.binding import resolve_data_source_binding
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
-from deerflow.agents.service_agent.sql_tools import build_sql_tools, execute_sql, validate_sql
+from deerflow.agents.service_agent.sql_executor import execute_sql, validate_sql
+from deerflow.agents.service_agent.sql_tools import build_sql_tools
 from deerflow.agents.service_agent.state import build_retrieval_context
 
 

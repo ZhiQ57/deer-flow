@@ -5,16 +5,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from hashlib import sha256
-from typing import Any, override
+from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
-from langgraph.runtime import Runtime
 
 from deerflow.agents.human_input import read_human_input_response
-
-from .config import DataQueryServiceAbilityConfig
-from .state import get_active_service_state, make_service_state
 
 
 # ADD: 统一识别当前可见用户轮次，human-input 隐藏回复不创建新业务轮次。

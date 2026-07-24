@@ -15,7 +15,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from .config import DataQueryServiceAbilityConfig
-from .sql_tools import validate_sql
+from .sql_executor import SqlExecutionService, SqlValidationRequest
 from .state import get_active_service_state, make_service_state
 from .tool_call_limits import keep_first_matching_tool_call
 from .turn_reset_middleware import current_visible_turn_id
@@ -29,6 +29,7 @@ class SqlStageMiddleware(AgentMiddleware):
         """初始化 SQL 阶段门禁。"""
         super().__init__()
         self._config = config
+        self._sql_executor = SqlExecutionService(config)
 
     @staticmethod
     def _error(request: ToolCallRequest, code: str) -> ToolMessage:
@@ -79,6 +80,8 @@ class SqlStageMiddleware(AgentMiddleware):
             "thread_id": runtime_context.get("thread_id"),
             "parent_run_id": runtime_context.get("run_id"),
             "action": approval.get("action"),
+            "database_type": self._config.sql_execution.database_type,
+            "max_execution_attempts": self._config.sql_execution.max_execution_attempts,
             "intent": labels.get("intent"),
             "labels": labels.get("labels", []),
             "retrieval_digest": retrieval.get("retrieval_digest"),
@@ -87,7 +90,13 @@ class SqlStageMiddleware(AgentMiddleware):
             "columns": retrieval.get("columns", [])[:100] if isinstance(retrieval.get("columns"), list) else [],
             "values": retrieval.get("values", [])[:50] if isinstance(retrieval.get("values"), list) else [],
             "join_graphs": retrieval.get("join_graphs", [])[:30] if isinstance(retrieval.get("join_graphs"), list) else [],
-            "instructions": "只返回一个 JSON 对象，包含 version、kind、snapshot_id、data_source_id、validation、execution；validation 必须原样保留 sql_sha256 和 validation_digest；禁止 Markdown 和自由文本。",
+            "instructions": (
+                "先调用 data_validate_sql。action=execute 时才可调用 data_execute_sql；"
+                "执行失败且 retryable=true 时，根据 error_category、error_message 和 recommended_action 修复 SQL，"
+                "重新调用 data_validate_sql 后再执行，不得超过 max_execution_attempts。"
+                "最终只返回一个 JSON 对象，包含 version、kind、snapshot_id、data_source_id、validation、execution；"
+                "validation 必须原样保留 sql_sha256 和 validation_digest；禁止 Markdown 和自由文本。"
+            ),
         }
 
     @staticmethod
@@ -148,11 +157,12 @@ class SqlStageMiddleware(AgentMiddleware):
             return self._error(request, "SQL_VALIDATION_FAILED")
         active_payload = active.get("payload") if isinstance(active.get("payload"), Mapping) else {}
         retrieval = active_payload.get("retrieval") if isinstance(active_payload.get("retrieval"), Mapping) else {}
-        server_validation = validate_sql(
-            validation["executable_sql"],
-            config=self._config,
-            retrieval=retrieval,
-            snapshot_id=str(active.get("snapshot_id") or ""),
+        server_validation = self._sql_executor.validate(
+            SqlValidationRequest(
+                sql=validation["executable_sql"],
+                retrieval=retrieval,
+                snapshot_id=str(active.get("snapshot_id") or ""),
+            )
         )
         if server_validation.get("valid") is not True or validation.get("sql_sha256") != server_validation.get("sql_sha256") or validation.get("validation_digest") != server_validation.get("validation_digest"):
             return self._error(request, "SQL_VALIDATION_FAILED")

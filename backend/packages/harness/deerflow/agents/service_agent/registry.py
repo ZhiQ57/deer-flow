@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import BaseTool
 
-from .config import DataQueryServiceAbilityConfig
+from .config import DataQueryServiceAbilityConfig, parse_service_ability
 
 logger = logging.getLogger(__name__)
 
@@ -105,37 +105,39 @@ class DataAgentServiceAbility:
         return self.config.public_metadata()
 
 
-# ADD: 安全解析 custom agent 定制智能体的 service_ability 参数
-def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
-    """尝试解析 service ability 参数, 配置错误时记录脱敏修复信息并返回空适配器。
+def resolve_service_ability(raw: Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
+    """严格解析 custom-agent 的 service ability。
+
     Args:
-        raw: AgentConfig.service_ability 原始配置
+        raw: ``AgentConfig.service_ability`` 原始配置。
+
     Returns:
-        DataAgentServiceAbility
+        已解析的能力适配器；未配置时返回 None。
+
+    Raises:
+        TypeError: 配置不是映射对象。
+        ValueError: 能力类型或版本不受支持。
     """
-    if raw is None:
+    config = parse_service_ability(raw)
+    if config is None:
         return None
-    if not isinstance(raw, Mapping):
-        raise TypeError("service_ability 必须是对象。")
+    if config.type == "data_query" and config.version == 1:
+        return DataAgentServiceAbility(config)
+    raise ValueError(f"不支持的 service_ability 合同：{config.type}/v{config.version}")
 
-    # ADD: 解析 DataAgent service ability 参数
+
+def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
+    """安全解析 custom-agent 的 service ability。
+
+    Args:
+        raw: ``AgentConfig.service_ability`` 原始配置。
+
+    Returns:
+        已解析的能力适配器；配置错误时记录脱敏信息并返回 None。
+    """
     try:
-        config = DataQueryServiceAbilityConfig.model_validate(dict(raw))
-        extra_fields = sorted((config.model_extra or {}).keys())
-        sql_extra_fields = sorted((config.sql_execution.model_extra or {}).keys())
-        if extra_fields or sql_extra_fields:
-            # ADD: 出现未知扩展字段, 打印提示
-            logger.debug("DataAgent service_ability 包含未识别扩展字段：top=%s sql_execution=%s", extra_fields, sql_extra_fields)
-
-        if config is None:
-            return None
-        # TODO: 该位置只支持 data-agent, 未来扩展到所有定制化智能体
-        if config.type == "data_query" and config.version == 1:
-            # ADD: 已经加入 middleware 了
-            return DataAgentServiceAbility(config)
-        raise ValueError(f"不支持的 service_ability 合同：{config.type}/v{config.version}")
+        return resolve_service_ability(raw)
     except (TypeError, ValueError) as exc:
-        # ADD: 只输出字段路径和约束类型，不输出 Pydantic input 或原始配置值，避免误填 DSN 泄密。
         issues: list[str] = []
         errors = getattr(exc, "errors", None)
         if callable(errors):

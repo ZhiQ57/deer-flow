@@ -130,6 +130,7 @@ service_ability:
     database_type: mysql
     dsn_env: DATA_AGENT_MYSQL_DSN
     readonly: true
+    max_execution_attempts: 3
     allowed_schemas: [text2sql]
     allowed_tables: []   # 部署前填写服务端授权表
     allowed_columns: []  # 部署前填写服务端授权列
@@ -138,6 +139,11 @@ service_ability:
 正式 SQL 校验同时支持 PostgreSQL/MySQL AST。`sql_only` 快照只向 SQL SubAgent 提供
 `data_validate_sql`；只有 `execute` 快照才提供 `data_execute_sql`。父 Agent 不信任 SQL SubAgent
 最终自由文本，而是从真实 SQL 工具 ToolMessage 重建并再次校验结果。
+
+正式执行逻辑集中在 `deerflow.agents.service_agent.sql_executor.SqlExecutionService`。每次执行都会消费
+当前校验轮次；执行失败后，SQL SubAgent 必须根据 `error_category`、可选的安全 `error_message`、
+`retryable` 和 `recommended_action` 修复或简化 SQL，再次调用 `data_validate_sql` 后才能重新执行。
+单个 SQL 子任务最多执行 `max_execution_attempts` 次，默认 3 次，成功后不能继续执行。
 
 `data-agent.allowable_subagents` 必须显式包含 `sql-subagent`。服务端会把该判定写入本次运行上下文并在
 `SqlStageMiddleware` 与 `task` 工具装配处双重校验；客户端手动设置 `subagent_enabled=true`、模型自行填写

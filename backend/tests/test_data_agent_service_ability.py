@@ -94,7 +94,7 @@ def test_data_query_v1_rejects_unsupported_label_only_toggle() -> None:
 
 @pytest.mark.parametrize(
     "field",
-    ["statement_timeout_seconds", "max_rows", "max_cell_chars", "max_result_chars"],
+    ["statement_timeout_seconds", "max_execution_attempts", "max_rows", "max_cell_chars", "max_result_chars"],
 )
 def test_parse_service_ability_rejects_boolean_sql_budgets(field: str) -> None:
     """Python bool 是 int 子类，但 SQL 数值预算绝不能把 true/false 当作 1/0。"""

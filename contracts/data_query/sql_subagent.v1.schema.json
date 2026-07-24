@@ -34,13 +34,16 @@
             "ok": {"const": true},
             "snapshot_id": {"type": "string", "minLength": 1},
             "validation_digest": {"type": "string", "minLength": 1},
+            "database_type": {"enum": ["postgresql", "mysql"]},
             "columns": {"type": "array", "maxItems": 200, "items": {"type": "string", "maxLength": 200}},
             "rows": {"type": "array", "maxItems": 500, "items": {"type": "object"}},
             "row_count": {"type": "integer", "minimum": 0},
             "returned_row_count": {"type": "integer", "minimum": 0},
             "truncated": {"type": "boolean"},
             "empty": {"type": "boolean"},
-            "duration_ms": {"type": "number", "minimum": 0}
+            "duration_ms": {"type": "number", "minimum": 0},
+            "attempt": {"type": "integer", "minimum": 1, "maximum": 5},
+            "max_attempts": {"type": "integer", "minimum": 1, "maximum": 5}
           },
           "additionalProperties": true
         },
@@ -52,8 +55,42 @@
             "ok": {"const": false},
             "snapshot_id": {"type": "string", "minLength": 1},
             "validation_digest": {"type": "string", "minLength": 1},
+            "database_type": {"enum": ["postgresql", "mysql"]},
             "error_code": {"enum": ["SQL_BINDING_MISMATCH", "SQL_DSN_MISSING", "SQL_EXECUTION_FAILED", "SQL_TIMEOUT", "SQL_CANCELLED", "SQL_EXECUTION_ALREADY_ATTEMPTED"]},
-            "duration_ms": {"type": "number", "minimum": 0}
+            "error_category": {
+              "enum": [
+                "syntax_error",
+                "unknown_column",
+                "unknown_table",
+                "ambiguous_column",
+                "type_mismatch",
+                "timeout",
+                "cancelled",
+                "permission_denied",
+                "connection_error",
+                "execution_error",
+                "configuration_error",
+                "binding_error",
+                "validation_reuse",
+                "attempt_budget",
+                "execution_complete"
+              ]
+            },
+            "error_message": {"type": "string", "maxLength": 500},
+            "retryable": {"type": "boolean"},
+            "recommended_action": {
+              "enum": [
+                "repair_sql",
+                "repair_or_request_evidence",
+                "simplify_sql",
+                "retry_same_sql",
+                "revalidate_sql",
+                "stop"
+              ]
+            },
+            "duration_ms": {"type": "number", "minimum": 0},
+            "attempt": {"type": "integer", "minimum": 0, "maximum": 5},
+            "max_attempts": {"type": "integer", "minimum": 1, "maximum": 5}
           },
           "additionalProperties": true
         }

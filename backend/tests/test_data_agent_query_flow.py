@@ -20,8 +20,9 @@ from deerflow.agents.service_agent.approval_middleware import QueryApprovalMiddl
 from deerflow.agents.service_agent.binding import resolve_data_source_binding
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility
+from deerflow.agents.service_agent.sql_executor import execute_sql, validate_sql
 from deerflow.agents.service_agent.sql_stage_middleware import SqlStageMiddleware
-from deerflow.agents.service_agent.sql_tools import build_sql_tools, execute_sql, validate_sql
+from deerflow.agents.service_agent.sql_tools import build_sql_tools
 from deerflow.agents.service_agent.sqlrag_contract import is_sqlrag_retrieval_tool_name
 from deerflow.agents.service_agent.state import (
     build_query_approval_request,
@@ -32,7 +33,6 @@ from deerflow.agents.service_agent.state import (
     merge_retrieval_contexts,
 )
 from deerflow.agents.service_agent.table_rag_middleware import TableRagStageMiddleware
-from deerflow.agents.service_agent.turn_reset_middleware import DataAgentTurnResetMiddleware
 from deerflow.agents.thread_state import ThreadState
 from deerflow.tools.builtins.query_labels_tool import publish_query_labels_tool
 from deerflow.tools.builtins.task_tool import _build_data_query_sql_result_from_steps
@@ -505,8 +505,8 @@ def test_table_rag_middleware_preserves_prior_success_when_supplement_is_empty(m
     assert service_state["payload"]["last_retrieval_error"]["error_code"] == "TABLERAG_EMPTY_OR_FAILED"
 
 
-def test_new_visible_turn_resets_old_approval_snapshot() -> None:
-    """新用户问题不能继承上一轮已批准的 SQL 快照。"""
+def test_new_visible_turn_cannot_execute_old_approval_snapshot() -> None:
+    """新用户问题不能复用上一轮已批准的 SQL Snapshot 启动子代理。"""
     state = {
         "messages": [
             HumanMessage(id="turn-1", content="上一轮查询"),
@@ -519,16 +519,41 @@ def test_new_visible_turn_resets_old_approval_snapshot() -> None:
                 "turn_id": "turn-1",
                 "snapshot_id": "sha256:approved",
                 "stage": "approved",
-                "payload": {"approval": {"status": "approved", "action": "execute"}},
+                "payload": {
+                    "approval": {"status": "approved", "action": "execute"},
+                    "retrieval": {},
+                    "labels": {},
+                },
             }
         ],
     }
+    runtime = MagicMock()
+    runtime.context = {
+        "data_query_service_ability": _config().model_dump(mode="json"),
+        "data_query_sql_subagent_allowed": True,
+    }
+    request = ToolCallRequest(
+        tool_call={
+            "name": "task",
+            "id": "task-stale-snapshot",
+            "args": {
+                "description": "SQL",
+                "prompt": "ignored",
+                "subagent_type": "sql-subagent",
+            },
+        },
+        tool=None,
+        state=state,
+        runtime=runtime,
+    )
 
-    update = DataAgentTurnResetMiddleware(_config()).before_agent(state, MagicMock())
+    result = SqlStageMiddleware(_config()).wrap_tool_call(
+        request,
+        lambda _request: pytest.fail("旧 Snapshot 不得进入 SQL SubAgent"),
+    )
 
-    assert update["service_states"][0]["stage"] == "idle"
-    assert update["service_states"][0]["turn_id"] == "turn-2"
-    assert update["service_states"][0]["payload"] == {}
+    assert isinstance(result, ToolMessage)
+    assert json.loads(result.content)["error_code"] == "SQL_STAGE_NOT_APPROVED"
 
 
 def test_query_approval_middleware_accepts_only_matching_hidden_response() -> None:
@@ -997,7 +1022,7 @@ def test_p0_sql_validation_failures_never_reach_database_driver(monkeypatch: pyt
         driver_calls += 1
         raise AssertionError("被拒绝的 SQL 不得进入数据库驱动")
 
-    monkeypatch.setattr("deerflow.agents.service_agent.sql_tools._execute_postgres", fail_if_called)
+    monkeypatch.setattr("deerflow.agents.service_agent.sql_executor._execute_postgres", fail_if_called)
     config = _config()
     retrieval = build_retrieval_context(
         _retrieval_payload(),
@@ -1114,7 +1139,7 @@ def test_execute_sql_uses_request_secret_without_exposing_it(monkeypatch: pytest
         snapshot_id="snapshot-secret",
     )
     monkeypatch.setattr(
-        "deerflow.agents.service_agent.sql_tools._execute_mysql",
+        "deerflow.agents.service_agent.sql_executor._execute_mysql",
         lambda sql, dsn, ability: (["region"], [{"region": "华东"}]),
     )
 
@@ -1294,6 +1319,8 @@ def test_sql_stage_middleware_replaces_free_text_prompt_with_json_envelope() -> 
         assert envelope["snapshot_id"] == "sha256:snapshot"
         assert envelope["thread_id"] == "thread-1"
         assert envelope["parent_run_id"] == "run-parent-1"
+        assert envelope["database_type"] == "postgresql"
+        assert envelope["max_execution_attempts"] == 3
         validation = validate_sql(
             "SELECT orders.region FROM public.orders LIMIT 500",
             config=_config(),
