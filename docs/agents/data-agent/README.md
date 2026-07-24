@@ -29,7 +29,6 @@ $env:DEER_FLOW_EXTENSIONS_CONFIG_PATH = "D:\A-PythonWork\AOpenGithub\deer-flow\e
 $env:TABLERAG_CONFIG = "D:\A-PythonWork\AOpenGithub\deer-flow\tablerag.yaml"
 
 $env:TABLERAG_MCP_INDEX_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
-$env:TABLERAG_MCP_SOURCE_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
 
 $env:DATA_AGENT_MYSQL_DSN = "mysql+pymysql://readonly:<password>@127.0.0.1:3308/text2sql"
 ```
@@ -84,13 +83,15 @@ uv run pytest "D:\A-PythonWork\AOpenGithub\deer-flow\backend\tests\service_agent
 Copy-Item -LiteralPath "extensions_config.example.json" -Destination "extensions_config.json" -Force
 ```
 
+该 Server 必须保留 `"tool_name_prefix": false`，这样 DataAgent 看到的唯一工具名严格为
+`sqlrag_retrieve`，不会变成 `tablerag_sqlrag_retrieve`。
+
 在启动 DataAgent 的同一个 PowerShell 会话中注入配置。密码含 `@`、`:` 等字符时必须先做 URL 编码：
 
 ```powershell
 $env:TABLERAG_CONFIG = "D:\A-PythonWork\AOpenGithub\deer-flow\tablerag.yaml"
 $env:TABLERAG_MCP_CONFIG = $env:TABLERAG_CONFIG
 $env:TABLERAG_MCP_INDEX_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
-$env:TABLERAG_MCP_SOURCE_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
 
 $env:DATA_AGENT_MYSQL_DSN = "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql"
 ```
@@ -151,7 +152,7 @@ service_ability:
 - `publish_query_labels`：稳定 SDK 中的标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels`、`confidence` 和显式 `ambiguities`，不调用模型。没有歧义时必须传 `ambiguities: []`，不能省略或只在最终回答中描述待确认项。
 - `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`；实验性 DataAgent 使用 `require_retrieval=True` 和 `stage_name="labels_published"`，因此任何标签都必须在首次有效 TableRAG 检索后发布。middleware 会生成顶层 ToolMessage artifact、写入 `data_query_labels`、发送 custom stream 事件并继续当前图执行；数据库来源标签还必须关联 Evidence 摘要。
 - `entity_extract_tool`：现有实体抽取工具继续保留，可在确实需要独立模型抽取时按需调用，但不再是 TableRAG 或 SQL 的前置条件。
-- `DataAgentOrchestrationMiddleware`：允许 lead-agent 直接组织 TableRAG query/keywords；强制 `TableRAG -> 查询标签 -> SQL 校验 -> SQL 执行 -> 可选 ChartSpec -> 最终回答` 顺序。实体抽取仍不是前置条件。
+- `DataAgentOrchestrationMiddleware`：允许 lead-agent 直接为 `sqlrag_retrieve` 组织 `operation`、`query`、`queries` 与表列范围；强制 `TableRAG -> 查询标签 -> SQL 校验 -> SQL 执行 -> 可选 ChartSpec -> 最终回答` 顺序。实体抽取仍不是前置条件。
 - `data_validate_sql`：只允许单条 MySQL `SELECT/WITH`，拒绝 DDL/DML、多语句、锁、文件写出、危险函数、优化器 Hint、占位符、跨业务库和系统库访问，并自动收紧 `LIMIT`。
 - `data_execute_sql`：只执行最近校验返回的同一条 `executable_sql`；使用只读事务、连接/读取/查询超时、行数、单元格和结果总字符预算。
 - `data_build_chart_spec`：只消费成功 SQL 结果，并校验图表字段和数值轴。
@@ -193,10 +194,10 @@ deerflow-dev/
 默认工具面只保留：
 
 - `read_file` 等必要 DeerFlow 框架工具；
-- 只读 `tablerag_*` MCP 工具；
+- 唯一且无前缀的只读 MCP 工具 `sqlrag_retrieve`；
 - DataAgent 标签、可选 QueryContext、SQL 和 ChartSpec 工具。
 
-不会暴露 Bash、写文件、其他 MCP、`tablerag_initialize_indexes` 或 `tablerag_sync_field_values`。通用子代理默认关闭；如显式启用，只接受配置了明确工具白名单、且工具全部属于只读 TableRAG 的自定义子代理。
+不会暴露 Bash、写文件、其他 MCP，也不会兼容旧的多工具 TableRAG 名称。通用子代理默认关闭；如显式启用，只接受配置了明确工具白名单、且工具名严格为 `sqlrag_retrieve` 的自定义子代理。
 
 单轮默认调用预算：
 

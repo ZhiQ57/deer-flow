@@ -22,8 +22,7 @@ from tools.constants import (
     DATA_VALIDATE_SQL_TOOL_NAME,
     ENTITY_EXTRACT_TOOL_NAME,
     PUBLISH_QUERY_LABELS_TOOL_NAME,
-    is_readonly_tablerag_tool_name,
-    is_tablerag_retrieval_tool_name,
+    is_sqlrag_tool_name,
 )
 from tools.sql_validation import sql_sha256
 
@@ -359,7 +358,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         if validation_count >= self._max_sql_validation_calls:
             return f"SQL 校验已达到 {self._max_sql_validation_calls} 次预算。"
 
-        retrieval_count = self._tool_result_count(state, is_tablerag_retrieval_tool_name)
+        retrieval_count = self._tool_result_count(state, is_sqlrag_tool_name)
         if retrieval_count >= self._max_retrieval_calls:
             return f"TableRAG 检索已达到 {self._max_retrieval_calls} 次预算。"
 
@@ -405,7 +404,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             data_tool_count = self._tool_result_count(
                 state,
                 lambda tool_name: (
-                    is_tablerag_retrieval_tool_name(tool_name)
+                    is_sqlrag_tool_name(tool_name)
                     or tool_name
                     in {
                         DATA_VALIDATE_SQL_TOOL_NAME,
@@ -416,10 +415,10 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             )
             if data_tool_count:
                 return self._block(request, "DataAgent 调用预算：数据检索已开始，不应再补调用额外模型执行实体抽取；请直接基于现有 Evidence 继续。")
-        if is_tablerag_retrieval_tool_name(name):
+        if is_sqlrag_tool_name(name):
             if execution_count >= self._max_sql_execution_calls:
                 return self._block(request, "DataAgent 调用预算：本轮 SQL 执行次数已达上限，不再允许继续检索；请保留已有执行结果并输出结论或待确认项。")
-            retrieval_count = self._tool_result_count(state, is_tablerag_retrieval_tool_name)
+            retrieval_count = self._tool_result_count(state, is_sqlrag_tool_name)
             if retrieval_count >= self._max_retrieval_calls:
                 return self._block(request, "DataAgent 调用预算：本轮 TableRAG 检索次数已达上限，请基于已有证据回答或明确待确认项。")
         if name == "task":
@@ -526,13 +525,11 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
 
     @staticmethod
     def _retrieval_succeeded(
-        tool_name: str,
         result: ToolMessage | Command,
     ) -> tuple[bool, str]:
         """判断 TableRAG 工具结果是否成功。
 
         Args:
-            tool_name: TableRAG 工具名。
             result: 工具执行结果。
 
         Return:
@@ -555,13 +552,15 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             return bool(payload), text
 
         retrieval_result = payload.get("result")
-        normalized_name = tool_name.strip().lower()
-        if normalized_name.endswith("tablerag_retrieve") or normalized_name.endswith("tablerag_raw_retrieve"):
+        operation = payload.get("operation")
+        if operation == "hybrid-search":
             if not isinstance(retrieval_result, Mapping):
                 return False, text
             candidate_keys = ("evidences", "tables", "columns", "values", "join_graphs")
             return any(bool(retrieval_result.get(key)) for key in candidate_keys), text
-        return bool(retrieval_result), text
+        if operation in {"search-evidences", "search-tables", "search-columns", "search-values", "expand-join-graph"}:
+            return isinstance(retrieval_result, list) and bool(retrieval_result), text
+        return False, text
 
     @staticmethod
     def _attach_retrieval_update(
@@ -578,13 +577,21 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
             带检索状态更新的工具结果。
         """
         tool_name = str(request.tool_call.get("name") or "")
-        ok, text = DataAgentOrchestrationMiddleware._retrieval_succeeded(tool_name, result)
+        ok, text = DataAgentOrchestrationMiddleware._retrieval_succeeded(result)
         args = request.tool_call.get("args") or {}
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            queries = args.get("queries")
+            if isinstance(queries, list):
+                query = " | ".join(item.strip() for item in queries if isinstance(item, str) and item.strip())
+            elif args.get("table_names"):
+                query = " | ".join(str(item).strip() for item in args["table_names"] if str(item).strip())
         update = {
             "data_retrieval_context": {
                 "ok": ok,
                 "tool_name": tool_name,
-                "query": str(args.get("query") or ""),
+                "operation": str(args.get("operation") or "hybrid-search"),
+                "query": str(query or ""),
                 "content_sha256": sha256(text.encode("utf-8")).hexdigest(),
                 "result_preview": text[:2_000],
             },
@@ -615,7 +622,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         name = str(request.tool_call.get("name") or "")
         if name == ENTITY_EXTRACT_TOOL_NAME:
             processed = self._attach_entity_extraction_update(result)
-        elif is_tablerag_retrieval_tool_name(name):
+        elif is_sqlrag_tool_name(name):
             processed = self._attach_retrieval_update(request, result)
         else:
             processed = result
@@ -656,7 +663,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         if blocked is not None:
             return blocked
         name = str(request.tool_call.get("name") or "")
-        if not is_readonly_tablerag_tool_name(name):
+        if not is_sqlrag_tool_name(name):
             return self._after_tool_call(request, handler(request))
         with self._table_rag_lock(request):
             return self._after_tool_call(request, handler(request))
@@ -671,7 +678,7 @@ class DataAgentOrchestrationMiddleware(AgentMiddleware):
         if blocked is not None:
             return blocked
         name = str(request.tool_call.get("name") or "")
-        if not is_readonly_tablerag_tool_name(name):
+        if not is_sqlrag_tool_name(name):
             return self._after_tool_call(request, await handler(request))
         lock = self._table_rag_lock(request)
         await self._acquire_table_rag_lock(lock)

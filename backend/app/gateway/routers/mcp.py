@@ -64,6 +64,7 @@ class McpServerConfigResponse(BaseModel):
     routing: McpRoutingConfig = Field(default_factory=McpRoutingConfig, description="Soft routing hints for tools from this MCP server")
     tools: dict[str, McpToolOverride] = Field(default_factory=dict, description="Per-original-tool MCP configuration overrides")
     tool_call_timeout: float | None = Field(default=None, description="Timeout in seconds for individual stdio MCP tool calls")
+    tool_name_prefix: bool = Field(default=True, description="Whether exposed MCP tool names are prefixed with the server name")
     model_config = ConfigDict(extra="allow")
 
 

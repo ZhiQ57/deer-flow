@@ -6,7 +6,6 @@ import re
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from typing import TypeVar
 
 from ..reranker.fusion.rrf import reciprocal_rank_fusion_scores
 from ..schemas import (
@@ -15,16 +14,6 @@ from ..schemas import (
     TableRetrievalResult,
     ValueRetrievalResult,
 )
-
-
-ResultT = TypeVar(
-    "ResultT",
-    EvidenceRetrievalResult,
-    TableRetrievalResult,
-    ColumnRetrievalResult,
-    ValueRetrievalResult,
-)
-
 
 KEYWORD_COVERAGE_WEIGHT = 0.05
 """关键词覆盖率加分权重，保持为小幅 boost，避免覆盖主召回分。"""
@@ -72,7 +61,14 @@ def normalize_retrieval_keywords(keywords: Sequence[str]) -> list[str]:
     return normalized
 
 
-def parallel_search_keywords(
+def parallel_search_keywords[
+    ResultT: (
+        EvidenceRetrievalResult,
+        TableRetrievalResult,
+        ColumnRetrievalResult,
+        ValueRetrievalResult,
+    )
+](
     keywords: Sequence[str],
     search_fn: Callable[[str], Sequence[ResultT]],
     *,
@@ -181,7 +177,14 @@ def merge_value_keyword_hits(
     )
 
 
-def _merge_keyword_hits(
+def _merge_keyword_hits[
+    ResultT: (
+        EvidenceRetrievalResult,
+        TableRetrievalResult,
+        ColumnRetrievalResult,
+        ValueRetrievalResult,
+    )
+](
     keyword_hits: Sequence[tuple[str, Sequence[ResultT]]],
     *,
     key_fn: Callable[[ResultT], str],

@@ -505,6 +505,7 @@ def _available_subagents(agent_config, subagent_enabled: bool) -> set[str] | Non
         return set(agent_config.allowable_subagents)
     return set(["default"])
 
+
 def _load_enabled_available_skills(available_skills: set[str] | None, *, app_config: AppConfig, user_id: str | None = None) -> list[Skill]:
     try:
         from deerflow.agents.lead_agent.prompt import get_enabled_skills_for_config
@@ -582,8 +583,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     service_ability = resolve_service_ability_safely(agent_config.service_ability if agent_config else None)
     # ADD: 只有 custom-agent 显式 allowlist SQL SubAgent 时才开启现有 task 工具。
     sql_subagent_allowed = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents and service_ability.config.sql_subagent_name in agent_config.allowable_subagents)
-    # if sql_subagent_allowed:
-    #     subagent_enabled = True
+    if sql_subagent_allowed:
+        subagent_enabled = True
     # ADD: service_ability 参数值=>存储=>系统运行时(runtime), 供显式 sql-subagent 工具装配使用   # TODO: 能否放入 checkpoint ?
     if service_ability is not None:
         context = config.setdefault("context", {})
@@ -648,7 +649,6 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             "subagent_enabled": subagent_enabled,
             "tool_groups": agent_config.tool_groups if agent_config else None,
             "available_skills": sorted(available_skills) if available_skills is not None else None,
-
             # ADD: public_metadata()即注册 DataAgentServiceAbility
             "service_ability": service_ability.public_metadata() if service_ability is not None else None,
         }
@@ -769,9 +769,10 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     extra_tools = [update_agent] if agent_name and not is_webhook_channel else []
     # Default lead agent (unchanged behavior)
     raw_tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, app_config=resolved_app_config)
-    
+
     # ADD: service_ability 读取授权工具集
     if service_ability is not None:
+        raw_tools = service_ability.filter_tools(raw_tools)
         raw_tools.extend(service_ability.build_tools())
     configured_tools = raw_tools + extra_tools
     if non_interactive:
@@ -788,6 +789,9 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         app_config=resolved_app_config,
     )
     configured_tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
+    if service_ability is not None:
+        # ADD: 授权或 Skill 策略移除唯一 SQLRAG 工具时拒绝继续装配，避免 DataAgent 退化为无检索流程。
+        configured_tools = service_ability.filter_tools(configured_tools)
     late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
     final_tools, setup = assemble_deferred_tools(configured_tools, enabled=resolved_app_config.tool_search.enabled)
     final_tools.extend(late_tools)

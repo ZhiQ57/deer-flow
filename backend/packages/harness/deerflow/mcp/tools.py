@@ -637,14 +637,19 @@ async def get_mcp_tools() -> list[BaseTool]:
                     exc_info=True,
                 )
 
-        client = MultiServerMCPClient(
-            servers_config,
-            tool_interceptors=tool_interceptors,
-            tool_name_prefix=True,
-        )
+        def tool_name_prefix_enabled(server_config: object) -> bool:
+            """读取 Server 工具名前缀开关，非布尔扩展值按默认开启处理。"""
+            configured_prefix = getattr(server_config, "tool_name_prefix", True)
+            return configured_prefix if isinstance(configured_prefix, bool) else True
 
         async def load_server_tools(server_name: str) -> list[BaseTool]:
             try:
+                server_config = extensions_config.mcp_servers.get(server_name)
+                client = MultiServerMCPClient(
+                    {server_name: servers_config[server_name]},
+                    tool_interceptors=tool_interceptors,
+                    tool_name_prefix=tool_name_prefix_enabled(server_config),
+                )
                 return await client.get_tools(server_name=server_name)
             except Exception as e:
                 logger.warning(
@@ -669,8 +674,8 @@ async def get_mcp_tools() -> list[BaseTool]:
         # scanning servers_config for a name prefix is ambiguous when one server name is a
         # prefix of another (e.g. "web" vs "web_scraper" → "web_scraper_search".startswith(
         # "web_") matches "web" first), which pools the tool under the wrong server. Using the
-        # source grouping makes routing exact; the prefix guard preserves the previous
-        # behavior of leaving unprefixed tools unwrapped.
+        # source grouping makes routing exact，并允许关闭工具名前缀的 stdio Server
+        # 继续使用同一套持久会话池。
         for source_name, server_tools in zip(servers_config.keys(), tools_by_server, strict=True):
             transport = servers_config[source_name].get("transport", "stdio")
             server_cfg = extensions_config.mcp_servers.get(source_name)
@@ -689,7 +694,8 @@ async def get_mcp_tools() -> list[BaseTool]:
                 routing = resolve_effective_mcp_routing(server_cfg, original_name)
                 if routing.get("mode") != "off":
                     tag_mcp_routing(tool, routing)
-                if tool.name.startswith(f"{source_name}_") and transport == "stdio":
+                should_pool_stdio = transport == "stdio" and (not tool_name_prefix_enabled(server_cfg) or tool.name.startswith(f"{source_name}_"))
+                if should_pool_stdio:
                     _timeout = server_cfg.tool_call_timeout if server_cfg else None
                     wrapped_tools.append(_make_session_pool_tool(tool, source_name, servers_config[source_name], tool_interceptors, tool_call_timeout=_timeout))
                 else:

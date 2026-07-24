@@ -968,6 +968,60 @@ async def test_non_stdio_tool_call_timeout_warns_that_it_is_ignored(caplog):
     assert any(record.levelno == logging.WARNING and "remote" in record.getMessage() and "tool_call_timeout" in record.getMessage() and "stdio" in record.getMessage() for record in caplog.records)
 
 
+@pytest.mark.asyncio
+async def test_stdio_server_can_expose_exact_unprefixed_tool_name():
+    """关闭 Server 前缀后仍应使用会话池，并保留 MCP 原始工具名。"""
+    from langchain_core.tools import StructuredTool
+    from pydantic import BaseModel, Field
+
+    from deerflow.config.extensions_config import ExtensionsConfig
+    from deerflow.mcp.tools import get_mcp_tools
+
+    class Args(BaseModel):
+        operation: str = Field(..., description="operation")
+
+    sqlrag_tool = StructuredTool(
+        name="sqlrag_retrieve",
+        description="SQLRAG retrieval",
+        args_schema=Args,
+        coroutine=AsyncMock(),
+        response_format="content_and_artifact",
+    )
+    extensions_config = ExtensionsConfig.model_validate(
+        {
+            "mcpServers": {
+                "tablerag": {
+                    "type": "stdio",
+                    "command": "python",
+                    "args": ["-m", "table_rag.mcp"],
+                    "tool_name_prefix": False,
+                }
+            }
+        }
+    )
+    servers_config = {
+        "tablerag": {
+            "transport": "stdio",
+            "command": "python",
+            "args": ["-m", "table_rag.mcp"],
+        }
+    }
+
+    with (
+        patch("deerflow.mcp.tools.ExtensionsConfig.from_file", return_value=extensions_config),
+        patch("deerflow.mcp.tools.build_servers_config", return_value=servers_config),
+        patch("deerflow.mcp.tools.get_initial_oauth_headers", return_value={}),
+        patch("deerflow.mcp.tools.build_oauth_tool_interceptor", return_value=None),
+        patch("langchain_mcp_adapters.client.MultiServerMCPClient") as MockClient,
+    ):
+        MockClient.return_value.get_tools = AsyncMock(return_value=[sqlrag_tool])
+        tools = await get_mcp_tools()
+
+    assert [tool.name for tool in tools] == ["sqlrag_retrieve"]
+    assert tools[0].coroutine is not sqlrag_tool.coroutine
+    assert MockClient.call_args.kwargs["tool_name_prefix"] is False
+
+
 # ---------------------------------------------------------------------------
 # Regression for PR #3843: tool_call_timeout must not leak into connection dict
 # ---------------------------------------------------------------------------

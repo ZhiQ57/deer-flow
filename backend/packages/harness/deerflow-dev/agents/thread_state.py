@@ -25,6 +25,7 @@ class DataRetrievalContext(TypedDict):
 
     ok: bool
     tool_name: str
+    operation: str
     query: str
     content_sha256: str
     result_preview: str

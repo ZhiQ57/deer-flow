@@ -1266,6 +1266,7 @@ class TestEnsureAgent:
             "version": 1,
             "sql_subagent_name": "sql-subagent",
         }
+        ability.filter_tools.side_effect = lambda tools: tools
         ability.build_tools.return_value = [ability_tool]
         agent_config = MagicMock()
         agent_config.service_ability = {"type": "data_query", "version": 1}
@@ -1292,6 +1293,7 @@ class TestEnsureAgent:
         assert config["context"]["data_query_service_ability"]["type"] == "data_query"
         assert config["context"]["data_query_sql_subagent_allowed"] is True
         assert config["context"]["subagent_enabled"] is True
+        assert ability.filter_tools.call_count == 2
 
     def test_data_query_sql_subagent_requires_explicit_custom_agent_allowlist(self, client):
         """手动开启 subagent 不能替代 custom-agent 对 SQL SubAgent 的显式授权。"""
@@ -1301,6 +1303,7 @@ class TestEnsureAgent:
         ability.config.sql_subagent_name = "sql-subagent"
         ability.config.model_dump.return_value = {"type": "data_query", "version": 1}
         ability.config.model_dump_json.return_value = '{"type":"data_query","version":1}'
+        ability.filter_tools.side_effect = lambda tools: tools
         ability.build_tools.return_value = [ability_tool]
         agent_config = MagicMock()
         agent_config.service_ability = {"type": "data_query", "version": 1}
@@ -1323,6 +1326,7 @@ class TestEnsureAgent:
 
         assert config["context"]["data_query_service_ability"]["type"] == "data_query"
         assert config["context"]["data_query_sql_subagent_allowed"] is False
+        assert ability.filter_tools.call_count == 2
 
     def test_skips_default_checkpointer_when_unconfigured(self, client):
         mock_agent = MagicMock()

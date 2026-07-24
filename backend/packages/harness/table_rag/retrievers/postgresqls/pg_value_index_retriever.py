@@ -135,9 +135,7 @@ class PostgresValueIndexRetriever(ValueRetrieverBase):
             )
             """
         )
-        contains_score = sql.SQL("CASE WHEN {contains_clause} THEN 1.0 ELSE 0.0 END").format(
-            contains_clause=contains_clause
-        )
+        contains_score = sql.SQL("CASE WHEN {contains_clause} THEN 1.0 ELSE 0.0 END").format(contains_clause=contains_clause)
 
         trigram_clause = sql.SQL("FALSE")
         trigram_score = sql.SQL("0.0::double precision")
@@ -183,9 +181,7 @@ class PostgresValueIndexRetriever(ValueRetrieverBase):
                 """
             )
 
-        fuzzy_order_expr = sql.SQL(
-            "({trigram_score} + {word_similarity_score} + {contains_score})"
-        ).format(
+        fuzzy_order_expr = sql.SQL("({trigram_score} + {word_similarity_score} + {contains_score})").format(
             trigram_score=trigram_score,
             word_similarity_score=word_similarity_score,
             contains_score=contains_score,

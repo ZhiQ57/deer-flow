@@ -326,7 +326,8 @@ class DeerFlowClient:
 
         tools = self._get_tools(model_name=model_name, subagent_enabled=subagent_enabled)
         if service_ability is not None:
-            # ADD: DataAgent 标签工具只追加到当前嵌入式客户端实例，不进入全局 BUILTIN_TOOLS。
+            # ADD: 嵌入式 DataAgent 与 Gateway 使用相同的 SQLRAG 工具收敛规则。
+            tools = service_ability.filter_tools(tools)
             tools.extend(service_ability.build_tools())
 
         # Add framework-provided tools before authorization so Layer 1 sees
@@ -353,6 +354,9 @@ class DeerFlowClient:
             app_config=self._app_config,
         )
         tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
+        if service_ability is not None:
+            # ADD: 授权策略移除唯一 SQLRAG 工具时拒绝继续装配。
+            tools = service_ability.filter_tools(tools)
         late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
         final_tools, deferred_setup = assemble_deferred_tools(tools, enabled=self._app_config.tool_search.enabled)
         final_tools.extend(late_tools)

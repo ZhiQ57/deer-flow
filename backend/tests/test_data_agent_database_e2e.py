@@ -20,26 +20,27 @@ def _quote_mysql_identifier(value: str) -> str:
     return "`" + value.replace("`", "``") + "`"
 
 
-def _real_environment() -> tuple[str, str, str, str]:
+def _real_environment() -> tuple[str, str, str]:
     """读取真实 E2E 所需环境变量，缺少时安全跳过。"""
     config_path = os.environ.get("TABLERAG_MCP_CONFIG") or os.environ.get("TABLERAG_CONFIG")
     index_dsn = os.environ.get("TABLERAG_MCP_INDEX_DSN")
-    source_dsn = os.environ.get("TABLERAG_MCP_SOURCE_DSN")
     execution_dsn = os.environ.get("DATA_AGENT_MYSQL_DSN")
-    if not all((config_path, index_dsn, source_dsn, execution_dsn)):
+    if not all((config_path, index_dsn, execution_dsn)):
         pytest.skip("需要 TABLERAG 配置、PostgreSQL 索引 DSN 和 DATA_AGENT_MYSQL_DSN。")
-    return config_path, index_dsn, source_dsn, execution_dsn
+    return config_path, index_dsn, execution_dsn
 
 
 def test_real_tablerag_retrieval_and_readonly_mysql_execution() -> None:
     """验证真实 PostgreSQL 索引候选可经正式门禁在 MySQL 只读事务中执行。"""
-    config_path, _, _, _ = _real_environment()
+    config_path, _, _ = _real_environment()
     settings = TableRAGMCPSettings.from_env()
     service = TableRAGMCPService(settings)
-    index_validation = service.validate_index()
-    assert index_validation["ok"] is True, index_validation.get("error")
 
-    response = service.search_columns("女性因素诊断", column_top_k=20)
+    response = service.execute(
+        operation="search-columns",
+        queries=["女性因素诊断"],
+        column_top_k=20,
+    )
     assert response["ok"] is True, response.get("error")
     candidates = response.get("result") or []
     candidate = next(
@@ -81,10 +82,11 @@ def test_real_tablerag_retrieval_and_readonly_mysql_execution() -> None:
 
     retrieval = build_retrieval_context(
         response,
-        tool_name="tablerag_search_columns",
+        tool_name="sqlrag_retrieve",
         turn_id="database-e2e-turn",
         data_source_id=ability.data_source_id,
         binding=binding,
+        request_args={"operation": "search-columns", "queries": ["女性因素诊断"]},
     )
     sql = f"SELECT {_quote_mysql_identifier(column_name)} FROM {_quote_mysql_identifier('text2sql')}.{_quote_mysql_identifier(table_name)} LIMIT 5"
     validation = validate_sql(

@@ -34,6 +34,9 @@ DATA_AGENT_SOUL_PATHS = (
     DATA_AGENT_DOCS_DIR / "SOUL.md",
 )
 DATA_AGENT_SOUL_REQUIRED_MARKERS = (
+    "sqlrag_retrieve",
+    "hybrid-search",
+    "search-values",
     "publish_query_labels",
     "ambiguities",
     "awaiting_confirmation",
@@ -123,11 +126,12 @@ def test_extensions_example_contains_disabled_tablerag_mcp_server() -> None:
     assert tablerag.type == "stdio"
     assert tablerag.command == "python"
     assert tablerag.args == ["-m", "table_rag.mcp", "--transport", "stdio"]
+    assert tablerag.tool_name_prefix is False
     assert tablerag.env["TABLERAG_MCP_CONFIG"] == "$TABLERAG_CONFIG"
     assert tablerag.env["TABLERAG_MCP_INDEX_DSN"] == "$TABLERAG_MCP_INDEX_DSN"
-    assert tablerag.env["TABLERAG_MCP_SOURCE_DSN"] == "$TABLERAG_MCP_SOURCE_DSN"
-    assert tablerag.env["TABLERAG_MCP_ALLOW_INITIALIZE"] == "false"
-    assert tablerag.env["TABLERAG_MCP_ALLOW_SYNC_VALUES"] == "false"
+    assert "TABLERAG_MCP_SOURCE_DSN" not in tablerag.env
+    assert "TABLERAG_MCP_ALLOW_INITIALIZE" not in tablerag.env
+    assert "TABLERAG_MCP_ALLOW_SYNC_VALUES" not in tablerag.env
 
 
 def test_table_rag_package_is_included_in_harness_wheel() -> None:

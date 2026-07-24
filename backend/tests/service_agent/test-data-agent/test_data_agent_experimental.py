@@ -516,7 +516,7 @@ def _fake_tool(name: str) -> StructuredTool:
 
 
 def test_filter_data_agent_tools_keeps_only_readonly_tablerag_mcp() -> None:
-    """校验 DataAgent 不会暴露其他 MCP 或 TableRAG 变更类工具。
+    """校验 DataAgent 只暴露唯一且无前缀的 SQLRAG MCP 工具。
 
     Args:
         无。
@@ -525,17 +525,16 @@ def test_filter_data_agent_tools_keeps_only_readonly_tablerag_mcp() -> None:
         None。
     """
     local_tool = _fake_tool("read_file")
-    retrieve_tool = tag_mcp_tool(_fake_tool("tablerag_tablerag_retrieve"))
-    validate_tool = tag_mcp_tool(_fake_tool("tablerag_tablerag_validate_index"))
-    initialize_tool = tag_mcp_tool(_fake_tool("tablerag_tablerag_initialize_indexes"))
+    retrieve_tool = tag_mcp_tool(_fake_tool("sqlrag_retrieve"))
+    prefixed_tool = tag_mcp_tool(_fake_tool("tablerag_sqlrag_retrieve"))
+    legacy_tool = tag_mcp_tool(_fake_tool("tablerag_retrieve"))
     other_mcp_tool = tag_mcp_tool(_fake_tool("postgres_query"))
 
-    filtered = _filter_data_agent_tools([local_tool, retrieve_tool, validate_tool, initialize_tool, other_mcp_tool])
+    filtered = _filter_data_agent_tools([local_tool, retrieve_tool, prefixed_tool, legacy_tool, other_mcp_tool])
 
     assert [tool.name for tool in filtered] == [
         "read_file",
-        "tablerag_tablerag_retrieve",
-        "tablerag_tablerag_validate_index",
+        "sqlrag_retrieve",
     ]
 
 
@@ -613,14 +612,14 @@ def test_orchestration_allows_tablerag_without_entity_extract_tool() -> None:
     middleware = DataAgentOrchestrationMiddleware()
     handler = MagicMock(
         return_value=ToolMessage(
-            content='{"ok": true, "result": {"tables": [{"table_name": "orders"}]}}',
+            content='{"ok": true, "operation": "hybrid-search", "result": {"tables": [{"table_name": "orders"}]}}',
             tool_call_id="call-1",
-            name="tablerag_tablerag_retrieve",
+            name="sqlrag_retrieve",
         )
     )
 
     result = middleware.wrap_tool_call(
-        _tool_request("tablerag_tablerag_retrieve", args={"query": "指标"}),
+        _tool_request("sqlrag_retrieve", args={"operation": "hybrid-search", "query": "指标"}),
         handler,
     )
 
@@ -711,12 +710,12 @@ def test_orchestration_marks_successful_tablerag_retrieval() -> None:
     from langgraph.types import Command
 
     middleware = DataAgentOrchestrationMiddleware()
-    request = _tool_request("tablerag_tablerag_retrieve", state=_query_context_state())
+    request = _tool_request("sqlrag_retrieve", state=_query_context_state(), args={"operation": "hybrid-search", "query": "指标"})
     handler = MagicMock(
         return_value=ToolMessage(
-            content='{"ok": true, "result": {"tables": [{"table_name": "orders"}]}}',
+            content='{"ok": true, "operation": "hybrid-search", "result": {"tables": [{"table_name": "orders"}]}}',
             tool_call_id="call-1",
-            name="tablerag_tablerag_retrieve",
+            name="sqlrag_retrieve",
         )
     )
 
@@ -724,12 +723,12 @@ def test_orchestration_marks_successful_tablerag_retrieval() -> None:
 
     assert isinstance(result, Command)
     assert result.update["data_agent_stage"] == "retrieval_completed"
-    assert result.update["data_retrieval_context"]["tool_name"] == "tablerag_tablerag_retrieve"
+    assert result.update["data_retrieval_context"]["tool_name"] == "sqlrag_retrieve"
     assert result.update["data_sql_validation"] is None
 
 
-def test_orchestration_does_not_accept_empty_retrieval_or_index_healthcheck() -> None:
-    """校验空召回和索引健康检查不能越过业务检索门禁。
+def test_orchestration_does_not_accept_empty_retrieval_or_unknown_operation() -> None:
+    """校验空召回和已移除的 operation 不能越过业务检索门禁。
 
     Args:
         无。
@@ -742,12 +741,12 @@ def test_orchestration_does_not_accept_empty_retrieval_or_index_healthcheck() ->
 
     middleware = DataAgentOrchestrationMiddleware()
     empty_result = middleware.wrap_tool_call(
-        _tool_request("tablerag_tablerag_retrieve", state=_query_context_state()),
+        _tool_request("sqlrag_retrieve", state=_query_context_state(), args={"operation": "hybrid-search", "query": "指标"}),
         MagicMock(
             return_value=ToolMessage(
-                content='{"ok": true, "result": {"tables": [], "columns": [], "values": [], "join_graphs": [], "evidences": []}}',
+                content='{"ok": true, "operation": "hybrid-search", "result": {"tables": [], "columns": [], "values": [], "join_graphs": [], "evidences": []}}',
                 tool_call_id="call-1",
-                name="tablerag_tablerag_retrieve",
+                name="sqlrag_retrieve",
             )
         ),
     )
@@ -755,16 +754,18 @@ def test_orchestration_does_not_accept_empty_retrieval_or_index_healthcheck() ->
     assert empty_result.update["data_retrieval_context"]["ok"] is False
     assert "data_agent_stage" not in empty_result.update
 
-    health_message = ToolMessage(
-        content='{"ok": true, "result": {"healthy": true}}',
+    removed_operation_message = ToolMessage(
+        content='{"ok": true, "operation": "validate-index", "result": {"healthy": true}}',
         tool_call_id="call-1",
-        name="tablerag_tablerag_validate_index",
+        name="sqlrag_retrieve",
     )
-    health_result = middleware.wrap_tool_call(
-        _tool_request("tablerag_tablerag_validate_index", state=_query_context_state()),
-        MagicMock(return_value=health_message),
+    removed_operation_result = middleware.wrap_tool_call(
+        _tool_request("sqlrag_retrieve", state=_query_context_state(), args={"operation": "validate-index"}),
+        MagicMock(return_value=removed_operation_message),
     )
-    assert health_result is health_message
+    assert isinstance(removed_operation_result, Command)
+    assert removed_operation_result.update["data_retrieval_context"]["ok"] is False
+    assert "data_agent_stage" not in removed_operation_result.update
 
 
 def test_retrieval_state_keeps_success_when_parallel_route_is_empty() -> None:
@@ -778,14 +779,16 @@ def test_retrieval_state_keeps_success_when_parallel_route_is_empty() -> None:
     """
     success = {
         "ok": True,
-        "tool_name": "tablerag_tablerag_search_columns",
+        "tool_name": "sqlrag_retrieve",
+        "operation": "search-columns",
         "query": "指标",
         "content_sha256": "success",
         "result_preview": "columns",
     }
     empty = {
         "ok": False,
-        "tool_name": "tablerag_tablerag_search_evidences",
+        "tool_name": "sqlrag_retrieve",
+        "operation": "search-evidences",
         "query": "指标",
         "content_sha256": "empty",
         "result_preview": "[]",
@@ -988,17 +991,17 @@ def test_orchestration_marks_total_tool_budget_for_forced_final_answer() -> None
     middleware = DataAgentOrchestrationMiddleware(max_total_tool_calls=3)
     handler = MagicMock(
         return_value=ToolMessage(
-            content='{"ok": true, "result": [{"table_name": "case_info"}]}',
+            content='{"ok": true, "operation": "search-tables", "result": [{"table_name": "case_info"}]}',
             tool_call_id="call-1",
-            name="tablerag_tablerag_search_tables",
+            name="sqlrag_retrieve",
         )
     )
 
     result = middleware.wrap_tool_call(
         _tool_request(
-            "tablerag_tablerag_search_tables",
+            "sqlrag_retrieve",
             state=state,
-            args={"query": "病例数"},
+            args={"operation": "search-tables", "queries": ["病例数"]},
         ),
         handler,
     )
@@ -1021,7 +1024,7 @@ def test_orchestration_disables_tools_when_total_budget_is_exhausted() -> None:
             HumanMessage(content="统计病例数"),
             ToolMessage(content="{}", tool_call_id="tool-1", name="read_file"),
             ToolMessage(content="{}", tool_call_id="tool-2", name="tool_search"),
-            ToolMessage(content="{}", tool_call_id="tool-3", name="tablerag_tablerag_retrieve"),
+            ToolMessage(content="{}", tool_call_id="tool-3", name="sqlrag_retrieve"),
         ],
         "data_retrieval_context": {"ok": True},
     }
@@ -1029,7 +1032,7 @@ def test_orchestration_disables_tools_when_total_budget_is_exhausted() -> None:
     request = ModelRequest(
         model=MagicMock(),
         messages=state["messages"],
-        tools=[_fake_tool("tablerag_tablerag_retrieve")],
+        tools=[_fake_tool("sqlrag_retrieve")],
         state=state,
         runtime=MagicMock(),
     )
@@ -1095,16 +1098,16 @@ def test_orchestration_serializes_parallel_tablerag_calls_per_thread() -> None:
         with guard:
             active -= 1
         return ToolMessage(
-            content='{"ok": true, "result": [{"table_name": "orders"}]}',
+            content='{"ok": true, "operation": "search-tables", "result": [{"table_name": "orders"}]}',
             tool_call_id=str(request.tool_call["id"]),
             name=str(request.tool_call["name"]),
         )
 
     requests = [
         _tool_request(
-            "tablerag_tablerag_search_tables",
+            "sqlrag_retrieve",
             state=_query_context_state(),
-            args={"query": f"query-{index}"},
+            args={"operation": "search-tables", "queries": [f"query-{index}"]},
         )
         for index in range(2)
     ]
@@ -1128,16 +1131,16 @@ def test_async_tablerag_lock_wait_is_cancellation_safe() -> None:
     async def run() -> None:
         middleware = DataAgentOrchestrationMiddleware()
         request = _tool_request(
-            "tablerag_tablerag_search_tables",
+            "sqlrag_retrieve",
             state=_query_context_state(),
-            args={"query": "指标"},
+            args={"operation": "search-tables", "queries": ["指标"]},
         )
         lock = middleware._table_rag_lock(request)
         lock.acquire()
 
         async def handler(tool_request):
             return ToolMessage(
-                content='{"ok": true, "result": [{"table_name": "orders"}]}',
+                content='{"ok": true, "operation": "search-tables", "result": [{"table_name": "orders"}]}',
                 tool_call_id=str(tool_request.tool_call["id"]),
                 name=str(tool_request.tool_call["name"]),
             )
@@ -1407,7 +1410,7 @@ def test_build_data_agent_uses_create_deerflow_agent(monkeypatch) -> None:
     monkeypatch.setattr(data_agent_module, "_resolve_model_name", lambda requested_model_name=None, app_config=None: "mock-model")
     monkeypatch.setattr(data_agent_module, "_load_enabled_skills_for_tool_policy", lambda available_skills, app_config, user_id=None: [])
     monkeypatch.setattr(data_agent_module, "build_skill_search_setup", lambda *args, **kwargs: SimpleNamespace(describe_skill_tool=None, skill_names=frozenset()))
-    monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: [tag_mcp_tool(_fake_tool("tablerag_tablerag_retrieve"))])
+    monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: [tag_mcp_tool(_fake_tool("sqlrag_retrieve"))])
     monkeypatch.setattr(tool_search, "assemble_deferred_tools", lambda tools, enabled: (tools, SimpleNamespace(deferred_names=frozenset())))
     monkeypatch.setattr(tool_search, "get_mcp_routing_hints_prompt_section", lambda tools, deferred_names: "")
     prompt_kwargs: dict[str, object] = {}

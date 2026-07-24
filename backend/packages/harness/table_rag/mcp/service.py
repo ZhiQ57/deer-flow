@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Callable
+from typing import Any
 
 from ..configs import TableRAGConfig
+from ..pipeline import HybridRetrievalPipeline
 from ..providers import EmbeddingProvider
 from ..retrievers import HybridRetriever, normalize_retrieval_keywords
 from ..runtime import TableRAGRuntime, build_table_rag_runtime
-from ..pipeline import HybridRetrievalPipeline
 from .connections import PsycopgConnectionProvider
 from .options import build_retrieval_options
 from .serialization import to_jsonable
@@ -189,9 +189,7 @@ class TableRAGMCPService:
         if isinstance(queries, (str, bytes)):
             raise ValueError(f"queries must be a list of independent keywords for {operation.value}")
         if len(queries) > MAX_MCP_KEYWORD_QUERIES:
-            raise ValueError(
-                f"queries supports at most {MAX_MCP_KEYWORD_QUERIES} independent keywords for {operation.value}"
-            )
+            raise ValueError(f"queries supports at most {MAX_MCP_KEYWORD_QUERIES} independent keywords for {operation.value}")
         clean_queries = normalize_retrieval_keywords(queries)
         if not clean_queries:
             raise ValueError(f"queries must contain at least one non-empty keyword for {operation.value}")

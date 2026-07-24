@@ -10,7 +10,7 @@ per-user layout.
 import logging
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Mapping
-
 
 _SUPPORTED_TRANSPORTS = {"stdio", "sse", "streamable-http"}
 _SUPPORTED_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -49,7 +48,7 @@ class TableRAGMCPSettings:
         object.__setattr__(self, "log_level", normalized_log_level)
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str] | None = None) -> "TableRAGMCPSettings":
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> TableRAGMCPSettings:
         """从环境变量读取 MCP 服务配置。
 
         Args:
@@ -77,7 +76,7 @@ class TableRAGMCPSettings:
             max_join_hops=_int(env, "TABLERAG_MCP_MAX_JOIN_HOPS", 5),
         )
 
-    def with_overrides(self, **kwargs: object) -> "TableRAGMCPSettings":
+    def with_overrides(self, **kwargs: object) -> TableRAGMCPSettings:
         """返回覆盖部分字段后的配置副本。"""
         clean = {key: value for key, value in kwargs.items() if value is not None}
         return replace(self, **clean)
