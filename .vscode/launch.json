@@ -11,7 +11,6 @@
       "env": {
         "TABLERAG_CONFIG": "D:\\A-PythonWork\\AOpenGithub\\deer-flow\\tablerag.yaml",
         "TABLERAG_MCP_INDEX_DSN": "postgresql://postgres:postgres@127.0.0.1:55433/text2sql",
-        "TABLERAG_MCP_SOURCE_DSN": "postgresql://postgres:postgres@127.0.0.1:55433/text2sql",
         "DATA_AGENT_MYSQL_DSN": "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql"
       }
     },

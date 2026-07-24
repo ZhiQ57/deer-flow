@@ -20,24 +20,9 @@ from deerflow.runtime.secret_context import extract_request_secrets
 
 from .binding import resolve_data_source_binding
 from .config import DataQueryServiceAbilityConfig
+from .sqlrag_contract import SQLRAG_RETRIEVE_TOOL_NAME, is_sqlrag_retrieval_tool_name
 from .state import build_retrieval_context, get_active_service_state, make_service_state, merge_retrieval_contexts
 from .tool_call_limits import keep_first_matching_tool_call
-
-_READONLY_RETRIEVAL_SUFFIXES = (
-    "tablerag_retrieve",
-    "tablerag_raw_retrieve",
-    "tablerag_search_evidences",
-    "tablerag_search_tables",
-    "tablerag_search_columns",
-    "tablerag_search_values",
-    "tablerag_expand_join_graph",
-)
-
-
-# ADD: 判断 MCP 前缀化后的工具是否属于允许推进 DataAgent 状态的只读检索工具。
-def is_readonly_tablerag_tool(tool_name: object) -> bool:
-    """识别 TableRAG 只读检索工具。"""
-    return isinstance(tool_name, str) and any(tool_name == suffix or tool_name.endswith(f"_{suffix}") for suffix in _READONLY_RETRIEVAL_SUFFIXES)
 
 
 class TableRagStageMiddleware(AgentMiddleware):
@@ -113,7 +98,7 @@ class TableRagStageMiddleware(AgentMiddleware):
         return ToolMessage(
             content=json.dumps({"version": 1, "ok": False, "error_code": code}, ensure_ascii=False),
             tool_call_id=str(request.tool_call.get("id") or "missing-tool-call-id"),
-            name=str(request.tool_call.get("name") or "tablerag"),
+            name=str(request.tool_call.get("name") or SQLRAG_RETRIEVE_TOOL_NAME),
             status="error",
         )
 
@@ -190,6 +175,7 @@ class TableRagStageMiddleware(AgentMiddleware):
                 turn_id=turn_id,
                 data_source_id=self._config.data_source_id,
                 binding=binding,
+                request_args=request.tool_call.get("args"),
             )
         except ValueError:
             # ADD: 失败和空结果只写安全错误码，避免把连接细节或堆栈持久化到 checkpoint。
@@ -251,12 +237,12 @@ class TableRagStageMiddleware(AgentMiddleware):
     @override
     def after_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
         """同步模型返回后只保留一个 TableRAG 检索调用。"""
-        return keep_first_matching_tool_call(state, lambda tool_call: is_readonly_tablerag_tool(tool_call.get("name")))
+        return keep_first_matching_tool_call(state, lambda tool_call: is_sqlrag_retrieval_tool_name(tool_call.get("name")))
 
     @override
     async def aafter_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
         """异步模型返回后复用 TableRAG 串行化规则。"""
-        return keep_first_matching_tool_call(state, lambda tool_call: is_readonly_tablerag_tool(tool_call.get("name")))
+        return keep_first_matching_tool_call(state, lambda tool_call: is_sqlrag_retrieval_tool_name(tool_call.get("name")))
 
     @override
     def wrap_tool_call(
@@ -265,7 +251,7 @@ class TableRagStageMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
         """同步登记 TableRAG 结果，其他工具保持原流程。"""
-        if not is_readonly_tablerag_tool(request.tool_call.get("name")):
+        if not is_sqlrag_retrieval_tool_name(request.tool_call.get("name")):
             return handler(request)
         active = get_active_service_state(request.state if isinstance(request.state, Mapping) else None)
         turn_id = self._turn_id(request.state, fallback=str(request.tool_call.get("id") or ""))
@@ -283,7 +269,7 @@ class TableRagStageMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
         """异步登记 TableRAG 结果，其他工具保持原流程。"""
-        if not is_readonly_tablerag_tool(request.tool_call.get("name")):
+        if not is_sqlrag_retrieval_tool_name(request.tool_call.get("name")):
             return await handler(request)
         active = get_active_service_state(request.state if isinstance(request.state, Mapping) else None)
         turn_id = self._turn_id(request.state, fallback=str(request.tool_call.get("id") or ""))

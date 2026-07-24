@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -23,6 +22,7 @@ from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility
 from deerflow.agents.service_agent.sql_stage_middleware import SqlStageMiddleware
 from deerflow.agents.service_agent.sql_tools import build_sql_tools, execute_sql, validate_sql
+from deerflow.agents.service_agent.sqlrag_contract import is_sqlrag_retrieval_tool_name
 from deerflow.agents.service_agent.state import (
     build_query_approval_request,
     build_query_label_snapshot,
@@ -91,7 +91,7 @@ def _retrieval_payload() -> dict:
     """构造 TableRAG 成功响应。"""
     return {
         "ok": True,
-        "operation": "tablerag_retrieve",
+        "operation": "hybrid-search",
         "result": {
             "query": "查询华东销售额最高的商品",
             "evidences": [
@@ -153,14 +153,14 @@ def test_build_retrieval_context_registers_stable_refs() -> None:
     """服务端必须为 TableRAG 对象生成稳定 ref 和检索摘要。"""
     first = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
     )
     second = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -186,7 +186,7 @@ def test_build_retrieval_context_rejects_failed_or_empty_result() -> None:
     with pytest.raises(ValueError):
         build_retrieval_context(
             {"ok": False, "error": {"message": "boom"}},
-            tool_name="tablerag_retrieve",
+            tool_name="sqlrag_retrieve",
             turn_id="turn-1",
             data_source_id="sales-pg",
             binding=_binding(),
@@ -194,7 +194,7 @@ def test_build_retrieval_context_rejects_failed_or_empty_result() -> None:
     with pytest.raises(ValueError):
         build_retrieval_context(
             {"ok": True, "result": {"evidences": [], "tables": [], "columns": [], "values": [], "join_graphs": []}},
-            tool_name="tablerag_retrieve",
+            tool_name="sqlrag_retrieve",
             turn_id="turn-1",
             data_source_id="sales-pg",
             binding=_binding(),
@@ -205,53 +205,68 @@ def test_supplemental_retrieval_merges_registry_and_changes_digest() -> None:
     """补充检索不能覆盖首轮 Evidence，且必须产生新的快照摘要。"""
     first = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
     )
-    payload = deepcopy(_retrieval_payload())
-    payload["result"]["query"] = "补充查询订单日期"
-    payload["result"]["columns"] = [{"table_name": "orders", "column_name": "id", "score": 0.87}]
+    payload = {
+        "ok": True,
+        "operation": "search-columns",
+        "result": [{"table_name": "orders", "column_name": "id", "score": 0.87}],
+    }
     second = build_retrieval_context(
         payload,
-        tool_name="tablerag_search_columns",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
+        request_args={"operation": "search-columns", "queries": ["订单日期"]},
     )
 
     merged = merge_retrieval_contexts(first, second)
 
     assert len(merged["registry"]) > len(first["registry"])
     assert first["retrieval_digest"] != merged["retrieval_digest"]
-    assert merged["queries"] == [first["query"], second["query"]]
+    assert merged["queries"] == [first["query"]]
+    assert merged["keyword_queries"] == ["订单日期"]
+    assert merged["operations"] == ["hybrid-search", "search-columns"]
 
 
-def test_single_route_column_tool_uses_strict_suffix_mapping() -> None:
-    """tablerag 工具名前缀中的 table 字样不能把字段结果误判为表结果。"""
+def test_single_route_column_operation_uses_explicit_mapping() -> None:
+    """统一工具必须按 operation 归档单路字段结果。"""
     retrieval = build_retrieval_context(
         {
             "ok": True,
-            "operation": "tablerag_search_columns",
+            "operation": "search-columns",
             "result": [{"table_name": "femalediagnosticinfo", "column_name": "FemaleFactor"}],
         },
-        tool_name="mcp_tablerag_tablerag_search_columns",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
+        request_args={"operation": "search-columns", "queries": ["女性因素"]},
     )
 
     assert retrieval["tables"] == []
     assert retrieval["columns"][0]["column_name"] == "FemaleFactor"
+    assert retrieval["operation"] == "search-columns"
+    assert retrieval["keyword_queries"] == ["女性因素"]
     assert next(iter(retrieval["registry"].values()))["kind"] == "column"
+
+
+def test_data_agent_accepts_only_exact_sqlrag_tool_name() -> None:
+    """DataAgent 不再兼容旧 TableRAG 工具名或 MCP Server 冗余前缀。"""
+    assert is_sqlrag_retrieval_tool_name("sqlrag_retrieve") is True
+    assert is_sqlrag_retrieval_tool_name("tablerag_sqlrag_retrieve") is False
+    assert is_sqlrag_retrieval_tool_name("tablerag_retrieve") is False
 
 
 def test_query_label_snapshot_binds_database_labels_to_registry() -> None:
     """数据库标签只能引用当前检索 registry 中的 ref。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -388,15 +403,15 @@ def _tool_request(name: str, *, state: dict | None = None) -> ToolCallRequest:
 def test_table_rag_middleware_registers_successful_result_in_service_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """TableRAG 正式工具调用成功后只写 service_states，不写顶层业务字段。"""
     monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
-    monkeypatch.setenv("TABLERAG_MCP_SOURCE_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
     middleware = TableRagStageMiddleware(_config())
     message = ToolMessage(
         content=json.dumps(_retrieval_payload(), ensure_ascii=False),
         tool_call_id="tool-call-1",
-        name="tablerag_tablerag_retrieve",
+        name="sqlrag_retrieve",
     )
 
-    result = middleware.wrap_tool_call(_tool_request("tablerag_tablerag_retrieve"), lambda _request: message)
+    result = middleware.wrap_tool_call(_tool_request("sqlrag_retrieve"), lambda _request: message)
 
     assert result.update["messages"] == [message]
     assert "data_retrieval_context" not in result.update
@@ -415,8 +430,8 @@ def test_table_rag_middleware_serializes_retrieval_calls_per_model_response() ->
                 id="ai-rag-parallel",
                 content="",
                 tool_calls=[
-                    {"name": "tablerag_tablerag_retrieve", "id": "rag-1", "args": {"query": "销售额"}},
-                    {"name": "tablerag_tablerag_search_columns", "id": "rag-2", "args": {"query": "地区"}},
+                    {"name": "sqlrag_retrieve", "id": "rag-1", "args": {"operation": "hybrid-search", "query": "销售额"}},
+                    {"name": "sqlrag_retrieve", "id": "rag-2", "args": {"operation": "search-columns", "queries": ["地区"]}},
                     {"name": "read_file", "id": "read-1", "args": {"file_path": "notes.md"}},
                 ],
             )
@@ -431,15 +446,15 @@ def test_table_rag_middleware_serializes_retrieval_calls_per_model_response() ->
 def test_table_rag_middleware_marks_empty_result_as_needs_refinement(monkeypatch: pytest.MonkeyPatch) -> None:
     """空检索进入 needs_refinement，禁止伪造标签或执行 SQL。"""
     monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
-    monkeypatch.setenv("TABLERAG_MCP_SOURCE_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
     middleware = TableRagStageMiddleware(_config())
     message = ToolMessage(
         content=json.dumps({"ok": True, "result": {"evidences": [], "tables": [], "columns": [], "values": [], "join_graphs": []}}),
         tool_call_id="tool-call-1",
-        name="tablerag_tablerag_retrieve",
+        name="sqlrag_retrieve",
     )
 
-    result = middleware.wrap_tool_call(_tool_request("tablerag_tablerag_retrieve"), lambda _request: message)
+    result = middleware.wrap_tool_call(_tool_request("sqlrag_retrieve"), lambda _request: message)
 
     service_state = result.update["service_states"][0]
     assert service_state["stage"] == "needs_refinement"
@@ -449,10 +464,10 @@ def test_table_rag_middleware_marks_empty_result_as_needs_refinement(monkeypatch
 def test_table_rag_middleware_preserves_prior_success_when_supplement_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """同轮补充检索为空时必须保留已有 Evidence，只记录失败尝试。"""
     monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
-    monkeypatch.setenv("TABLERAG_MCP_SOURCE_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
     prior = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -474,11 +489,11 @@ def test_table_rag_middleware_preserves_prior_success_when_supplement_is_empty(m
     message = ToolMessage(
         content=json.dumps({"ok": True, "result": {"evidences": [], "tables": [], "columns": [], "values": [], "join_graphs": []}}),
         tool_call_id="tool-call-1",
-        name="tablerag_tablerag_retrieve",
+        name="sqlrag_retrieve",
     )
 
     result = TableRagStageMiddleware(_config()).wrap_tool_call(
-        _tool_request("tablerag_tablerag_retrieve", state=state),
+        _tool_request("sqlrag_retrieve", state=state),
         lambda _request: message,
     )
 
@@ -668,7 +683,7 @@ def test_query_labels_service_mode_publishes_versioned_artifact_without_legacy_s
     """DataAgent 标签只能写入 service_states，并携带服务端 snapshot_id。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -724,7 +739,7 @@ def test_query_labels_missing_ambiguities_field_requires_confirmation() -> None:
     """模型省略 ambiguities 时必须进入确认，不能用高置信度绕过。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-missing-ambiguities",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -798,7 +813,7 @@ def test_non_interactive_ambiguous_query_stops_without_human_input() -> None:
     """非交互运行遇到需确认快照时必须安全停止，不能等待或继续执行 SQL。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -865,7 +880,7 @@ def test_postgres_sql_validation_is_ast_based_and_bound_to_retrieval() -> None:
     """SQL 校验拒绝多语句、写操作和未检索对象，并生成稳定 digest。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -919,7 +934,7 @@ def test_mysql_sql_validation_is_ast_based_and_bound_to_logical_source() -> None
     """MySQL 校验必须接受业务查询并拒绝写操作、系统库和危险函数。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-mysql",
         data_source_id="sales-mysql",
         binding=_mysql_binding(),
@@ -951,14 +966,14 @@ def test_sql_validation_digest_binds_server_data_source_fingerprint() -> None:
     config = _mysql_config()
     first_retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-mysql",
         data_source_id="sales-mysql",
         binding=_mysql_binding("sha256:binding-one"),
     )
     second_retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-mysql",
         data_source_id="sales-mysql",
         binding=_mysql_binding("sha256:binding-two"),
@@ -986,7 +1001,7 @@ def test_p0_sql_validation_failures_never_reach_database_driver(monkeypatch: pyt
     config = _config()
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-p0",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -1016,7 +1031,7 @@ def test_sql_tools_are_factory_scoped_and_keep_unique_names() -> None:
     """SQL 工具只由 sql-subagent 工厂提供，不进入默认 BUILTIN_TOOLS。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -1035,7 +1050,7 @@ def test_sql_only_snapshot_never_exposes_database_execution_tool() -> None:
     """sql_only 授权只能生成和校验 SQL，子代理工具面不得包含执行入口。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -1055,7 +1070,7 @@ def test_sql_execution_tool_allows_only_one_authorized_attempt(monkeypatch: pyte
     monkeypatch.delenv("DATA_AGENT_SQL_DSN", raising=False)
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -1087,7 +1102,7 @@ def test_execute_sql_uses_request_secret_without_exposing_it(monkeypatch: pytest
     binding = resolve_data_source_binding(config, secrets={"data-agent-mysql": secret_dsn})
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-secret",
         data_source_id=config.data_source_id,
         binding=binding,
@@ -1120,7 +1135,7 @@ def test_task_result_uses_authoritative_sql_tool_steps_not_subagent_free_text() 
     """父 Agent 只能接收 SQL 工具真实输出，不能信任子代理自由文本伪造数据库结果。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -1234,7 +1249,7 @@ def test_sql_stage_middleware_replaces_free_text_prompt_with_json_envelope() -> 
     """父 Agent 委派 SQL 时必须传严格 JSON envelope。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -1301,7 +1316,7 @@ def test_sql_stage_middleware_blocks_target_when_custom_agent_did_not_allowlist_
     """客户端即使手动开启 task，也不能绕过 custom-agent 的 SQL SubAgent allowlist。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -1373,7 +1388,7 @@ def test_sql_only_parent_rejects_fabricated_execution_payload() -> None:
     """sql_only 返回中只要出现 execution，父 middleware 就必须拒绝整个子代理结果。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="turn-1",
         data_source_id="sales-pg",
         binding=_binding(),
@@ -1451,20 +1466,20 @@ def test_sql_only_parent_rejects_fabricated_execution_payload() -> None:
 def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     """真实 create_agent 工具循环应复用同一图完成 DataAgent 自动确认闭环。"""
     monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
-    monkeypatch.setenv("TABLERAG_MCP_SOURCE_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
     config = _config("auto")
     binding = resolve_data_source_binding(config)
     expected_retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="expected-turn",
         data_source_id="sales-pg",
         binding=binding,
     )
     evidence_ref = expected_retrieval["evidences"][0]["ref"]
 
-    @tool("tablerag_retrieve")
-    def fake_tablerag(query: str) -> str:
+    @tool("sqlrag_retrieve")
+    def fake_tablerag(operation: str = "hybrid-search", query: str | None = None, queries: list[str] | None = None, table_names: list[str] | None = None) -> str:
         """返回固定 TableRAG 检索结果。"""
         return json.dumps(_retrieval_payload(), ensure_ascii=False)
 
@@ -1502,7 +1517,7 @@ def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch:
 
     model = _DataQueryFlowModel(
         responses=[
-            AIMessage(content="", tool_calls=[{"name": "tablerag_retrieve", "id": "rag-1", "args": {"query": "查询华东销售额"}}]),
+            AIMessage(content="", tool_calls=[{"name": "sqlrag_retrieve", "id": "rag-1", "args": {"operation": "hybrid-search", "query": "查询华东销售额"}}]),
             AIMessage(
                 content="",
                 tool_calls=[
@@ -1550,26 +1565,26 @@ def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch:
 def test_fake_agent_stops_with_review_card_before_sql_when_ambiguity_exists(monkeypatch: pytest.MonkeyPatch) -> None:
     """存在结构化 ambiguity 时图必须停在确认卡，不能直接生成最终回答。"""
     monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
-    monkeypatch.setenv("TABLERAG_MCP_SOURCE_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
     config = _config("on_ambiguity")
     binding = resolve_data_source_binding(config)
     expected_retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="expected-turn",
         data_source_id="sales-pg",
         binding=binding,
     )
     evidence_ref = expected_retrieval["evidences"][0]["ref"]
 
-    @tool("tablerag_retrieve")
-    def fake_tablerag(query: str) -> str:
+    @tool("sqlrag_retrieve")
+    def fake_tablerag(operation: str = "hybrid-search", query: str | None = None, queries: list[str] | None = None, table_names: list[str] | None = None) -> str:
         """返回固定 TableRAG 检索结果。"""
         return json.dumps(_retrieval_payload(), ensure_ascii=False)
 
     model = _DataQueryFlowModel(
         responses=[
-            AIMessage(content="", tool_calls=[{"name": "tablerag_retrieve", "id": "rag-review-1", "args": {"query": "查询华东销售额"}}]),
+            AIMessage(content="", tool_calls=[{"name": "sqlrag_retrieve", "id": "rag-review-1", "args": {"operation": "hybrid-search", "query": "查询华东销售额"}}]),
             AIMessage(
                 content="",
                 tool_calls=[
@@ -1617,20 +1632,20 @@ def test_fake_agent_stops_with_review_card_before_sql_when_ambiguity_exists(monk
 def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
     """人工逐项确认后，图应恢复 approved 状态并继续 SQL SubAgent。"""
     monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
-    monkeypatch.setenv("TABLERAG_MCP_SOURCE_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
     config = _config("on_ambiguity")
     binding = resolve_data_source_binding(config)
     expected_retrieval = build_retrieval_context(
         _retrieval_payload(),
-        tool_name="tablerag_retrieve",
+        tool_name="sqlrag_retrieve",
         turn_id="expected-turn",
         data_source_id="sales-pg",
         binding=binding,
     )
     evidence_ref = expected_retrieval["evidences"][0]["ref"]
 
-    @tool("tablerag_retrieve")
-    def fake_tablerag(query: str) -> str:
+    @tool("sqlrag_retrieve")
+    def fake_tablerag(operation: str = "hybrid-search", query: str | None = None, queries: list[str] | None = None, table_names: list[str] | None = None) -> str:
         """返回固定 TableRAG 检索结果。"""
         return json.dumps(_retrieval_payload(), ensure_ascii=False)
 
@@ -1667,7 +1682,7 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
 
     model = _DataQueryFlowModel(
         responses=[
-            AIMessage(content="", tool_calls=[{"name": "tablerag_retrieve", "id": "rag-resume-1", "args": {"query": "查询华东销售额"}}]),
+            AIMessage(content="", tool_calls=[{"name": "sqlrag_retrieve", "id": "rag-resume-1", "args": {"operation": "hybrid-search", "query": "查询华东销售额"}}]),
             AIMessage(
                 content="",
                 tool_calls=[

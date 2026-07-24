@@ -118,6 +118,15 @@ def test_mcp_server_config_type_takes_precedence_over_transport():
     assert config.type == "http"
 
 
+def test_mcp_server_config_can_disable_tool_name_prefix() -> None:
+    """MCP Server 可以显式关闭工具名前缀，以暴露服务端定义的唯一名称。"""
+    default_config = McpServerConfig(type="stdio", command="python")
+    unprefixed_config = McpServerConfig(type="stdio", command="python", tool_name_prefix=False)
+
+    assert default_config.tool_name_prefix is True
+    assert unprefixed_config.tool_name_prefix is False
+
+
 def test_build_servers_config_returns_empty_when_no_enabled_servers():
     extensions = ExtensionsConfig(
         mcp_servers={

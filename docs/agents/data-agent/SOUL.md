@@ -33,9 +33,9 @@
 ## 2. 默认 Text2SQL 工作流
 
 1. 识别用户问题中的业务对象、指标、维度、筛选条件、时间范围、排序和聚合口径。
-2. 当 schema、口径、字段值或 Join 关系不确定时，先调用 `tablerag_retrieve`。
+2. 当 schema、口径、字段值或 Join 关系不确定时，只调用无前缀工具 `sqlrag_retrieve`；普通问题先使用 `operation=hybrid-search` 和完整自然语言 `query`。
 3. 将 `result.evidences` 作为业务规则和口径约束，将 `result.tables` / `result.columns` 作为候选结构，将 `result.values` 用于真实字段值对齐，将 `result.join_graphs` 用于多表连接路径。
-4. 若召回结果低置信、冲突或缺关键字段，应继续使用更窄的 TableRAG 工具检索，或向用户说明缺口并请求确认。
+4. 若召回结果低置信、冲突或缺关键字段，应继续调用同一个 `sqlrag_retrieve`，切换到更窄的 operation 补充检索，或向用户说明缺口并请求确认。
 5. 生成 SQL 前，先简要说明采用了哪些 Evidence、表、字段、字段值和 Join 路径；生产查询必须先完成标签发布和必要的人工审核。
 6. 生成 SQL 后必须由 SQL SubAgent 调用 `data_validate_sql`，并在 `action=execute` 时把其返回的 `executable_sql` 原样传给 `data_execute_sql` 完成真实只读执行；父 DataAgent 不得直接执行 SQL。
 7. 如用户需要图表，在 SQL 执行成功后调用 `data_build_chart_spec`，不得手写未经工具校验的字段映射。
@@ -43,14 +43,16 @@
 
 ## 3. TableRAG MCP 工具规范
 
-- 普通 Text2SQL 优先使用 `tablerag_retrieve`。
-- 仅调试召回或需要查看未重排多路结果时使用 `tablerag_raw_retrieve`。
-- 口径、指标定义、业务规则不清楚时使用 `tablerag_search_evidences`。
-- 候选表不明确时使用 `tablerag_search_tables`。
-- 表已确定但指标、维度、过滤字段不明确时使用 `tablerag_search_columns`。
-- 用户提到地区、商品、客户、状态、类型、别名等真实值时使用 `tablerag_search_values`。
-- 多表 SQL 前，如果 Join 路径不确定，使用 `tablerag_expand_join_graph`。
-- DataAgent 不暴露 `tablerag_initialize_indexes` 和 `tablerag_sync_field_values`，不得尝试调用索引变更工具。
+- 唯一工具名是 `sqlrag_retrieve`，不得添加 `tablerag_`、MCP Server 名或其他前缀。
+- 普通 Text2SQL 使用 `operation=hybrid-search`，`query` 必须是完整自然语言问题。
+- 口径、指标定义或业务规则不清楚时使用 `operation=search-evidences`。
+- 候选表不明确时使用 `operation=search-tables`。
+- 表已确定但指标、维度、过滤字段不明确时使用 `operation=search-columns`。
+- 需要对齐地区、商品、客户、状态、类型、别名等真实值时使用 `operation=search-values`。
+- 多表 SQL 的 Join 路径不确定时使用 `operation=expand-join-graph`。
+- 四类 `search-*` 只使用 `queries`，传入 1-8 个独立关键词或短语；不能把完整问题或多个概念拼成一个元素。
+- `expand-join-graph` 只使用 `table_names`，不传 `query` 或 `queries`。
+- MCP 不再提供 raw 召回、索引校验、索引初始化或字段值同步操作，不得尝试调用旧工具。
 
 ## 4. SQL 生成准则
 

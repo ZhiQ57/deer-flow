@@ -19,6 +19,8 @@ class ServiceAbilityAdapter(Protocol):
 
     name: str
 
+    def filter_tools(self, tools: list[BaseTool]) -> list[BaseTool]: ...
+
     def build_tools(self) -> list[BaseTool]: ...
 
     def build_middlewares(self) -> list[AgentMiddleware]: ...
@@ -46,6 +48,40 @@ class DataAgentServiceAbility:
 
         return [publish_query_labels_tool]
 
+    def filter_tools(self, tools: list[BaseTool]) -> list[BaseTool]:
+        """收敛 DataAgent 的 SQLRAG MCP 工具面。
+
+        Args:
+            tools: DeerFlow 已加载的基础、MCP 和社区工具。
+
+        Returns:
+            移除旧 TableRAG 多工具合同后的工具列表。
+
+        Raises:
+            RuntimeError: 名称严格等于 ``sqlrag_retrieve`` 的 MCP 工具不是唯一一个。
+        """
+        from deerflow.agents.service_agent.sqlrag_contract import is_legacy_sqlrag_tool_name, is_sqlrag_retrieval_tool_name
+        from deerflow.tools.mcp_metadata import is_mcp_tool
+
+        filtered: list[BaseTool] = []
+        sqlrag_count = 0
+        for tool in tools:
+            if not is_mcp_tool(tool):
+                filtered.append(tool)
+                continue
+            if is_sqlrag_retrieval_tool_name(tool.name):
+                sqlrag_count += 1
+                filtered.append(tool)
+                continue
+            if is_legacy_sqlrag_tool_name(tool.name):
+                continue
+            filtered.append(tool)
+        if sqlrag_count == 0:
+            raise RuntimeError("DataAgent requires the exact MCP tool name 'sqlrag_retrieve'. Set mcpServers.tablerag.tool_name_prefix=false and refresh the MCP tool cache.")
+        if sqlrag_count > 1:
+            raise RuntimeError("DataAgent requires exactly one MCP tool named 'sqlrag_retrieve'. Disable duplicate unprefixed MCP servers before building the agent.")
+        return filtered
+
     def build_middlewares(self) -> list[AgentMiddleware]:
         """返回 DataAgent 当前阶段的业务 middleware。"""
         from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
@@ -68,8 +104,8 @@ class DataAgentServiceAbility:
         """返回能力的脱敏前端/运行 metadata。"""
         return self.config.public_metadata()
 
-    
-# ADD: 安全解析 custom agent 定制智能体的 service_ability 参数 
+
+# ADD: 安全解析 custom agent 定制智能体的 service_ability 参数
 def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
     """尝试解析 service ability 参数, 配置错误时记录脱敏修复信息并返回空适配器。
     Args:
@@ -81,7 +117,7 @@ def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbil
         return None
     if not isinstance(raw, Mapping):
         raise TypeError("service_ability 必须是对象。")
-    
+
     # ADD: 解析 DataAgent service ability 参数
     try:
         config = DataQueryServiceAbilityConfig.model_validate(dict(raw))

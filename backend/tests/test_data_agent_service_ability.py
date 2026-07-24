@@ -168,7 +168,7 @@ def test_data_source_binding_compares_targets_without_exposing_dsn() -> None:
         config,
         env={
             "DATA_AGENT_SQL_DSN": "postgresql://readonly:secret@db.local:5432/text2sql",
-            "TABLERAG_MCP_SOURCE_DSN": "postgresql://indexer:other@db.local:5432/text2sql",
+            "TABLERAG_MCP_INDEX_DSN": "postgresql://indexer:other@db.local:5432/text2sql",
         },
     )
 

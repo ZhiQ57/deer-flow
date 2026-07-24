@@ -215,7 +215,7 @@ def test_web_values_events_expose_data_trajectory_and_deduplicate() -> None:
                 }
             ],
         },
-        "data_retrieval_context": {"ok": True, "tool_name": "tablerag_retrieve", "query": "病例数"},
+        "data_retrieval_context": {"ok": True, "tool_name": "sqlrag_retrieve", "query": "病例数"},
         "data_generated_sql": "SELECT count(*) FROM report",
         "data_sql_validation": {"valid": True, "executable_sql": "SELECT count(*) FROM report LIMIT 100"},
         "data_sql_execution": {
@@ -314,7 +314,7 @@ def test_web_message_events_expose_ai_tool_calls_and_results() -> None:
         content="正在检索",
         tool_call_chunks=[
             {
-                "name": "tablerag_retrieve",
+                "name": "sqlrag_retrieve",
                 "args": "",
                 "id": "call-1",
                 "index": 0,
@@ -323,7 +323,7 @@ def test_web_message_events_expose_ai_tool_calls_and_results() -> None:
     )
     tool_message = ToolMessage(
         content="schema result",
-        name="tablerag_retrieve",
+        name="sqlrag_retrieve",
         tool_call_id="call-1",
     )
 
@@ -335,7 +335,7 @@ def test_web_message_events_expose_ai_tool_calls_and_results() -> None:
         {"type": "ai_delta", "text": "正在检索"},
         {
             "type": "tool_call",
-            "name": "tablerag_retrieve",
+            "name": "sqlrag_retrieve",
             "tool_call_id": "call-1",
         },
     ]
@@ -343,7 +343,7 @@ def test_web_message_events_expose_ai_tool_calls_and_results() -> None:
     assert tool_events == [
         {
             "type": "tool_result",
-            "name": "tablerag_retrieve",
+            "name": "sqlrag_retrieve",
             "tool_call_id": "call-1",
             "content": "schema result",
             "truncated": False,

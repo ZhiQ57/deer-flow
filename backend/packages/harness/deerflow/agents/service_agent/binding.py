@@ -54,12 +54,12 @@ def resolve_execution_dsn(
 
 
 def _read_retrieval_dsn(env: Mapping[str, str]) -> str:
-    """读取 TableRAG MCP 实际业务源库 DSN。"""
-    for name in ("TABLERAG_MCP_SOURCE_DSN", "TABLERAG_SOURCE_DSN", "TABLERAG_MCP_INDEX_DSN", "TABLERAG_INDEX_DSN"):
+    """读取 TableRAG MCP 索引库 DSN。"""
+    for name in ("TABLERAG_MCP_INDEX_DSN", "TABLERAG_INDEX_DSN"):
         value = env.get(name)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    raise ValueError("TableRAG 业务源库 DSN Secret 缺失。")
+    raise ValueError("TableRAG 索引库 DSN Secret 缺失。")
 
 
 # ADD: 构造 DataSourceBindingV1；默认强制同物理目标，显式逻辑绑定允许索引库与业务库分离。

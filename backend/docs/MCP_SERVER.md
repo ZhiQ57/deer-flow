@@ -93,6 +93,29 @@ For `stdio` MCP servers, set `tool_call_timeout` to limit each individual MCP to
 
 `tool_call_timeout` only applies to `stdio` servers. `http` and `sse` servers use transport-level timeouts, and DeerFlow logs a warning if `tool_call_timeout` is configured for those transports.
 
+## Tool Name Prefix
+
+DeerFlow prefixes MCP tool names with `<server>_` by default to reduce name
+collisions. A server that already guarantees globally unique names may disable
+that behavior:
+
+```json
+{
+  "mcpServers": {
+    "tablerag": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "table_rag.mcp", "--transport", "stdio"],
+      "tool_name_prefix": false
+    }
+  }
+}
+```
+
+With this setting, a server tool named `sqlrag_retrieve` is exposed to the model
+with that exact name. Use `false` only for servers whose tool names cannot
+collide with built-in tools or tools from another MCP server.
+
 ## Filesystem MCP Servers
 
 DeerFlow already provides built-in file tools for thread-scoped workspace access.

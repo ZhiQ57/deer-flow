@@ -20,20 +20,20 @@ description: 用于完成端到端的业务自然语言转 SQL 流程，包括 T
 `data_query` v1 的 `enable_sql_rag` 固定为 `true`；停用时应移除整个 `service_ability`。custom-agent 的
 `allowable_subagents` 必须显式包含配置的 SQL SubAgent，客户端开关或模型自行填写名称不能替代授权。
 
-TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Server 前缀。
+TableRAG MCP 只暴露一个工具：`sqlrag_retrieve`。该名称是完整且唯一的注册名，不得添加
+`tablerag_`、MCP Server 名或其他前缀。
 
-1. 查找实际注册名称等于 `tablerag_retrieve` 或以 `_tablerag_retrieve` 结尾的工具。
-2. 如果该工具的 Schema 尚未加载，先调用 `tool_search`，参数使用 `select:<实际工具名>`，然后再调用该工具。
-3. 每次只提升当前确实需要的工具，不要一次加载全部 TableRAG 工具 Schema。
-4. 对 `_tablerag_search_values`、`_tablerag_expand_join_graph` 等单路工具采用相同的后缀匹配规则。
-5. 如果必需工具不存在，必须明确说明缺少的能力，不得声称已经完成检索、校验或执行。
-6. 同一模型响应只调用一个 TableRAG 工具；需要补充表、列、值或 Join Graph 时，在看到上一条工具结果后串行调用，禁止并行生成冲突快照。
+1. 查找实际注册名称严格等于 `sqlrag_retrieve` 的工具。
+2. 如果该工具的 Schema 尚未加载，先调用 `tool_search`，参数使用 `select:sqlrag_retrieve`，然后再调用该工具。
+3. 如果必需工具不存在，必须明确说明缺少的能力，不得声称已经完成检索、校验或执行。
+4. 同一模型响应只调用一次 `sqlrag_retrieve`；需要补充表、列、值或 Join Graph 时，在看到上一条工具结果后串行调用，禁止并行生成冲突快照。
 
 ## 端到端工作流
 
 ### 1. 检索数据库上下文
 
-普通自然语言转 SQL 请求应优先使用 TableRAG 完整检索工具。
+普通自然语言转 SQL 请求应首先调用 `sqlrag_retrieve`，使用
+`operation=hybrid-search` 并把完整自然语言问题放入 `query`。
 
 - 检索问题必须保留用户要求的指标、维度、过滤条件、时间范围、对比对象、排序要求和输出形式。
 - 将 `result.evidences` 作为业务定义和 SQL 生成约束。
@@ -41,7 +41,9 @@ TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Se
 - 将 `result.columns` 作为候选指标、维度、过滤字段、分组字段和 Join Key。
 - 使用 `result.values` 将用户表达映射到数据库中的真实字段值。
 - 生成多表 SQL 前必须读取 `result.join_graphs`。
-- 如果完整检索结果缺失、冲突或置信度较低，只调用必要的单路检索工具补充信息，然后重新判断。
+- 如果完整检索结果缺失、冲突或置信度较低，仍调用同一个 `sqlrag_retrieve`，只切换到必要的单路 `operation` 后补充信息。
+- `search-evidences`、`search-tables`、`search-columns`、`search-values` 只使用 `queries`，必须传入 1-8 个独立关键词或短语；每个元素分别执行单关键词召回，不能把完整问题或多个概念拼成一个元素。
+- `expand-join-graph` 只根据 `table_names` 扩展关联路径，不传 `query` 或 `queries`。
 
 对于 TableRAG 能够合理解析的信息，不要直接要求用户补充。请求人工确认前，必须至少尝试一次检索。
 
@@ -166,20 +168,22 @@ SQL 执行成功后：
 
 ## 工具选择
 
-- `tablerag_retrieve`：用于带查询解析和重排的完整上下文检索，普通自然语言转 SQL 场景优先使用。
-- `tablerag_raw_retrieve`：用于排查召回质量或对比重排前的多路原始结果。
-- `tablerag_search_evidences`：用于检索业务定义、指标口径、约束条件和 SQL 生成规则。
-- `tablerag_search_tables`：只需要确定候选表时使用。
-- `tablerag_search_columns`：表已确定，但指标、维度或过滤字段仍不明确时使用。
-- `tablerag_search_values`：用户提到地区、商品、客户、状态、类型、别名或其他真实业务值时使用。
-- `tablerag_expand_join_graph`：候选表已确定，但 Join 路径仍不明确时使用。
-- `tablerag_validate_index`：排查检索失败前，用于检查 TableRAG 索引健康状态。
+唯一工具为 `sqlrag_retrieve`，通过 `operation` 选择六种只读检索方法：
+
+- `hybrid-search`：完整 NL2SQL 混合检索，默认首选。
+- `search-evidences`：补充业务定义、指标口径、约束条件和 SQL 生成规则。
+- `search-tables`：补充候选表。
+- `search-columns`：补充指标、维度、过滤字段和 Join Key。
+- `search-values`：补充地区、商品、客户、状态、类型、别名或其他真实业务值。
+- `expand-join-graph`：候选表已经明确时补充 Join 路径。
+
+MCP 不再提供 raw 召回、索引校验、索引初始化或字段值同步操作。
 
 ## 安全规则
 
 - 不得编造 MCP 检索结果中不存在的表、字段、字段值、Join 路径或 Evidence。
 - 低分结果只能作为提示；存在歧义时，应缩小检索范围或请求用户确认。
-- 除非用户明确要求进行索引管理或同步，否则不得调用 `tablerag_initialize_indexes` 或 `tablerag_sync_field_values`。
+- 不得尝试调用已经移除的 raw 召回、索引校验、索引初始化或字段值同步工具。
 - 除非用户明确要求排查后端问题，否则不得绕过 MCP Server 直接连接数据库。
 - 不得执行 `INSERT`、`UPDATE`、`DELETE`、`MERGE`、`TRUNCATE`、`DROP`、`ALTER`、`CREATE`、`SET`、事务控制、锁表、文件操作或多语句 SQL。
 - 已展示查询标签不代表 TableRAG 检索、SQL 校验或 SQL 执行已经成功。

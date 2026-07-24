@@ -9,6 +9,7 @@ from hashlib import sha256
 from typing import Any
 
 from .config import DataQueryServiceAbilityConfig
+from .sqlrag_contract import SQLRAG_SINGLE_ROUTE_COLLECTIONS, is_sqlrag_retrieval_tool_name, require_sqlrag_operation
 
 _RETRIEVAL_COLLECTIONS = {
     "evidences": "evidence",
@@ -16,13 +17,6 @@ _RETRIEVAL_COLLECTIONS = {
     "columns": "column",
     "values": "value",
     "join_graphs": "join_graph",
-}
-_SINGLE_ROUTE_COLLECTIONS = {
-    "tablerag_search_evidences": "evidences",
-    "tablerag_search_tables": "tables",
-    "tablerag_search_columns": "columns",
-    "tablerag_search_values": "values",
-    "tablerag_expand_join_graph": "join_graphs",
 }
 _LABEL_SOURCES = frozenset({"user", "database", "derived"})
 
@@ -79,6 +73,7 @@ def build_retrieval_context(
     turn_id: str,
     data_source_id: str,
     binding: Mapping[str, Any] | None = None,
+    request_args: object = None,
 ) -> dict[str, Any]:
     """构造当前用户轮次的 TableRAG 检索上下文。
 
@@ -88,6 +83,7 @@ def build_retrieval_context(
         turn_id: 当前可见用户消息 ID。
         data_source_id: service ability 绑定的数据源 ID。
         binding: 服务端解析的无密钥 DataSourceBindingV1。
+        request_args: 当前 MCP 工具调用参数，用于登记 query 或 queries。
 
     Returns:
         带稳定 ref、registry 和 retrieval_digest 的检索上下文。
@@ -95,16 +91,16 @@ def build_retrieval_context(
     Raises:
         ValueError: 工具失败、结果为空或结构不合法。
     """
+    if not is_sqlrag_retrieval_tool_name(tool_name):
+        raise ValueError("DataAgent 只接受名称严格等于 sqlrag_retrieve 的 MCP 检索结果。")
     if payload.get("ok") is not True:
         raise ValueError("TableRAG 检索未成功，不能登记为当前查询 Evidence。")
+    operation = require_sqlrag_operation(payload.get("operation"))
+    normalized_args = request_args if isinstance(request_args, Mapping) else {}
     raw_result = payload.get("result")
     if isinstance(raw_result, Sequence) and not isinstance(raw_result, (str, bytes, bytearray)):
-        # ADD: 单路 TableRAG 工具返回数组时按工具后缀归档到统一 registry。
-        operation = str(payload.get("operation") or tool_name)
-        route = next(
-            (collection for suffix, collection in _SINGLE_ROUTE_COLLECTIONS.items() if operation == suffix or operation.endswith(f"_{suffix}")),
-            None,
-        )
+        # ADD: 单路 SQLRAG 操作返回数组时按显式 operation 归档到统一 registry。
+        route = SQLRAG_SINGLE_ROUTE_COLLECTIONS.get(operation)
         if route is None:
             raise ValueError("TableRAG 单路结果缺少可识别的检索类型。")
         raw_result = {route: list(raw_result)}
@@ -131,9 +127,17 @@ def build_retrieval_context(
     if not registry:
         raise ValueError("TableRAG 检索没有返回可登记的 Evidence、表、列、值或 Join Graph。")
 
+    request_query = normalized_args.get("query")
+    query = raw_result.get("query")
+    if not isinstance(query, str) or not query.strip():
+        query = request_query.strip() if isinstance(request_query, str) and request_query.strip() else None
+    request_queries = normalized_args.get("queries")
+    keyword_queries = [item.strip() for item in request_queries if isinstance(item, str) and item.strip()] if isinstance(request_queries, Sequence) and not isinstance(request_queries, (str, bytes, bytearray)) else []
     digest_payload = {
         "data_source_id": data_source_id,
-        "query": raw_result.get("query"),
+        "operation": operation,
+        "query": query,
+        "keyword_queries": keyword_queries,
         "collections": normalized,
     }
     return {
@@ -142,8 +146,10 @@ def build_retrieval_context(
         "turn_id": turn_id,
         "data_source_id": data_source_id,
         "tool_name": tool_name,
+        "operation": operation,
         "binding": dict(binding or {}),
-        "query": raw_result.get("query"),
+        "query": query,
+        "keyword_queries": keyword_queries,
         **normalized,
         "registry": registry,
         "retrieval_digest": _sha256_id("retrieval", digest_payload),
@@ -204,11 +210,19 @@ def merge_retrieval_contexts(
 
     queries = [query for query in (existing.get("query"), supplemental.get("query")) if isinstance(query, str) and query.strip()]
     queries = list(dict.fromkeys(queries))
-    tool_names = [name for name in (existing.get("tool_name"), supplemental.get("tool_name")) if isinstance(name, str) and name]
-    tool_names = list(dict.fromkeys(tool_names))
+    operations = [operation for operation in (existing.get("operation"), supplemental.get("operation")) if isinstance(operation, str) and operation]
+    operations = list(dict.fromkeys(operations))
+    keyword_queries: list[str] = []
+    for context in (existing, supplemental):
+        values = context.get("keyword_queries")
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray)):
+            keyword_queries.extend(item for item in values if isinstance(item, str) and item)
+    keyword_queries = list(dict.fromkeys(keyword_queries))
     digest_payload = {
         "data_source_id": supplemental["data_source_id"],
+        "operations": operations,
         "queries": queries,
+        "keyword_queries": keyword_queries,
         "collections": merged_collections,
     }
     return {
@@ -217,10 +231,12 @@ def merge_retrieval_contexts(
         "turn_id": supplemental["turn_id"],
         "data_source_id": supplemental["data_source_id"],
         "tool_name": supplemental.get("tool_name"),
-        "tool_names": tool_names,
+        "operation": supplemental.get("operation"),
+        "operations": operations,
         "binding": dict(supplemental_binding),
         "query": supplemental.get("query") or existing.get("query"),
         "queries": queries,
+        "keyword_queries": keyword_queries,
         **merged_collections,
         "registry": registry,
         "retrieval_digest": _sha256_id("retrieval", digest_payload),

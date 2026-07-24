@@ -9,10 +9,7 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.runnables import RunnableConfig
 from tools.builtins import get_data_agent_tools
-from tools.constants import (
-    is_readonly_tablerag_tool_name,
-    is_tablerag_retrieval_tool_name,
-)
+from tools.constants import is_sqlrag_tool_name
 
 from agents.middlewares.data_agent_orchestration_middleware import DataAgentOrchestrationMiddleware
 from agents.middlewares.data_agent_turn_reset_middleware import DataAgentTurnResetMiddleware
@@ -122,7 +119,7 @@ def _validate_allowed_subagents(
             raise ValueError(f"Unknown DataAgent subagent: {name}")
         if subagent.tools is None:
             raise ValueError(f"DataAgent subagent '{name}' must declare an explicit tools allowlist.")
-        unsafe_tools = [tool_name for tool_name in subagent.tools if not is_readonly_tablerag_tool_name(tool_name)]
+        unsafe_tools = [tool_name for tool_name in subagent.tools if not is_sqlrag_tool_name(tool_name)]
         if unsafe_tools:
             raise ValueError(f"DataAgent subagent '{name}' contains unsafe tools: {', '.join(sorted(unsafe_tools))}")
 
@@ -186,7 +183,7 @@ def _filter_data_agent_tools(tools: list[Any]) -> list[Any]:
     """隔离 DataAgent MCP 工具面。
 
     非 MCP 工具继续按 DeerFlow 工具组和 Skill 策略处理；MCP 工具只允许
-    TableRAG 只读检索/索引校验工具，明确排除其他 MCP 和索引变更工具。
+    SQLRAG 单一只读检索工具，明确排除其他 MCP。
 
     Args:
         tools: DeerFlow 原始工具列表。
@@ -194,19 +191,19 @@ def _filter_data_agent_tools(tools: list[Any]) -> list[Any]:
     Return:
         DataAgent 可见工具列表。
     """
-    return [tool for tool in tools if (is_mcp_tool(tool) and is_readonly_tablerag_tool_name(tool.name)) or (not is_mcp_tool(tool) and tool.name in DATA_AGENT_SAFE_LOCAL_TOOL_NAMES)]
+    return [tool for tool in tools if (is_mcp_tool(tool) and is_sqlrag_tool_name(tool.name)) or (not is_mcp_tool(tool) and tool.name in DATA_AGENT_SAFE_LOCAL_TOOL_NAMES)]
 
 
-def _has_tablerag_tools(tools: list[Any]) -> bool:
-    """判断工具列表是否包含只读 TableRAG 工具。
+def _has_sqlrag_tool(tools: list[Any]) -> bool:
+    """判断工具列表是否包含 SQLRAG 唯一工具。
 
     Args:
         tools: 工具列表。
 
     Return:
-        至少包含一个只读 TableRAG MCP 工具时返回 True。
+        包含无前缀 ``sqlrag_retrieve`` 时返回 True。
     """
-    return any(is_mcp_tool(tool) and is_tablerag_retrieval_tool_name(tool.name) for tool in tools)
+    return any(is_mcp_tool(tool) and is_sqlrag_tool_name(tool.name) for tool in tools)
 
 
 def _append_unique_tools(tools: list[Any], extra_tools: list[Any]) -> list[Any]:
@@ -429,15 +426,15 @@ def build_data_agent(
             app_config=resolved_app_config,
         )
     )
-    if require_table_rag and not _has_tablerag_tools(raw_tools):
-        raise RuntimeError("DataAgent requires at least one read-only TableRAG MCP tool. Enable the tablerag MCP server and initialize its tool cache before building the agent.")
+    if require_table_rag and not _has_sqlrag_tool(raw_tools):
+        raise RuntimeError("DataAgent requires the unprefixed sqlrag_retrieve MCP tool. Enable the tablerag MCP server, disable its tool-name prefix, and initialize the tool cache before building the agent.")
     filtered_tools = filter_tools_by_skill_allowed_tools(
         raw_tools,
         skills_for_tool_policy,
         always_allowed_tool_names=ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES,
     )
-    if require_table_rag and not _has_tablerag_tools(filtered_tools):
-        raise RuntimeError("DataAgent TableRAG tools were removed by the active Skill tool policy. Check the enabled DataAgent skills and their allowed-tools metadata.")
+    if require_table_rag and not _has_sqlrag_tool(filtered_tools):
+        raise RuntimeError("DataAgent sqlrag_retrieve was removed by the active Skill tool policy. Check the enabled DataAgent skills and their allowed-tools metadata.")
     filtered_tools = _append_unique_tools(filtered_tools, get_data_agent_tools())
     if non_interactive:
         filtered_tools = [tool for tool in filtered_tools if tool.name not in _NON_INTERACTIVE_DISABLED_TOOL_NAMES]

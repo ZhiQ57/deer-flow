@@ -90,6 +90,10 @@ class McpServerConfig(BaseModel):
         default=None,
         description="Timeout in seconds for individual stdio MCP tool calls. HTTP/SSE servers use transport-level timeouts. None means no timeout.",
     )
+    tool_name_prefix: bool = Field(
+        default=True,
+        description="Whether exposed MCP tool names are prefixed with the server name. Disable only when the server guarantees globally unique tool names.",
+    )
     model_config = ConfigDict(extra="allow")
 
     @model_validator(mode="before")
