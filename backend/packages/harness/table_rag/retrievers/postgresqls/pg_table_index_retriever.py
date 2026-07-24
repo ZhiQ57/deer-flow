@@ -8,7 +8,7 @@ from typing import Any
 from ...providers.embedding import EmbeddingProvider, embed_query_vector
 
 from ..base import TableRetrieverBase
-from ..utils import merge_table_keyword_hits, normalize_retrieval_keywords
+from ..utils import merge_table_keyword_hits, parallel_search_keywords
 from .postgres_common import (
     ConnectionProvider,
     execute_sql,
@@ -93,7 +93,7 @@ class PostgresTableIndexRetriever(TableRetrieverBase):
         keywords: Sequence[str],
         options: RetrievalOptions,
     ) -> list[TableRetrievalResult]:
-        """按关键词列表逐个召回候选表并融合去重。
+        """按关键词列表并行召回候选表并融合去重。
 
         Args:
             keywords: 已抽取好的关键词列表。
@@ -102,11 +102,11 @@ class PostgresTableIndexRetriever(TableRetrieverBase):
         Returns:
             融合后的表结构召回结果列表。
         """
-        clean_keywords = normalize_retrieval_keywords(keywords)
-        if not clean_keywords:
-            return []
         return merge_table_keyword_hits(
-            [(keyword, self.search_tables(keyword, options)) for keyword in clean_keywords]
+            parallel_search_keywords(
+                keywords,
+                lambda keyword: self.search_tables(keyword, options),
+            )
         )[: options.table_top_k]
 
     def _build_search_sql(

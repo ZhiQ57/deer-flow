@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
+
+try:
+    from pydantic import Field
+except ImportError:  # pragma: no cover - MCP extra installs pydantic
+    def Field(**_: Any) -> None:
+        """MCP 可选依赖缺失时的 schema 元数据占位。"""
+        return None
 
 from ..providers import EmbeddingProvider
-from .service import TableRAGMCPService
+from .service import TableRAGMCPService, TableRAGMCPOperation
 from .settings import TableRAGMCPSettings
 
 
 _INSTRUCTIONS = """
-Use TableRAG to retrieve NL2SQL context before generating SQL. Prefer tablerag_retrieve for
-full Evidence, table, column, value, and Join Graph context. Use single-route tools only when
-debugging or when the caller explicitly needs a narrower retrieval channel. Mutating tools are
-disabled unless the server operator enables their environment flags.
+仅使用 sqlrag_retrieve。operation=hybrid-search 接收完整自然语言问题 query，执行查询解析、Evidence/表/列/字段值/Join Graph 多路召回、融合、重排序、Join Graph 表补全并组装最终上下文。
+operation=search-evidences/search-tables/search-columns/search-values 必须接收 queries 列表；列表中的每个单关键词或短语会独立并行执行 BM25 等单路检索，再进行 RRF 与关键词覆盖率融合。operation=expand-join-graph 只接收 table_names。
 """.strip()
 
 
@@ -52,11 +57,22 @@ def create_mcp_server(
     )
 
     @mcp.tool(
-        name="tablerag_retrieve",
-        description="Run the full TableRAG NL2SQL retrieval pipeline and return Evidence, tables, columns, values, and Join Graph context.",
+        name="sqlrag_retrieve",
+        description="统一 TableRAG 检索接口。hybrid-search 使用完整 query，执行查询解析、Evidence/表/列/字段值/Join Graph 多路召回、融合、重排序、Join Graph 表补全并组装最终 NL2SQL 上下文。search-evidences、search-tables、search-columns、search-values 必须使用 queries 列表；每个元素是一个独立关键词或短语，服务端会并行执行单关键词 BM25/模糊/向量检索后融合，不能把多个关键词拼成一个元素。expand-join-graph 使用 table_names。",
     )
-    def tablerag_retrieve(
-        query: str,
+    def sqlrag_retrieve(
+        operation: Annotated[
+            TableRAGMCPOperation,
+            Field(description="检索方法：hybrid-search=完整问题混合检索；search-evidences/tables/columns/values=对应单路关键词并行检索；expand-join-graph=按候选表扩展关联路径。"),
+        ] = TableRAGMCPOperation.HYBRID_SEARCH,
+        query: Annotated[
+            str | None,
+            Field(description="仅用于 hybrid-search。填写完整自然语言问题，例如‘查询最近一个月华东区域销售额最高的客户’；不要用于 search-* 的关键词并行检索。"),
+        ] = None,
+        queries: Annotated[
+            list[str] | None,
+            Field(description="仅用于 search-evidences/search-tables/search-columns/search-values。填写 1-8 个独立关键词或短语；每个元素分别并行执行一次单关键词 BM25/模糊/向量召回，再按 RRF 与关键词覆盖率去重融合。例如 [‘华东区域’, ‘销售额’, ‘客户’]。不要把完整问题或多个关键词合并到一个元素中。", min_length=1, max_length=8),
+        ] = None,
         evidence_top_k: int = 5,
         table_top_k: int = 10,
         column_top_k: int = 20,
@@ -67,9 +83,11 @@ def create_mcp_server(
         table_names: list[str] | None = None,
         column_names: list[str] | None = None,
     ) -> dict[str, Any]:
-        """执行完整 TableRAG 混合检索。"""
-        return service.retrieve(
+        """执行 operation 指定的统一 TableRAG 操作。"""
+        return service.execute(
+            operation=operation,
             query=query,
+            queries=queries,
             evidence_top_k=evidence_top_k,
             table_top_k=table_top_k,
             column_top_k=column_top_k,
@@ -80,94 +98,6 @@ def create_mcp_server(
             table_names=table_names,
             column_names=column_names,
         )
-
-    @mcp.tool(
-        name="tablerag_raw_retrieve",
-        description="Run raw multi-route TableRAG retrieval without query parsing or reranking.",
-    )
-    def tablerag_raw_retrieve(
-        query: str,
-        schema_query: str | None = None,
-        evidence_top_k: int = 5,
-        table_top_k: int = 10,
-        column_top_k: int = 20,
-        value_top_k: int = 5,
-        join_max_hops: int = 2,
-        table_names: list[str] | None = None,
-        column_names: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """执行 raw 混合召回。"""
-        return service.raw_retrieve(
-            query=query,
-            schema_query=schema_query,
-            evidence_top_k=evidence_top_k,
-            table_top_k=table_top_k,
-            column_top_k=column_top_k,
-            value_top_k=value_top_k,
-            join_max_hops=join_max_hops,
-            table_names=table_names,
-            column_names=column_names,
-        )
-
-    @mcp.tool(name="tablerag_search_evidences", description="Search business Evidence and SQL-generation rules.")
-    def tablerag_search_evidences(query: str, evidence_top_k: int = 5) -> dict[str, Any]:
-        """执行 Evidence 单路召回。"""
-        return service.search_evidences(query=query, evidence_top_k=evidence_top_k)
-
-    @mcp.tool(name="tablerag_search_tables", description="Search candidate tables from the TableRAG table index.")
-    def tablerag_search_tables(query: str, table_top_k: int = 10) -> dict[str, Any]:
-        """执行表结构单路召回。"""
-        return service.search_tables(query=query, table_top_k=table_top_k)
-
-    @mcp.tool(name="tablerag_search_columns", description="Search candidate columns from the TableRAG column index.")
-    def tablerag_search_columns(
-        query: str,
-        column_top_k: int = 20,
-        table_names: list[str] | None = None,
-        column_names: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """执行列字段单路召回。"""
-        return service.search_columns(
-            query=query,
-            column_top_k=column_top_k,
-            table_names=table_names,
-            column_names=column_names,
-        )
-
-    @mcp.tool(name="tablerag_search_values", description="Search real field values from the TableRAG value index.")
-    def tablerag_search_values(
-        query: str,
-        value_top_k: int = 5,
-        table_names: list[str] | None = None,
-        column_names: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """执行字段值单路召回。"""
-        return service.search_values(
-            query=query,
-            value_top_k=value_top_k,
-            table_names=table_names,
-            column_names=column_names,
-        )
-
-    @mcp.tool(name="tablerag_expand_join_graph", description="Expand Join Graph paths for candidate tables.")
-    def tablerag_expand_join_graph(table_names: list[str], join_max_hops: int = 2) -> dict[str, Any]:
-        """根据候选表扩展 Join Graph。"""
-        return service.expand_join_graph(table_names=table_names, join_max_hops=join_max_hops)
-
-    @mcp.tool(name="tablerag_validate_index", description="Validate TableRAG index connection, extensions, indexes, and schema version.")
-    def tablerag_validate_index() -> dict[str, Any]:
-        """校验索引结构。"""
-        return service.validate_index()
-
-    @mcp.tool(name="tablerag_initialize_indexes", description="Initialize TableRAG index tables and database indexes when explicitly enabled.")
-    def tablerag_initialize_indexes() -> dict[str, Any]:
-        """显式初始化索引结构。"""
-        return service.initialize_indexes()
-
-    @mcp.tool(name="tablerag_sync_field_values", description="Synchronize configured field-value indexes when explicitly enabled.")
-    def tablerag_sync_field_values() -> dict[str, Any]:
-        """同步字段值索引。"""
-        return service.sync_field_values()
 
     return mcp
 

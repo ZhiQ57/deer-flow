@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import TypeVar
 
@@ -27,6 +28,9 @@ ResultT = TypeVar(
 
 KEYWORD_COVERAGE_WEIGHT = 0.05
 """关键词覆盖率加分权重，保持为小幅 boost，避免覆盖主召回分。"""
+
+MAX_PARALLEL_KEYWORD_SEARCHES = 8
+"""单次多关键词召回的最大并发线程数。"""
 
 
 def split_retrieval_keywords(text: str) -> list[str]:
@@ -66,6 +70,35 @@ def normalize_retrieval_keywords(keywords: Sequence[str]) -> list[str]:
         seen.add(value)
         normalized.append(value)
     return normalized
+
+
+def parallel_search_keywords(
+    keywords: Sequence[str],
+    search_fn: Callable[[str], Sequence[ResultT]],
+    *,
+    max_workers: int = MAX_PARALLEL_KEYWORD_SEARCHES,
+) -> list[tuple[str, Sequence[ResultT]]]:
+    """对多个独立关键词并行执行检索，并保持输入顺序返回结果。
+
+    Args:
+        keywords: 待检索的单个关键词或短语列表。
+        search_fn: 接收单个关键词并返回该关键词召回结果的方法。
+        max_workers: 最大并发线程数。
+
+    Returns:
+        按输入关键词顺序排列的关键词及其召回结果。
+    """
+    clean_keywords = normalize_retrieval_keywords(keywords)
+    if not clean_keywords:
+        return []
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1")
+
+    worker_count = min(max_workers, len(clean_keywords))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="table-rag-keyword") as executor:
+        # executor.map 保留输入顺序，确保后续 RRF 元数据和融合结果稳定。
+        hit_groups = list(executor.map(search_fn, clean_keywords))
+    return list(zip(clean_keywords, hit_groups, strict=True))
 
 
 def merge_evidence_keyword_hits(
@@ -228,10 +261,12 @@ def _merge_keyword_hits(
 
 
 __all__ = [
+    "MAX_PARALLEL_KEYWORD_SEARCHES",
     "merge_column_keyword_hits",
     "merge_evidence_keyword_hits",
     "merge_table_keyword_hits",
     "merge_value_keyword_hits",
     "normalize_retrieval_keywords",
+    "parallel_search_keywords",
     "split_retrieval_keywords",
 ]

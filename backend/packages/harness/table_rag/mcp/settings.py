@@ -17,7 +17,6 @@ class TableRAGMCPSettings:
 
     config_path: str | None = None
     index_dsn: str | None = None
-    source_dsn: str | None = None
     transport: str = "stdio"
     host: str = "127.0.0.1"
     port: int = 8000
@@ -31,8 +30,6 @@ class TableRAGMCPSettings:
     stateless_http: bool = False
     max_top_k: int = 100
     max_join_hops: int = 5
-    allow_initialize_indexes: bool = False
-    allow_sync_values: bool = False
 
     def __post_init__(self) -> None:
         """校验 MCP 服务配置。"""
@@ -65,7 +62,6 @@ class TableRAGMCPSettings:
         return cls(
             config_path=_first(env, "TABLERAG_MCP_CONFIG", "TABLERAG_CONFIG"),
             index_dsn=_first(env, "TABLERAG_MCP_INDEX_DSN", "TABLERAG_INDEX_DSN"),
-            source_dsn=_first(env, "TABLERAG_MCP_SOURCE_DSN", "TABLERAG_SOURCE_DSN"),
             transport=_first(env, "TABLERAG_MCP_TRANSPORT") or "stdio",
             host=_first(env, "TABLERAG_MCP_HOST") or "127.0.0.1",
             port=_int(env, "TABLERAG_MCP_PORT", 8000),
@@ -79,8 +75,6 @@ class TableRAGMCPSettings:
             stateless_http=_bool(env, "TABLERAG_MCP_STATELESS_HTTP", False),
             max_top_k=_int(env, "TABLERAG_MCP_MAX_TOP_K", 100),
             max_join_hops=_int(env, "TABLERAG_MCP_MAX_JOIN_HOPS", 5),
-            allow_initialize_indexes=_bool(env, "TABLERAG_MCP_ALLOW_INITIALIZE", False),
-            allow_sync_values=_bool(env, "TABLERAG_MCP_ALLOW_SYNC_VALUES", False),
         )
 
     def with_overrides(self, **kwargs: object) -> "TableRAGMCPSettings":

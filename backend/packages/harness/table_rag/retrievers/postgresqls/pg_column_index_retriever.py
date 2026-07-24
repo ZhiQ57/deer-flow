@@ -8,7 +8,7 @@ from typing import Any
 from ...providers.embedding import EmbeddingProvider, embed_query_vector
 
 from ..base import ColumnRetrieverBase
-from ..utils import merge_column_keyword_hits, normalize_retrieval_keywords
+from ..utils import merge_column_keyword_hits, parallel_search_keywords
 from .postgres_common import (
     ConnectionProvider,
     execute_sql,
@@ -91,7 +91,7 @@ class PostgresColumnIndexRetriever(ColumnRetrieverBase):
         keywords: Sequence[str],
         options: RetrievalOptions,
     ) -> list[ColumnRetrievalResult]:
-        """按关键词列表逐个召回候选字段并融合去重。
+        """按关键词列表并行召回候选字段并融合去重。
 
         Args:
             keywords: 已抽取好的关键词列表。
@@ -100,11 +100,11 @@ class PostgresColumnIndexRetriever(ColumnRetrieverBase):
         Returns:
             融合后的字段召回结果列表。
         """
-        clean_keywords = normalize_retrieval_keywords(keywords)
-        if not clean_keywords:
-            return []
         return merge_column_keyword_hits(
-            [(keyword, self.search_columns(keyword, options)) for keyword in clean_keywords]
+            parallel_search_keywords(
+                keywords,
+                lambda keyword: self.search_columns(keyword, options),
+            )
         )[: options.column_top_k]
 
     def tables_for_columns(self, column_names: Sequence[str]) -> list[ColumnTableMapping]:

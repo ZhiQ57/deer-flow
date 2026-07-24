@@ -9,7 +9,7 @@ from ...configs import EvidenceRetrievalSettings, IndexStoreSettings
 from ...providers.embedding import EmbeddingProvider
 from ...schemas import EvidenceRetrievalResult, RetrievalOptions
 from ..base import EvidenceRetrieverBase
-from ..utils import merge_evidence_keyword_hits, normalize_retrieval_keywords
+from ..utils import merge_evidence_keyword_hits, parallel_search_keywords
 from .postgres_common import (
     ConnectionProvider,
     execute_sql,
@@ -89,7 +89,7 @@ class PostgresEvidenceRetriever(EvidenceRetrieverBase):
         keywords: Sequence[str],
         options: RetrievalOptions,
     ) -> list[EvidenceRetrievalResult]:
-        """按关键词列表逐个召回 Evidence 并融合去重。
+        """按关键词列表并行召回 Evidence 并融合去重。
 
         Args:
             keywords: 已抽取好的关键词列表。
@@ -98,11 +98,11 @@ class PostgresEvidenceRetriever(EvidenceRetrieverBase):
         Returns:
             融合后的 Evidence 召回结果列表。
         """
-        clean_keywords = normalize_retrieval_keywords(keywords)
-        if not clean_keywords:
-            return []
         return merge_evidence_keyword_hits(
-            [(keyword, self.search_evidences(keyword, options)) for keyword in clean_keywords]
+            parallel_search_keywords(
+                keywords,
+                lambda keyword: self.search_evidences(keyword, options),
+            )
         )[: options.evidence_top_k]
 
     def _build_search_sql(self, query: str, options: RetrievalOptions) -> tuple[Any, dict[str, Any]]:
