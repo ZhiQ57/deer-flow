@@ -1,5 +1,8 @@
 {
-  "mcpInterceptors": [],
+  "middlewares": [],
+  "mcpInterceptors": [
+    "my_package.mcp.auth:build_auth_interceptor"
+  ],
   "mcpServers": {
     "github": {
       "enabled": false,

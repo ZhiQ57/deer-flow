@@ -506,6 +506,51 @@ Content-Type: multipart/form-data
 }
 ```
 
+#### Reload Skills
+
+Invalidate the skill prompt caches for every user in the current Gateway
+process. Subsequent runs rescan the configured public, custom, and legacy skill
+directories; runs that have already started keep their existing skill snapshot.
+
+```http
+POST /api/skills/reload
+```
+
+The request has no body and requires an authenticated administrator. For a
+cookie-authenticated request, send the CSRF cookie value in the matching header:
+
+```bash
+curl -X POST http://localhost:2026/api/skills/reload \
+  -b cookies.txt \
+  -H "X-CSRF-Token: <csrf_token-cookie-value>"
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "scope": "process",
+  "message": "Skill caches invalidated; subsequent runs in this Gateway process will rescan the latest skills."
+}
+```
+
+`success` confirms cache invalidation, not that every file on disk was valid:
+malformed skills retain the existing parser behavior of being skipped and
+logged. The endpoint returns `401` for unauthenticated callers, `403` for
+non-admin users, and a generic `500` if the invalidation mechanism itself
+fails or the process-local background scan does not finish within the cache
+refresh timeout. A loader-level failure, such as an unavailable mounted root,
+does not publish an empty catalog: the last successfully loaded process cache
+remains available. A timed-out scan continues in its daemon worker and can
+still populate the process cache when it finishes.
+
+The scope is deliberately process-local. Each Uvicorn worker or Kubernetes Pod
+must be called directly; repeated requests through a load-balanced Service do
+not guarantee that every instance is reached. External MinIO/NFS/CSI writes
+bypass the validation, SkillScan, and history used by the install/edit APIs, so
+the mounted directory must be writable only by trusted operators.
+
 ### File Uploads
 
 #### Upload Files
@@ -646,6 +691,19 @@ All APIs return errors in a consistent format:
 
 ## Authentication
 
+DeerFlow supports four HTTP identity sources. They share the same thread/run isolation rules but differ in whether a row is created in `users` and how external identities are mapped. See [AUTH_DESIGN.md](AUTH_DESIGN.md) for the full design.
+
+| Model | Entry | `users` table | Isolation key |
+|---|---|---|---|
+| Browser session | `access_token` cookie after login/register | Yes | `users.id` |
+| OIDC / SSO | OAuth callback → cookie | Yes | `users.id` (see [SSO.md](SSO.md)) |
+| IM channel binding | Connect code + `channel_connections` | Bound to registered user | `channel_connections.owner_user_id` |
+| **Internal Auth** | `X-DeerFlow-Internal-Token` + `X-DeerFlow-Owner-User-Id` | **No** | Owner string on `threads_meta.user_id` |
+
+**IM channel binding** and **Internal Auth** are both *platform-trust* integrations: DeerFlow trusts the channel/platform to authenticate end users. IM bindings persist the mapping in `channel_connections` / `channel_conversations` and require a DeerFlow `users` row. Internal Auth lets a platform call the Gateway API directly with a deployment-shared token and a per-request owner header—no `users` row, but thread/run/checkpoint isolation works the same way.
+
+### Browser session (default)
+
 DeerFlow enforces authentication for all non-public HTTP routes. Public routes are limited to health/docs metadata and these public auth endpoints:
 
 - `POST /api/v1/auth/initialize` creates the first admin account when no admin exists.
@@ -668,6 +726,23 @@ User isolation is enforced from the authenticated user context:
 - Memory and custom agents are stored under `{base_dir}/users/{user_id}/...`.
 
 Note: MCP outbound connections can still use OAuth for configured HTTP/SSE MCP servers; that is separate from DeerFlow API authentication.
+
+### Internal Auth (platform HTTP integration)
+
+For server-to-server integrations (e.g. a Feishu or WeCom/Enterprise WeChat bot backend), configure:
+
+```bash
+export DEER_FLOW_INTERNAL_AUTH_TOKEN="<long-random-secret>"
+```
+
+| Header | Required | Description |
+|---|---|---|
+| `X-DeerFlow-Internal-Token` | Yes | Must match `DEER_FLOW_INTERNAL_AUTH_TOKEN`; missing/invalid → `401` |
+| `X-DeerFlow-Owner-User-Id` | Yes for per-user isolation | Platform user id (e.g. `feishu_ou_alice`, `wecom_user_bob`); omit → `default` bucket |
+
+Does **not** use browser cookies or CSRF tokens. Does **not** insert into `users`; sets `threads_meta.user_id` / `runs.user_id` from the owner header. DeerFlow validates only the platform token—not whether the owner id represents a real end user; user validity is entirely the platform's responsibility. See [AUTH_DESIGN.md — Internal Auth](AUTH_DESIGN.md#internal-auth-direct-http) for trust boundaries, persistence, and security notes.
+
+Use the standard Gateway thread/run endpoints (`POST /api/threads`, `POST /api/threads/{thread_id}/runs/stream`, etc.) with the headers above on every request.
 
 ---
 
