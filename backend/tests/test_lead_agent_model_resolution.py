@@ -11,6 +11,7 @@ from deerflow.agents.lead_agent import agent as lead_agent_module
 from deerflow.agents.middlewares import summarization_middleware as summarization_middleware_module
 from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
+from deerflow.config.agents_config import AgentConfig
 from deerflow.config.app_config import AppConfig
 from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.memory_config import MemoryConfig
@@ -323,6 +324,69 @@ def test_make_lead_agent_filters_clarification_tool_for_non_interactive_runs(mon
     )
 
     assert [tool.name for tool in result["tools"]] == ["bash"]
+
+
+def test_make_lead_agent_wires_data_query_ability_and_server_allowlist(monkeypatch):
+    """正式 lead-agent 工厂必须按 service_ability 装配标签工具并冻结 SQL SubAgent 授权。"""
+    app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
+    agent_config = AgentConfig(
+        name="data-agent",
+        skills=[],
+        allowable_subagents=["default", "sql-subagent"],
+        service_ability={
+            "type": "data_query",
+            "version": 1,
+            "enable_sql_rag": True,
+            "table_rag_config": "tablerag.yaml",
+            "data_source_id": "text2sql-mysql-local",
+            "source_binding_mode": "logical_data_source",
+            "confirmation_mode": "on_ambiguity",
+            "min_auto_confidence": 0.85,
+            "sql_subagent_name": "sql-subagent",
+            "sql_execution": {
+                "enabled": True,
+                "database_type": "mysql",
+                "dsn_env": "DATA_AGENT_MYSQL_DSN",
+                "readonly": True,
+                "allowed_schemas": ["text2sql"],
+                "allowed_tables": ["orders"],
+                "allowed_columns": ["orders.region"],
+            },
+        },
+    )
+
+    import deerflow.tools as tools_module
+
+    get_available_tools = MagicMock(return_value=[])
+    build_middlewares = MagicMock(return_value=[])
+    monkeypatch.setattr(tools_module, "get_available_tools", get_available_tools)
+    monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda *args, **kwargs: agent_config)
+    monkeypatch.setattr(lead_agent_module, "_load_enabled_skills_for_tool_policy", lambda *args, **kwargs: [])
+    monkeypatch.setattr(lead_agent_module, "build_middlewares", build_middlewares)
+    monkeypatch.setattr(lead_agent_module, "build_tracing_callbacks", lambda: [])
+    monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
+    monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)
+    config: dict = {
+        "configurable": {
+            "agent_name": "data-agent",
+            "model_name": "safe-model",
+            "subagent_enabled": False,
+        }
+    }
+
+    result = lead_agent_module._make_lead_agent(config, app_config=app_config)
+
+    assert "publish_query_labels" in {tool.name for tool in result["tools"]}
+    get_available_tools.assert_called_once_with(
+        model_name="safe-model",
+        groups=None,
+        subagent_enabled=True,
+        app_config=app_config,
+    )
+    assert build_middlewares.call_args.kwargs["service_ability"].name == "data_query"
+    assert config["context"]["data_query_service_ability"]["type"] == "data_query"
+    assert config["context"]["data_query_sql_subagent_allowed"] is True
+    assert config["context"]["subagent_enabled"] is True
 
 
 def test_make_lead_agent_rejects_invalid_bootstrap_agent_name(monkeypatch):

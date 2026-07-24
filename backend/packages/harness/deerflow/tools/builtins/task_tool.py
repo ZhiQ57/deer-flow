@@ -1,6 +1,7 @@
 """Task tool for delegating work to subagents."""
 
 import asyncio
+import json
 import logging
 import uuid
 from dataclasses import replace
@@ -13,6 +14,7 @@ from langgraph.config import get_stream_writer
 from langgraph.types import Command
 
 from deerflow.config import get_app_config
+from deerflow.runtime.secret_context import extract_request_secrets
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox.security import LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE, is_host_bash_allowed
 from deerflow.subagents import SubagentExecutor, get_available_subagent_names, get_subagent_config
@@ -193,6 +195,96 @@ def _merge_skill_allowlists(parent: list[str] | None, child: list[str] | None) -
     return [skill for skill in child if skill in parent_set]
 
 
+# ADD: 从 SQL SubAgent 捕获的真实 ToolMessage 构造权威结果，禁止信任模型自由文本中的执行行。
+def _build_data_query_sql_result_from_steps(
+    steps: list[dict[str, Any]],
+    *,
+    active_state: dict[str, Any],
+    data_source_id: str,
+) -> dict[str, Any] | None:
+    """从子代理工具步骤构造 DataAgent SQL 结果合同。
+
+    Args:
+        steps: SubagentExecutor 捕获的 AIMessage/ToolMessage 字典。
+        active_state: 父线程当前 approved DataAgent 快照。
+        data_source_id: 服务端配置的数据源标识。
+
+    Returns:
+        只包含真实校验/执行工具输出的 SQL 结果；合同不完整时返回 None。
+    """
+    snapshot_id = active_state.get("snapshot_id")
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        return None
+    state_data_source_id = active_state.get("data_source_id")
+    if state_data_source_id is not None and state_data_source_id != data_source_id:
+        return None
+    payload = active_state.get("payload")
+    approval = payload.get("approval") if isinstance(payload, dict) else None
+    retrieval = payload.get("retrieval") if isinstance(payload, dict) else None
+    binding = retrieval.get("binding") if isinstance(retrieval, dict) else None
+    expected_database_type = binding.get("database_type") if isinstance(binding, dict) else None
+    expected_binding_fingerprint = binding.get("binding_fingerprint") if isinstance(binding, dict) else None
+    if not isinstance(expected_database_type, str) or not isinstance(expected_binding_fingerprint, str):
+        return None
+    action = approval.get("action") if isinstance(approval, dict) and approval.get("status") == "approved" else None
+    if action not in {"execute", "sql_only"}:
+        return None
+
+    parsed_tools: list[tuple[str, dict[str, Any]]] = []
+    for step in steps:
+        if not isinstance(step, dict) or step.get("type") != "tool":
+            continue
+        name = step.get("name")
+        content = step.get("content")
+        if not isinstance(name, str) or not isinstance(content, str):
+            continue
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            parsed_tools.append((name, parsed))
+
+    validation = next((value for name, value in reversed(parsed_tools) if name == "data_validate_sql"), None)
+    if (
+        not isinstance(validation, dict)
+        or validation.get("version") != 1
+        or validation.get("valid") is not True
+        or validation.get("snapshot_id") != snapshot_id
+        or not isinstance(validation.get("executable_sql"), str)
+        or not isinstance(validation.get("sql_sha256"), str)
+        or not isinstance(validation.get("validation_digest"), str)
+        or validation.get("database_type") != expected_database_type
+        or validation.get("binding_fingerprint") != expected_binding_fingerprint
+    ):
+        return None
+
+    execution_steps = [value for name, value in parsed_tools if name == "data_execute_sql"]
+    execution: dict[str, Any] | None = None
+    if action == "sql_only":
+        if execution_steps:
+            return None
+    else:
+        execution = execution_steps[-1] if execution_steps else None
+        if (
+            not isinstance(execution, dict)
+            or execution.get("version") != 1
+            or execution.get("snapshot_id") != snapshot_id
+            or execution.get("validation_digest") != validation.get("validation_digest")
+            or not isinstance(execution.get("ok"), bool)
+        ):
+            return None
+
+    return {
+        "version": 1,
+        "kind": "data_query_sql_result",
+        "snapshot_id": snapshot_id,
+        "data_source_id": data_source_id,
+        "validation": validation,
+        "execution": execution,
+    }
+
+
 def _task_result_command(
     *,
     tool_call_id: str,
@@ -371,6 +463,32 @@ async def task_tool(
         available_tools_kwargs["app_config"] = resolved_app_config
     tools = get_available_tools(**available_tools_kwargs)
 
+    data_query_active_state: dict[str, Any] | None = None
+    data_query_service_ability = None
+    # ADD: 仅在 DataAgent 显式 SQL SubAgent 任务中注入绑定当前 snapshot 的 PostgreSQL/MySQL 工具。
+    service_ability_raw = parent_context.get("data_query_service_ability")
+    # ADD: SQL 工具装配必须同时满足服务端 custom-agent allowlist 判定，客户端开关或模型目标名都不能替代授权。
+    if isinstance(service_ability_raw, dict) and parent_context.get("data_query_sql_subagent_allowed") is True:
+        from deerflow.agents.service_agent.registry import resolve_service_ability_safely
+        from deerflow.agents.service_agent.sql_tools import build_sql_tools
+
+        service_ability = resolve_service_ability_safely(service_ability_raw)
+        active_states = runtime.state.get("service_states") if runtime is not None and isinstance(runtime.state, dict) else None
+        active_state = next(
+            (item for item in reversed(active_states or []) if isinstance(item, dict) and item.get("service_name") == "data_query" and item.get("stage") == "approved"),
+            None,
+        )
+        if service_ability is not None and service_ability.config.enable_sql_rag and subagent_type == service_ability.config.sql_subagent_name and active_state is not None:
+            tools.extend(
+                build_sql_tools(
+                    service_ability.config,
+                    active_state,
+                    secrets=extract_request_secrets(parent_context),
+                )
+            )
+            data_query_active_state = active_state
+            data_query_service_ability = service_ability
+
     # Create executor
     executor_kwargs = {
         "config": config,
@@ -466,11 +584,39 @@ async def task_tool(
             if result.status == SubagentStatus.COMPLETED:
                 _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
                 _report_subagent_usage(runtime, result)
+                task_result = result.result
+                if data_query_active_state is not None and data_query_service_ability is not None:
+                    # ADD: DataAgent SQL 结果只从捕获的工具输出重建，子代理最终自由文本不具备数据库事实权限。
+                    authoritative_result = _build_data_query_sql_result_from_steps(
+                        result.ai_messages or [],
+                        active_state=data_query_active_state,
+                        data_source_id=data_query_service_ability.config.data_source_id,
+                    )
+                    if authoritative_result is None:
+                        error = "SQL_SUBAGENT_TOOL_RESULT_INVALID"
+                        writer(
+                            {
+                                "type": "task_failed",
+                                "task_id": task_id,
+                                "error": error,
+                                "usage": usage,
+                                "model_name": effective_model,
+                            }
+                        )
+                        cleanup_background_task(task_id)
+                        return _task_result_command(
+                            tool_call_id=tool_call_id,
+                            status="failed",
+                            error=error,
+                            model_name=effective_model,
+                            usage=usage,
+                        )
+                    task_result = json.dumps(authoritative_result, ensure_ascii=False, separators=(",", ":"))
                 writer(
                     {
                         "type": "task_completed",
                         "task_id": task_id,
-                        "result": result.result,
+                        "result": task_result,
                         "usage": usage,
                         "model_name": effective_model,
                     }
@@ -483,7 +629,7 @@ async def task_tool(
                 return _task_result_command(
                     tool_call_id=tool_call_id,
                     status="completed",
-                    result=result.result,
+                    result=task_result,
                     stop_reason=result.stop_reason,
                     model_name=effective_model,
                     usage=usage,

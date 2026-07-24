@@ -1322,6 +1322,25 @@ sandbox:
 #   #     model: inherit          # 'inherit' uses parent's model
 #   #     max_turns: 80
 #   #     timeout_seconds: 600
+#   #   sql-subagent:
+#   #     description: "Generate and validate one read-only PostgreSQL/MySQL query from a DataAgent snapshot"
+#   #     system_prompt: |
+#   #       Consume only the JSON envelope supplied by the parent DataAgent.
+#   #       Use data_validate_sql first. Only when action=execute may data_execute_sql be used.
+#   #       Return exactly one JSON object
+#   #       matching the requested snapshot_id and data_source_id, including the validator's
+#   #       sql_sha256 and validation_digest; do not use Markdown or ask the user questions.
+#   #     tools:
+#   #       - data_validate_sql
+#   #       - data_execute_sql
+#   #     disallowed_tools:
+#   #       - task
+#   #       - ask_clarification
+#   #       - present_files
+#   #     skills: []
+#   #     model: inherit
+#   #     max_turns: 12
+#   #     timeout_seconds: 60
 #
 #   # Model override: by default, subagents inherit the lead agent's model.
 #   # Set `model` to use a different model (e.g., a local Ollama model for cost savings).

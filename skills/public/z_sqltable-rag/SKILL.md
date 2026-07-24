@@ -15,6 +15,11 @@ description: 用于完成端到端的业务自然语言转 SQL 流程，包括 T
 
 ## 运行时工具发现
 
+正式生产闭环由 custom-agent 的 `service_ability.type=data_query`、`version=1` 启用；未启用该能力时，
+不得假定 `publish_query_labels`、SQL SubAgent、`data_validate_sql` 或 `data_execute_sql` 可用。
+`data_query` v1 的 `enable_sql_rag` 固定为 `true`；停用时应移除整个 `service_ability`。custom-agent 的
+`allowable_subagents` 必须显式包含配置的 SQL SubAgent，客户端开关或模型自行填写名称不能替代授权。
+
 TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Server 前缀。
 
 1. 查找实际注册名称等于 `tablerag_retrieve` 或以 `_tablerag_retrieve` 结尾的工具。
@@ -22,6 +27,7 @@ TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Se
 3. 每次只提升当前确实需要的工具，不要一次加载全部 TableRAG 工具 Schema。
 4. 对 `_tablerag_search_values`、`_tablerag_expand_join_graph` 等单路工具采用相同的后缀匹配规则。
 5. 如果必需工具不存在，必须明确说明缺少的能力，不得声称已经完成检索、校验或执行。
+6. 同一模型响应只调用一个 TableRAG 工具；需要补充表、列、值或 Join Graph 时，在看到上一条工具结果后串行调用，禁止并行生成冲突快照。
 
 ## 端到端工作流
 
@@ -45,6 +51,12 @@ TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Se
 
 意图可以使用 `aggregation`、`ranking`、`trend`、`comparison`、`detail` 或 `chart` 等类型。每次调用都必须发布当前完整标签快照，不得只提交增量变化。
 
+`publish_query_labels` 的 `confidence` 和 `ambiguities` 是服务端确认门禁输入：
+
+- 必须显式提交 `ambiguities` 字段；没有歧义时传 `[]`，不能省略、传 `null` 或只在最终自然语言中描述“待确认项”。
+- 任何可能改变 SQL 的不确定点都必须写入 `ambiguities`，并等待前端逐项审核完成后再生成 SQL。
+- 最终回答不得新增未写入 `ambiguities` 的假设；如果推理过程中发现新疑问，必须重新发布标签快照。
+
 推荐展示的标签包括：
 
 - 指标或业务口径；
@@ -59,7 +71,7 @@ TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Se
 标签来源规则：
 
 - `source=user`：用户在原始问题中明确提出的内容。
-- `source=database`：已经由 TableRAG 确认的数据库信息，必须填写简洁的 Evidence 摘要。
+- `source=database`：已经由 TableRAG 确认的数据库信息，必须填写当前 retrieval registry 返回的 `evidence_refs`；不得提交自由文本 Evidence。
 - `source=derived`：基于用户问题和检索上下文推导出的意图，但不是数据库中的直接字段值。
 - 未经检索验证的猜测不得标记为 `database`。
 
@@ -82,7 +94,14 @@ TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Se
 1. 展示当前理解和查询标签。
 2. 只提供最小且明确的候选选项。
 3. 每次只提出一个聚焦问题。
-4. 用户确认后，先发布替换后的完整标签快照，再生成 SQL。
+4. 用户确认当前快照后直接按批准动作继续；只有用户修改条件时，才清除旧授权、重新检索并发布新标签快照。
+
+确认选项语义固定如下：
+
+- `execute`：生成、校验并只读执行 SQL；
+- `sql_only`：只生成和校验 SQL，不连接数据库执行；
+- `cancel`：取消当前查询，不生成可执行 SQL；
+- 自由文本：视为修改查询条件，旧 snapshot、approval、validation 和 execution 全部失效，必须重新检索。
 
 如果非交互运行环境不支持澄清，应明确列出尚未解决的假设。当某个假设可能导致结果产生实质性误导时，不得继续执行 SQL。
 
@@ -100,11 +119,14 @@ TableRAG MCP 工具可能由 `tool_search` 延迟加载，也可能带有 MCP Se
 
 ### 5. 校验并执行 SQL
 
-1. 使用生成的 SQL 调用 `data_validate_sql`。
-2. 如果校验失败，根据工具返回的问题修复 SQL，并重新校验新 SQL。
-3. 校验成功后，将工具返回的 `executable_sql` 原样传给 `data_execute_sql`。
-4. 不得直接执行未经校验的草稿 SQL，也不得复用其他 SQL 草稿产生的 `executable_sql`。
-5. 达到运行时调用预算后必须停止重试，并报告当前最佳校验状态和剩余问题。
+1. 父 DataAgent 必须先获得当前 snapshot 的批准，再通过配置的 SQL SubAgent 处理严格 JSON envelope；父 Agent 不得直接执行 SQL。
+2. SQL SubAgent 使用生成的 SQL 调用 `data_validate_sql`。
+3. 如果校验失败，根据工具返回的问题修复 SQL，并重新校验新 SQL。
+4. `action=execute` 时，校验成功后将工具返回的 `executable_sql` 和 `validation_digest` 原样传给 `data_execute_sql`；`action=sql_only` 时运行时不会提供执行工具，禁止尝试连接数据库。
+5. 不得直接执行未经校验的草稿 SQL，也不得复用其他 snapshot 或 SQL 草稿产生的 `executable_sql`。
+6. 达到运行时调用预算后必须停止重试，并报告当前最佳校验状态和剩余问题。
+7. SQL SubAgent 最终自由文本不具备数据库事实权限；父流程只从真实 `data_validate_sql` / `data_execute_sql` ToolMessage 重建结果。
+8. 同一模型响应只委派一次 SQL SubAgent；不得为同一 snapshot 并行创建两个 SQL 任务。
 
 ### 6. 检查并解释执行结果
 
@@ -161,6 +183,8 @@ SQL 执行成功后：
 - 除非用户明确要求排查后端问题，否则不得绕过 MCP Server 直接连接数据库。
 - 不得执行 `INSERT`、`UPDATE`、`DELETE`、`MERGE`、`TRUNCATE`、`DROP`、`ALTER`、`CREATE`、`SET`、事务控制、锁表、文件操作或多语句 SQL。
 - 已展示查询标签不代表 TableRAG 检索、SQL 校验或 SQL 执行已经成功。
+- 不得伪造、复用或修改服务端生成的 `snapshot_id`、Evidence ref、validation digest 或 SQL 执行结果。
+- PostgreSQL TableRAG 索引与 MySQL 业务执行源只有在服务端显式配置 `logical_data_source` 并生成组合 binding digest 时才允许配对；模型不得自行声明跨库等价关系。
 - 必须保护敏感 DSN 和数据库连接信息，不得在面向用户的 SQL 解释中泄露。
 
 ## 参考资料

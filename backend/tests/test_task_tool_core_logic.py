@@ -382,6 +382,102 @@ def test_task_tool_threads_runtime_app_config_to_subagent_dependencies(monkeypat
     assert captured["executor_kwargs"]["tools"] == ["tool-a"]
 
 
+def test_task_tool_injects_sql_tools_only_for_server_allowlisted_data_subagent(monkeypatch):
+    """DataAgent SQL 工具必须同时满足服务端 allowlist 和 approved 快照。"""
+    runtime = _make_runtime()
+    runtime.context.update(
+        {
+            # ADD: 模拟 lead-agent 注入的服务端能力上下文，客户端不能自行伪造 allowlist。
+            "data_query_service_ability": {
+                "type": "data_query",
+                "version": 1,
+                "enable_sql_rag": True,
+                "table_rag_config": "tablerag.yaml",
+                "data_source_id": "sales-pg",
+                "source_binding_mode": "same_physical_target",
+                "confirmation_mode": "auto",
+                "min_auto_confidence": 0.85,
+                "sql_subagent_name": "sql-subagent",
+                "sql_execution": {
+                    "enabled": True,
+                    "database_type": "postgresql",
+                    "dsn_env": "DATA_AGENT_SQL_DSN",
+                    "readonly": True,
+                    "allowed_schemas": ["public"],
+                    "allowed_tables": ["orders", "public.orders"],
+                    "allowed_columns": ["orders.region"],
+                },
+            },
+            "data_query_sql_subagent_allowed": True,
+        }
+    )
+    runtime.state["service_states"] = [
+        {
+            "service_name": "data_query",
+            "version": 1,
+            "turn_id": "turn-1",
+            "snapshot_id": "sha256:snapshot",
+            "stage": "approved",
+            "data_source_id": "sales-pg",
+            "payload": {
+                "approval": {"status": "approved", "action": "sql_only"},
+                "retrieval": {
+                    "ok": True,
+                    "retrieval_digest": "sha256:retrieval",
+                    "binding": {
+                        "database_type": "postgresql",
+                        "binding_fingerprint": "sha256:binding",
+                    },
+                },
+            },
+        }
+    ]
+    captured: dict[str, object] = {}
+
+    class DummyExecutor:
+        def __init__(self, **kwargs):
+            captured["executor_kwargs"] = kwargs
+
+        def execute_async(self, prompt, task_id=None):
+            return task_id or "generated-task-id"
+
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: _make_subagent_config(name="sql-subagent"))
+    monkeypatch.setattr(
+        task_tool_module,
+        "get_background_task_result",
+        lambda _: _make_result(FakeSubagentStatus.FAILED, error="stop before SQL execution"),
+    )
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: lambda _event: None)
+    monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: [])
+
+    output = _run_task_tool(
+        runtime=runtime,
+        description="执行 SQL 子任务",
+        prompt="生成 SQL",
+        subagent_type="sql-subagent",
+        tool_call_id="tc-sql-allowlisted",
+    )
+
+    message = _task_tool_message(output)
+    assert message.additional_kwargs[SUBAGENT_STATUS_KEY] == "failed"
+    assert [tool.name for tool in captured["executor_kwargs"]["tools"]] == ["data_validate_sql"]
+
+    runtime.context["data_query_sql_subagent_allowed"] = False
+    captured.clear()
+    output = _run_task_tool(
+        runtime=runtime,
+        description="执行 SQL 子任务",
+        prompt="生成 SQL",
+        subagent_type="sql-subagent",
+        tool_call_id="tc-sql-denied",
+    )
+    _task_tool_message(output)
+    assert captured["executor_kwargs"]["tools"] == []
+
+
 def test_task_tool_emits_running_and_completed_events(monkeypatch):
     config = _make_subagent_config()
     runtime = _make_runtime()

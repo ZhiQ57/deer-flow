@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deer-flow/data-query/sql-subagent.v1",
+  "title": "DataQuerySqlSubagentResultV1",
+  "type": "object",
+  "required": ["version", "kind", "snapshot_id", "data_source_id", "validation", "execution"],
+  "properties": {
+    "version": {"const": 1},
+    "kind": {"const": "data_query_sql_result"},
+    "snapshot_id": {"type": "string", "minLength": 1},
+    "data_source_id": {"type": "string", "minLength": 1},
+    "validation": {
+      "type": "object",
+      "required": ["valid", "executable_sql", "sql_sha256", "validation_digest", "snapshot_id", "database_type", "binding_fingerprint"],
+      "properties": {
+        "valid": {"const": true},
+        "executable_sql": {"type": "string", "minLength": 1, "maxLength": 50000},
+        "sql_sha256": {"type": "string", "minLength": 1},
+        "validation_digest": {"type": "string", "minLength": 1},
+        "snapshot_id": {"type": "string", "minLength": 1},
+        "database_type": {"enum": ["postgresql", "mysql"]},
+        "binding_fingerprint": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    },
+    "execution": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["version", "ok", "snapshot_id", "validation_digest", "columns", "rows", "row_count", "returned_row_count", "truncated", "empty"],
+          "properties": {
+            "version": {"const": 1},
+            "ok": {"const": true},
+            "snapshot_id": {"type": "string", "minLength": 1},
+            "validation_digest": {"type": "string", "minLength": 1},
+            "columns": {"type": "array", "maxItems": 200, "items": {"type": "string", "maxLength": 200}},
+            "rows": {"type": "array", "maxItems": 500, "items": {"type": "object"}},
+            "row_count": {"type": "integer", "minimum": 0},
+            "returned_row_count": {"type": "integer", "minimum": 0},
+            "truncated": {"type": "boolean"},
+            "empty": {"type": "boolean"},
+            "duration_ms": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["version", "ok", "snapshot_id", "validation_digest", "error_code"],
+          "properties": {
+            "version": {"const": 1},
+            "ok": {"const": false},
+            "snapshot_id": {"type": "string", "minLength": 1},
+            "validation_digest": {"type": "string", "minLength": 1},
+            "error_code": {"enum": ["SQL_BINDING_MISMATCH", "SQL_DSN_MISSING", "SQL_EXECUTION_FAILED", "SQL_TIMEOUT", "SQL_CANCELLED", "SQL_EXECUTION_ALREADY_ATTEMPTED"]},
+            "duration_ms": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  },
+  "additionalProperties": true
+}

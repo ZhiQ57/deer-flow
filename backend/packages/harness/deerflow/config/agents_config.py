@@ -172,6 +172,8 @@ class AgentConfig(BaseModel):
     # - [] (explicit empty list): disable all skills
     # - ["skill1", "skill2"]: load only the specified skills
     skills: list[str] | None = None
+    # ADD: 保留可扩展的定制业务能力配置，DataAgent 运行时再按合同严格解析。
+    service_ability: dict[str, Any] | None = None
     # Optional binding to GitHub repositories so this agent can respond to
     # webhook events from the gateway dispatcher. None means "no GitHub
     # integration", which is the case for every existing agent.

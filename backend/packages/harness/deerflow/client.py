@@ -36,8 +36,9 @@ from langchain_core.runnables import RunnableConfig
 
 from deerflow.agents.lead_agent.agent import build_middlewares
 from deerflow.agents.lead_agent.prompt import apply_prompt_template, get_enabled_skills_for_config
+from deerflow.agents.service_agent.registry import resolve_service_ability_safely
 from deerflow.agents.thread_state import ThreadState
-from deerflow.config.agents_config import AGENT_NAME_PATTERN
+from deerflow.config.agents_config import AGENT_NAME_PATTERN, load_agent_config
 from deerflow.config.app_config import get_app_config, is_trace_correlation_enabled, reload_app_config
 from deerflow.config.extensions_config import ExtensionsConfig, SkillStateConfig, get_extensions_config, reload_extensions_config
 from deerflow.config.paths import get_paths
@@ -238,14 +239,39 @@ class DeerFlowClient:
     def _ensure_agent(self, config: RunnableConfig):
         """Create (or recreate) the agent when config-dependent params change."""
         cfg = config.get("configurable", {})
+        resolved_user_id = get_effective_user_id()
+        agent_config = None
+        if self._agent_name:
+            try:
+                agent_config = load_agent_config(self._agent_name, user_id=resolved_user_id)
+            except FileNotFoundError:
+                agent_config = None
+        # ADD: 嵌入式 DeerFlowClient 复用正式 service ability 解析器，不复制 DataAgent 图或 middleware 链。
+        service_ability = resolve_service_ability_safely(agent_config.service_ability if agent_config is not None else None)
+        subagent_enabled = cfg.get("subagent_enabled", False)
+        allowable_subagents = set(agent_config.allowable_subagents) if agent_config is not None and agent_config.allowable_subagents is not None else None
+        sql_subagent_allowed = bool(service_ability is not None and allowable_subagents is not None and service_ability.config.sql_subagent_name in allowable_subagents)
+        if sql_subagent_allowed:
+            subagent_enabled = True
+            cfg["subagent_enabled"] = True
+        service_ability_config = service_ability.config.model_dump(mode="json") if service_ability is not None else None
+        if service_ability_config is not None:
+            context = config.setdefault("context", {})
+            if isinstance(context, dict):
+                # ADD: 能力合同和服务端 allowlist 判定同时进入本次上下文，task 工具不能只信任客户端 subagent 开关。
+                context["data_query_service_ability"] = service_ability_config
+                context["data_query_sql_subagent_allowed"] = sql_subagent_allowed
+                context["subagent_enabled"] = subagent_enabled
         key = (
             cfg.get("model_name"),
             cfg.get("thinking_enabled"),
             cfg.get("is_plan_mode"),
-            cfg.get("subagent_enabled"),
+            subagent_enabled,
             cfg.get("max_concurrent_subagents"),
             cfg.get("max_total_subagents"),
             self._agent_name,
+            json.dumps(service_ability_config, ensure_ascii=False, sort_keys=True, default=str) if service_ability_config is not None else None,
+            frozenset(allowable_subagents) if allowable_subagents is not None else None,
             frozenset(self._available_skills) if self._available_skills is not None else None,
         )
 
@@ -254,11 +280,13 @@ class DeerFlowClient:
 
         thinking_enabled = cfg.get("thinking_enabled", True)
         model_name = cfg.get("model_name")
-        subagent_enabled = cfg.get("subagent_enabled", False)
         max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
         max_total_subagents = cfg.get("max_total_subagents", self._app_config.subagents.max_total_per_run)
 
         tools = self._get_tools(model_name=model_name, subagent_enabled=subagent_enabled)
+        if service_ability is not None:
+            # ADD: DataAgent 标签工具只追加到当前嵌入式客户端实例，不进入全局 BUILTIN_TOOLS。
+            tools.extend(service_ability.build_tools())
         final_tools, deferred_setup = assemble_deferred_tools(tools, enabled=self._app_config.tool_search.enabled)
         mcp_routing_middleware = build_mcp_routing_middleware(
             final_tools,
@@ -295,7 +323,8 @@ class DeerFlowClient:
                 app_config=self._app_config,
                 deferred_setup=deferred_setup,
                 mcp_routing_middleware=mcp_routing_middleware,
-                user_id=get_effective_user_id(),
+                user_id=resolved_user_id,
+                service_ability=service_ability,
             ),
             "system_prompt": apply_prompt_template(
                 subagent_enabled=subagent_enabled,
@@ -304,9 +333,10 @@ class DeerFlowClient:
                 agent_name=self._agent_name,
                 available_skills=self._available_skills,
                 app_config=self._app_config,
+                allowable_subagents=allowable_subagents,
                 deferred_names=deferred_setup.deferred_names,
                 mcp_routing_hints_section=mcp_routing_hints_section,
-                user_id=get_effective_user_id(),
+                user_id=resolved_user_id,
                 skill_names=skill_setup.skill_names or None,
             ),
             "state_schema": ThreadState,
@@ -369,15 +399,20 @@ class DeerFlowClient:
     @staticmethod
     def _tool_message_event(msg: ToolMessage) -> "StreamEvent":
         """Build a ``messages-tuple`` tool-result event from a ToolMessage."""
+        data: dict[str, Any] = {
+            "type": "tool",
+            "content": DeerFlowClient._extract_text(msg.content),
+            "name": msg.name,
+            "tool_call_id": msg.tool_call_id,
+            "id": msg.id,
+        }
+        # ADD: DataAgent 标签、确认和 SQL 结果依赖 ToolMessage artifact，必须随实时消息传给前端。
+        artifact = getattr(msg, "artifact", None)
+        if isinstance(artifact, dict):
+            data["artifact"] = artifact
         return StreamEvent(
             type="messages-tuple",
-            data={
-                "type": "tool",
-                "content": DeerFlowClient._extract_text(msg.content),
-                "name": msg.name,
-                "tool_call_id": msg.tool_call_id,
-                "id": msg.id,
-            },
+            data=data,
         )
 
     @staticmethod
@@ -400,6 +435,10 @@ class DeerFlowClient:
                 "tool_call_id": getattr(msg, "tool_call_id", None),
                 "id": getattr(msg, "id", None),
             }
+            # ADD: values/checkpoint 之外的嵌入式 Client 消息也必须保留业务 artifact。
+            artifact = getattr(msg, "artifact", None)
+            if isinstance(artifact, dict):
+                d["artifact"] = artifact
             if additional_kwargs := DeerFlowClient._serialize_additional_kwargs(msg):
                 d["additional_kwargs"] = additional_kwargs
             return d

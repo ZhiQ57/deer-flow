@@ -1,4 +1,8 @@
-"""用户意图标签的展示中间件。"""
+"""用户意图标签的展示中间件.
+暂时供 DeerFlow DataAgent 使用，后续可默认设置 Lead-Agent .
+
+
+"""
 
 from __future__ import annotations
 
@@ -11,8 +15,21 @@ from typing import Any, override
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langgraph.config import get_stream_writer
+from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.runtime import Runtime
 from langgraph.types import Command
+
+from deerflow.agents.service_agent.state import (
+    build_query_approval_request,
+    build_query_label_snapshot,
+    build_query_review_items,
+    decide_query_approval,
+    get_active_service_state,
+    make_service_state,
+)
+from deerflow.agents.service_agent.tool_call_limits import keep_first_matching_tool_call
+from deerflow.agents.service_agent.turn_reset_middleware import current_visible_turn_id
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +51,14 @@ class QueryLabelsMiddleware(AgentMiddleware):
         *,
         require_retrieval: bool = False,
         stage_name: str | None = None,
+        service_ability: object | None = None,
     ) -> None:
         """初始化查询标签 middleware。
 
         Args:
             require_retrieval: 是否要求所有标签都在首次有效 TableRAG 检索后发布。
             stage_name: 标签发布成功后写入的可选业务阶段名。
+            service_ability: 当前 DataAgent service ability 配置，用于绑定数据源和合同版本。
 
         Return:
             None。
@@ -47,6 +66,8 @@ class QueryLabelsMiddleware(AgentMiddleware):
         super().__init__()
         self._require_retrieval = require_retrieval
         self._stage_name = stage_name.strip() if isinstance(stage_name, str) and stage_name.strip() else None
+        # ADD: 保存当前 service ability，后续标签快照必须绑定同一能力版本和数据源。
+        self._service_ability = service_ability
 
     @staticmethod
     def _message_id(tool_call_id: str, payload: Mapping[str, Any] | str) -> str:
@@ -206,6 +227,145 @@ class QueryLabelsMiddleware(AgentMiddleware):
             payload["summary"] = normalized_summary
         return payload
 
+    # ADD: 依据当前 service_states 构造不可伪造的 DataAgent 标签快照。
+    def _build_service_payload(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any], bool]:
+        """构造 DataAgent v1 标签 artifact、状态更新和是否需要确认标志。
+
+        Args:
+            request: 当前 publish_query_labels 工具请求。
+
+        Returns:
+            artifact、service_states 快照和是否等待确认。
+
+        Raises:
+            ValueError: 检索、标签或快照合同不合法。
+        """
+        if self._service_ability is None:
+            raise ValueError("DataAgent service ability 未启用。")
+        state = request.state if isinstance(request.state, Mapping) else {}
+        active = get_active_service_state(state)
+        if active is None:
+            raise ValueError("发布查询标签前必须先完成当前用户轮次的 TableRAG 检索。")
+        if active.get("stage") not in {"retrieving", "labels_published"}:
+            raise ValueError("当前查询阶段不允许重复发布标签。")
+        visible_turn_id = current_visible_turn_id(state)
+        if visible_turn_id is not None and visible_turn_id != active.get("turn_id"):
+            raise ValueError("查询标签不属于当前可见用户轮次。")
+        payload = active.get("payload")
+        retrieval = payload.get("retrieval") if isinstance(payload, Mapping) else None
+        if not isinstance(retrieval, Mapping) or retrieval.get("ok") is not True:
+            raise ValueError("当前 TableRAG 检索没有有效结果，不能发布数据库标签。")
+        args = request.tool_call.get("args") or {}
+        if not isinstance(args, Mapping):
+            raise ValueError("标签工具参数必须是对象。")
+        labels = args.get("labels")
+        if isinstance(labels, str):
+            try:
+                labels = json.loads(labels)
+            except json.JSONDecodeError as exc:
+                raise ValueError("labels 必须是 JSON 数组。") from exc
+        if not isinstance(labels, list):
+            raise ValueError("labels 必须是数组。")
+        normalized_labels: list[Mapping[str, Any]] = []
+        for index, item in enumerate(labels):
+            if hasattr(item, "model_dump"):
+                item = item.model_dump(exclude_none=True)
+            if not isinstance(item, Mapping):
+                raise ValueError(f"labels[{index}] 必须是对象。")
+            normalized_labels.append(dict(item))
+        confidence = args.get("confidence")
+        # ADD: 缺失 ambiguities 不能默认为空数组，否则模型可用高 confidence 绕过人工确认。
+        ambiguities_declared = "ambiguities" in args and args.get("ambiguities") is not None
+        ambiguities = args.get("ambiguities") if ambiguities_declared else []
+        if not ambiguities_declared:
+            # ADD: 给前端一个明确的审核项，避免模型只在自由文本中表达疑问时页面没有确认入口。
+            ambiguities = ["AI 未明确提交歧义清单，请确认当前理解是否可以用于生成 SQL。"]
+        if isinstance(ambiguities, str):
+            try:
+                ambiguities = json.loads(ambiguities)
+            except json.JSONDecodeError as exc:
+                raise ValueError("ambiguities 必须是 JSON 数组。") from exc
+        if not isinstance(ambiguities, list):
+            raise ValueError("ambiguities 必须是数组。")
+        turn_id = str(active.get("turn_id") or "")
+        snapshot = build_query_label_snapshot(
+            turn_id=turn_id,
+            data_source_id=self._service_ability.data_source_id,
+            ability_version=self._service_ability.version,
+            retrieval=retrieval,
+            intent=str(args.get("intent") or ""),
+            labels=normalized_labels,
+            summary=args.get("summary") if isinstance(args.get("summary"), str) else None,
+            confidence=confidence,
+            ambiguities=ambiguities,
+            ambiguities_declared=ambiguities_declared,
+        )
+        approval = decide_query_approval(self._service_ability, snapshot)
+        runtime_context = getattr(request.runtime, "context", None)
+        confirmation_disabled = isinstance(runtime_context, Mapping) and bool(runtime_context.get("non_interactive") or runtime_context.get("disable_clarification"))
+        approval_error_code: str | None = None
+        if approval["status"] == "awaiting_confirmation" and confirmation_disabled:
+            # ADD: 非交互/禁用澄清场景禁止等待确认或猜测执行数据库，直接安全取消当前快照。
+            approval = {
+                "version": 1,
+                "snapshot_id": snapshot["snapshot_id"],
+                "status": "cancelled",
+                "action": "cancel",
+                "source": "model",
+            }
+            approval_error_code = "DATA_QUERY_CONFIRMATION_UNAVAILABLE"
+        tool_call_id = str(request.tool_call.get("id") or "")
+        # ADD: 只把有限长度的 Evidence 摘要投影给前端，原始检索对象仍留在受控服务状态。
+        evidence: list[dict[str, str]] = []
+        registry = retrieval.get("registry") if isinstance(retrieval.get("registry"), Mapping) else {}
+        for ref, item in list(registry.items())[:30]:
+            if not isinstance(ref, str) or not isinstance(item, Mapping):
+                continue
+            record = item.get("record") if isinstance(item.get("record"), Mapping) else {}
+            summary = next(
+                (str(record.get(name)).strip() for name in ("evidence_content", "content", "value", "column_name", "table_name") if isinstance(record.get(name), str) and str(record.get(name)).strip()),
+                "检索对象",
+            )
+            evidence.append({"ref": ref, "kind": str(item.get("kind") or "evidence"), "summary": summary[:500]})
+        artifact: dict[str, Any] = {
+            "version": 1,
+            "kind": "data_query_labels",
+            "service_name": "data_query",
+            "snapshot_id": snapshot["snapshot_id"],
+            "data_source_id": self._service_ability.data_source_id,
+            "turn_id": turn_id,
+            "intent": snapshot["intent"],
+            "summary": snapshot.get("summary"),
+            "confidence": snapshot.get("confidence"),
+            "ambiguities": snapshot["ambiguities"],
+            "ambiguity_items": build_query_review_items(snapshot),
+            "labels": snapshot["labels"],
+            "evidence": evidence,
+            "retrieval_digest": snapshot["retrieval_digest"],
+            "binding_fingerprint": snapshot["binding_fingerprint"],
+            "approval": approval,
+        }
+        service_payload = {
+            "retrieval": dict(retrieval),
+            "labels": dict(snapshot),
+            "approval": dict(approval),
+            "review_items": build_query_review_items(snapshot),
+        }
+        if approval_error_code is not None:
+            service_payload["approval_error_code"] = approval_error_code
+        if approval["status"] == "awaiting_confirmation":
+            approval_request = build_query_approval_request(snapshot, tool_call_id=tool_call_id)
+            artifact["human_input"] = approval_request
+            service_payload["approval_request"] = approval_request
+        service_state = make_service_state(
+            turn_id=turn_id,
+            stage=("awaiting_confirmation" if approval["status"] == "awaiting_confirmation" else "cancelled" if approval["status"] == "cancelled" else "approved"),
+            snapshot_id=snapshot["snapshot_id"],
+            data_source_id=self._service_ability.data_source_id,
+            payload=service_payload,
+        )
+        return artifact, service_state, approval["status"] == "awaiting_confirmation"
+
     @staticmethod
     def _emit_stream_event(payload: dict[str, Any]) -> None:
         """向 custom stream 发布用户侧标签事件。
@@ -235,6 +395,27 @@ class QueryLabelsMiddleware(AgentMiddleware):
         Return:
             成功时返回不终止图执行的 Command，失败时返回错误 ToolMessage。
         """
+        if self._service_ability is not None:
+            try:
+                payload, service_state, awaiting_confirmation = self._build_service_payload(request)
+            except ValueError as exc:
+                return self._error(request, str(exc))
+            tool_call_id = str(request.tool_call.get("id") or "")
+            message = ToolMessage(
+                id=self._message_id(tool_call_id, payload),
+                content=json.dumps({"ok": True, **payload}, ensure_ascii=False),
+                tool_call_id=tool_call_id or "missing-tool-call-id",
+                name=_PUBLISH_QUERY_LABELS_TOOL_NAME,
+                status="success",
+                artifact=payload,
+            )
+            self._emit_stream_event(payload)
+            update: dict[str, Any] = {"messages": [message], "service_states": [service_state]}
+            if awaiting_confirmation:
+                # ADD: 复用 DeerFlow human-input v1，确认期间终止当前图运行。
+                return Command(update=update, goto=END)
+            return Command(update=update)
+
         try:
             payload = self._build_payload(request)
         except ValueError as exc:
@@ -257,6 +438,22 @@ class QueryLabelsMiddleware(AgentMiddleware):
         if self._stage_name is not None:
             update["data_agent_stage"] = self._stage_name
         return Command(update=update)
+
+    @override
+    def after_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
+        """同步模型返回后只保留一个标签发布调用。"""
+        return keep_first_matching_tool_call(
+            state,
+            lambda tool_call: tool_call.get("name") == _PUBLISH_QUERY_LABELS_TOOL_NAME,
+        )
+
+    @override
+    async def aafter_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
+        """异步模型返回后复用标签发布串行化规则。"""
+        return keep_first_matching_tool_call(
+            state,
+            lambda tool_call: tool_call.get("name") == _PUBLISH_QUERY_LABELS_TOOL_NAME,
+        )
 
     @override
     def wrap_tool_call(

@@ -9,6 +9,7 @@ import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from deerflow.agents.service_agent.registry import resolve_service_ability_safely
 from deerflow.config.agents_api_config import get_agents_api_config
 from deerflow.config.agents_config import AgentConfig, list_custom_agents, load_agent_config, load_agent_soul, preserve_non_managed_fields
 from deerflow.config.paths import get_paths
@@ -28,6 +29,8 @@ class AgentResponse(BaseModel):
     model: str | None = Field(default=None, description="Optional model override")
     tool_groups: list[str] | None = Field(default=None, description="Optional tool group whitelist")
     skills: list[str] | None = Field(default=None, description="Optional skill whitelist (None=all, []=none)")
+    # ADD: 返回脱敏后的 service ability 元数据，供前端选择专属展示能力。
+    service_ability: dict[str, object] | None = Field(default=None, description="Readonly sanitized service ability metadata")
     soul: str | None = Field(default=None, description="SOUL.md content")
 
 
@@ -93,6 +96,8 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
     soul: str | None = None
     if include_soul:
         soul = load_agent_soul(agent_cfg.name, user_id=user_id) or ""
+    # ADD: API 只投影可公开字段，绝不把 DSN、Secret 或连接参数返回给前端。
+    service_ability = resolve_service_ability_safely(agent_cfg.service_ability)
 
     return AgentResponse(
         name=agent_cfg.name,
@@ -100,6 +105,7 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
         model=agent_cfg.model,
         tool_groups=agent_cfg.tool_groups,
         skills=agent_cfg.skills,
+        service_ability=service_ability.public_metadata() if service_ability is not None else None,
         soul=soul,
     )
 

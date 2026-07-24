@@ -606,6 +606,56 @@ class TestAgentsAPI:
         soul_agent = next(a for a in agents if a["name"] == "soul-agent")
         assert soul_agent["soul"] == "My soul content"
 
+    def test_list_agents_returns_only_sanitized_data_query_ability(self, agent_client):
+        """Agents API 可识别 DataAgent，但不得返回 DSN 引用、allowlist 或连接参数。"""
+        _write_agent(
+            agent_client._tmp_path,  # type: ignore[attr-defined]
+            "data-agent",
+            {
+                "name": "data-agent",
+                "service_ability": {
+                    "type": "data_query",
+                    "version": 1,
+                    "enable_sql_rag": True,
+                    "table_rag_config": "tabelrag.yaml",
+                    "data_source_id": "text2sql-mysql-local",
+                    "source_binding_mode": "logical_data_source",
+                    "confirmation_mode": "on_ambiguity",
+                    "min_auto_confidence": 0.85,
+                    "sql_subagent_name": "sql-subagent",
+                    "sql_execution": {
+                        "enabled": True,
+                        "database_type": "mysql",
+                        "dsn_env": "DATA_AGENT_MYSQL_DSN",
+                        "readonly": True,
+                        "allowed_schemas": ["text2sql"],
+                        "allowed_tables": ["femalediagnosticinfo"],
+                        "allowed_columns": ["FemaleFactor"],
+                    },
+                },
+            },
+        )
+
+        response = agent_client.get("/api/agents")
+
+        assert response.status_code == 200
+        data_agent = next(item for item in response.json()["agents"] if item["name"] == "data-agent")
+        assert data_agent["service_ability"] == {
+            "type": "data_query",
+            "version": 1,
+            "enabled": True,
+            "enable_sql_rag": True,
+            "data_source_id": "text2sql-mysql-local",
+            "source_binding_mode": "logical_data_source",
+            "confirmation_mode": "on_ambiguity",
+            "min_auto_confidence": 0.85,
+            "sql_subagent_name": "sql-subagent",
+            "database_type": "mysql",
+            "sql_execution_enabled": True,
+        }
+        assert "DATA_AGENT_MYSQL_DSN" not in str(data_agent)
+        assert "femalediagnosticinfo" not in str(data_agent)
+
     def test_get_agent(self, agent_client):
         agent_client.post("/api/agents", json={"name": "test-agent", "soul": "Hello world"})
 

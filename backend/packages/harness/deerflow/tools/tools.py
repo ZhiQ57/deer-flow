@@ -24,6 +24,7 @@ BUILTIN_TOOLS = [
     ask_clarification_tool,
     review_skill_package,
     entity_extract_tool,
+    # ADD: DataAgent 标签和 SQL 工具由 service_ability 按实例动态装配，不注册到全局工具面。
 ]
 
 SUBAGENT_TOOLS = [

@@ -1,13 +1,20 @@
 # DataAgent Text2SQL 运行说明
 
-DataAgent 当前包含两条用途不同的路径：
+DataAgent 当前包含两条用途不同的路径：正式生产闭环与历史实验路径。两者必须区分，不能把历史实验配置当作生产入口。
 
-1. `docs/agents/data-agent/config.yaml` 与 `SOUL.md` 是 DeerFlow 原生 custom-agent 模板，可复制到 `.deer-flow/users/{user_id}/agents/data-agent/`；当 `agent_name=data-agent` 时，lead-agent middleware 链可加载通用 `QueryLabelsMiddleware`。
-2. `backend/packages/harness/deerflow-dev/` 是实验性、阶段门禁化的 DataAgent 运行层，按照 DeerFlow SDK 的 `agents`、`agents/middlewares`、`tools/builtins`、`subagents` 边界组织，并通过 `create_deerflow_agent(...)` 重新创建图；当前只由测试执行脚本直接启动，不新增 Gateway 路由。
+1. `docs/agents/data-agent/config.yaml` 与 `SOUL.md` 是 DeerFlow 原生 custom-agent 模板，可复制到 `.deer-flow/users/{user_id}/agents/data-agent/`；配置中的 `service_ability.type=data_query` 会让正式 `lead_agent` 动态装配 DataAgent middleware。
+2. `backend/packages/harness/deerflow-dev/` 保留为历史实验路径，不是本期生产入口；正式 Gateway 仍复用 `lead_agent + agent_name`，不新增路由、图或 checkpoint。
 
-只有第 2 条实验性路径包含本文所述的**检索后标签门禁**、可选 QueryContext Tool、
-只读 SQL 校验/执行、ChartSpec 和确定性收敛预算。原生 UI custom-agent 路径仍使用
-lead-agent；即使加载通用标签 middleware，也不会自动切换到该实验图或获得 SQL 运行工具。
+正式能力需要在根 `config.yaml -> subagents.custom_agents` 显式注册 `sql-subagent`，并只允许
+`data_validate_sql`、`data_execute_sql` 两个工具；SQL 子代理不能加载 `table-rag-agent` Skill。
+真实本地拓扑由 PostgreSQL 保存 TableRAG 索引元数据、MySQL 保存业务表，执行库通过
+`DATA_AGENT_MYSQL_DSN` 环境变量提供。`allowed_tables` 与 `allowed_columns` 为空时服务端拒绝 SQL 执行。
+同库部署仍可使用 PostgreSQL 执行源，但必须选择 `same_physical_target` 并让检索/执行 fingerprint 一致。
+
+第 2 条实验性路径曾包含本文早期版本中的**检索后标签门禁**、可选 QueryContext Tool、
+只读 SQL 校验/执行、ChartSpec 和确定性收敛预算；这些内容仅用于历史迁移对照。当前正式
+custom-agent 路径已经通过 `service_ability` 在原生 `lead-agent` 上提供本方案的检索、标签、确认、
+SQL SubAgent 和结果卡闭环，不会切换到实验图，也不会新增独立运行时。
 
 ## 1. 执行步骤
 
@@ -19,20 +26,20 @@ Set-Location "D:\A-PythonWork\AOpenGithub\deer-flow"
 
 $env:DEER_FLOW_CONFIG_PATH = "D:\A-PythonWork\AOpenGithub\deer-flow\config.yaml"
 $env:DEER_FLOW_EXTENSIONS_CONFIG_PATH = "D:\A-PythonWork\AOpenGithub\deer-flow\extensions_config.json"
-$env:TABLERAG_CONFIG = "D:\A-PythonWork\AOpenGithub\deer-flow\tabelrag.yaml"
+$env:TABLERAG_CONFIG = "D:\A-PythonWork\AOpenGithub\deer-flow\tablerag.yaml"
 
 $env:TABLERAG_MCP_INDEX_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
 $env:TABLERAG_MCP_SOURCE_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
 
-$env:DATA_AGENT_MYSQL_DSN = "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql"
+$env:DATA_AGENT_MYSQL_DSN = "mysql+pymysql://readonly:<password>@127.0.0.1:3308/text2sql"
 ```
 
 密码中的 `@` 等保留字符必须先做 URL 编码，例如 `@` 编码为 `%40`。
 
 当前已有配置, 检查确认：
 - config.yaml 中存在 Qwen3.6-plus
-- 本地 DataAgent 配置存在：
-- D:\A-PythonWork\AOpenGithub\deer-flow\.deer-flow\users\default\agents\data-agent\config.yaml
+- 本地 DataAgent 配置存在：`backend\.deer-flow\agents\data-agent\config.yaml`；用户隔离部署使用
+  `backend\.deer-flow\users\{user_id}\agents\data-agent\config.yaml`。
 - extensions_config.json 中 tablerag.enabled=true
 - pymysql、sqlglot、psycopg 均已安装
 - 数据库环境变量。
@@ -64,7 +71,12 @@ uv run pytest "D:\A-PythonWork\AOpenGithub\deer-flow\backend\tests\service_agent
 
 这些环境变量只对当前 PowerShell 会话有效；
 
-## 2. 配置 TableRAG MCP 与 MySQL
+## 2. 配置 PostgreSQL TableRAG 索引与 MySQL 业务执行源（正式路径）
+
+2026 年 7 月 16 日真实环境核验确认：当前 `tablerag.yaml` 的 PostgreSQL 库保存 TableRAG 索引，
+检索返回的业务表实际位于 MySQL `text2sql`。因此正式路径使用
+`source_binding_mode: logical_data_source`，由服务端把 PostgreSQL 检索目标与 MySQL 执行目标共同写入
+`binding_fingerprint`。这不是让模型任意跨库；两个 DSN、逻辑 `data_source_id` 和 allowlist 都必须由服务端配置。
 
 `extensions_config.example.json` 已包含默认关闭的 `tablerag` stdio MCP。复制为本地配置后，将 `mcpServers.tablerag.enabled` 改为 `true`：
 
@@ -75,14 +87,16 @@ Copy-Item -LiteralPath "extensions_config.example.json" -Destination "extensions
 在启动 DataAgent 的同一个 PowerShell 会话中注入配置。密码含 `@`、`:` 等字符时必须先做 URL 编码：
 
 ```powershell
-$env:TABLERAG_CONFIG = "D:\A-PythonWork\AOpenGithub\deer-flow\tabelrag.yaml"
+$env:TABLERAG_CONFIG = "D:\A-PythonWork\AOpenGithub\deer-flow\tablerag.yaml"
+$env:TABLERAG_MCP_CONFIG = $env:TABLERAG_CONFIG
 $env:TABLERAG_MCP_INDEX_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
 $env:TABLERAG_MCP_SOURCE_DSN = "postgresql://postgres:postgres@127.0.0.1:55433/text2sql"
 
 $env:DATA_AGENT_MYSQL_DSN = "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql"
 ```
 
-也可以不用 MySQL DSN，改为分别设置：
+历史实验入口也支持分别设置以下 MySQL 环境变量；正式 `service_ability` 路径只读取
+`sql_execution.dsn_env` 指向的完整 DSN，不会读取这些拆分字段：
 
 ```powershell
 $env:DATA_AGENT_MYSQL_HOST="<host>"
@@ -92,16 +106,49 @@ $env:DATA_AGENT_MYSQL_PASSWORD="<password>"
 $env:DATA_AGENT_MYSQL_DATABASE="<business_database>"
 ```
 
-不要把真实 DSN、密码或令牌写入受 Git 管理的配置、测试和文档。`tabelrag.yaml`、`extensions_config.json` 和 `config.yaml` 是本地文件；部署环境应优先使用 Secret/环境变量注入。
+不要把真实 DSN、密码或令牌写入受 Git 管理的配置、测试和文档。`tablerag.yaml`、`extensions_config.json` 和 `config.yaml` 是本地文件；部署环境应优先使用 Secret/环境变量注入。启动前必须确认 `TABLERAG_MCP_CONFIG/TABLERAG_CONFIG` 指向的文件真实存在；否则 MCP 不能按该配置启动。
 
 建议执行库账号同时在 MySQL 权限层配置为只读。应用层只读事务和 SQL AST 校验是纵深防御，不能替代数据库最小权限账号。
+
+正式 custom-agent 配置的关键片段：
+
+```yaml
+service_ability:
+  type: data_query
+  version: 1
+  # v1 固定为 true；停用 DataAgent 查询闭环时移除整个 service_ability。
+  enable_sql_rag: true
+  table_rag_config: tablerag.yaml
+  data_source_id: text2sql-mysql-local
+  source_binding_mode: logical_data_source
+  confirmation_mode: on_ambiguity
+  min_auto_confidence: 0.85
+  sql_subagent_name: sql-subagent
+  sql_execution:
+    enabled: true
+    database_type: mysql
+    dsn_env: DATA_AGENT_MYSQL_DSN
+    readonly: true
+    allowed_schemas: [text2sql]
+    allowed_tables: []   # 部署前填写服务端授权表
+    allowed_columns: []  # 部署前填写服务端授权列
+```
+
+正式 SQL 校验同时支持 PostgreSQL/MySQL AST。`sql_only` 快照只向 SQL SubAgent 提供
+`data_validate_sql`；只有 `execute` 快照才提供 `data_execute_sql`。父 Agent 不信任 SQL SubAgent
+最终自由文本，而是从真实 SQL 工具 ToolMessage 重建并再次校验结果。
+
+`data-agent.allowable_subagents` 必须显式包含 `sql-subagent`。服务端会把该判定写入本次运行上下文并在
+`SqlStageMiddleware` 与 `task` 工具装配处双重校验；客户端手动设置 `subagent_enabled=true`、模型自行填写
+`subagent_type=sql-subagent` 都不能替代此授权。同一模型响应中的多个 TableRAG、标签或 SQL SubAgent 调用
+只保留第一个，补充检索必须串行执行，避免产生冲突快照或重复 SQL 执行。
 
 ## 4. 实验性流程与安全边界
 
 实验性运行层复用 lead-agent 的模型、prompt、Skill、MCP 和多数 middleware，并额外增加：
 
 - `DataAgentTurnResetMiddleware`：只在新真实用户轮次开始时重置上一轮 QueryContext、查询标签、检索、SQL、图表和强制收敛状态，不执行实体抽取。
-- `publish_query_labels`：稳定 SDK 中的标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels` 和可选 `summary`，不调用模型。
+- `publish_query_labels`：稳定 SDK 中的标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels`、`confidence` 和显式 `ambiguities`，不调用模型。没有歧义时必须传 `ambiguities: []`，不能省略或只在最终回答中描述待确认项。
 - `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`；实验性 DataAgent 使用 `require_retrieval=True` 和 `stage_name="labels_published"`，因此任何标签都必须在首次有效 TableRAG 检索后发布。middleware 会生成顶层 ToolMessage artifact、写入 `data_query_labels`、发送 custom stream 事件并继续当前图执行；数据库来源标签还必须关联 Evidence 摘要。
 - `entity_extract_tool`：现有实体抽取工具继续保留，可在确实需要独立模型抽取时按需调用，但不再是 TableRAG 或 SQL 的前置条件。
 - `DataAgentOrchestrationMiddleware`：允许 lead-agent 直接组织 TableRAG query/keywords；强制 `TableRAG -> 查询标签 -> SQL 校验 -> SQL 执行 -> 可选 ChartSpec -> 最终回答` 顺序。实体抽取仍不是前置条件。
@@ -112,8 +159,9 @@ $env:DATA_AGENT_MYSQL_DATABASE="<business_database>"
 lead-agent 可以直接从用户问题中组织 TableRAG 检索关键词。标签展示由
 `publish_query_labels` 完成，但必须在首次有效检索之后：`source=user` 和
 `source=derived` 也不能提前发布，`source=database` 还必须引用当前轮次的
-TableRAG Evidence。后续再次调用会替换当前完整标签快照。标签工具不会额外请求模型，
-也不能把历史对话、memory 或旧 SQL 当成当前数据库 Schema 的证明。
+TableRAG Evidence。后续再次调用会替换当前完整标签快照，并生成可逐项审核的
+`ambiguity_items`。标签工具不会额外请求模型，也不能把历史对话、memory 或旧 SQL
+当成当前数据库 Schema 的证明。实时消息和历史 values 都必须携带 artifact，否则前端会退化为普通工具轨迹。
 
 当前代码目录：
 
