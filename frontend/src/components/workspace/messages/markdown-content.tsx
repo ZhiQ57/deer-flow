@@ -12,10 +12,13 @@ import {
   useRef,
   useState,
 } from "react";
+import type { PluginConfig } from "streamdown";
 
 import { type ClipboardSafeStreamdownProps } from "@/components/ai-elements/streamdown";
+import { SqlCodeBlock } from "@/components/workspace/sql-execution";
 import {
   preprocessStreamdownMarkdown,
+  streamdownRenderingPlugins,
   streamdownPluginsWithoutRawHtml,
   streamdownWordAnimation,
 } from "@/core/streamdown";
@@ -47,6 +50,15 @@ const SMOOTH_REVEAL_MIN_CHARS_PER_FRAME = 8;
 const SMOOTH_REVEAL_DURATION_MS = 300;
 
 const StreamingCodeBlockContext = createContext(false);
+const messageRenderingPlugins = {
+  ...streamdownRenderingPlugins,
+  renderers: [
+    {
+      language: "sql",
+      component: SqlCodeBlock,
+    },
+  ],
+} satisfies PluginConfig;
 
 function useSmoothStreamingContent(content: string, isLoading: boolean) {
   const initialContent =
@@ -266,6 +278,7 @@ export function MarkdownContent({
       remarkPlugins={remarkPlugins}
       rehypePlugins={effectiveRehypePlugins}
       components={toStreamdownComponents(components)}
+      plugins={messageRenderingPlugins}
       parseIncompleteMarkdown={isLoading}
       animated={streamdownWordAnimation}
       isAnimating={isLoading}

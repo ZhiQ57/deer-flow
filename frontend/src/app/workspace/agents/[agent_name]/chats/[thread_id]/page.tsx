@@ -234,7 +234,14 @@ export default function AgentChatPage() {
         context={{ ...settings.context, agent_name }}
         isMock={isMock}
       >
-        <ChatBox threadId={threadId}>
+        <ChatBox
+          agentName={agent_name}
+          sqlExecutionEnabled={
+            agent?.service_ability?.type === "data_query" &&
+            agent.service_ability.sql_execution_enabled === true
+          }
+          threadId={threadId}
+        >
           <div className="relative flex size-full min-h-0 justify-between">
             <header
               className={cn(

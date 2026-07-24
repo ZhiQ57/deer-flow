@@ -31,6 +31,7 @@ from app.gateway.routers import (
     runs,
     scheduled_tasks,
     skills,
+    sql_execution,
     suggestions,
     thread_runs,
     threads,
@@ -420,6 +421,10 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
                 "description": "Access and download thread artifacts and generated files",
             },
             {
+                "name": "sql-execution",
+                "description": "Validate and execute DataAgent read-only SQL code blocks",
+            },
+            {
                 "name": "uploads",
                 "description": "Upload and manage user files for threads",
             },
@@ -509,6 +514,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Browser API is mounted at /api/threads/{thread_id}/browser
     app.include_router(browser.router)
+
+    # DataAgent SQL API is mounted at /api/threads/{thread_id}/sql/execute
+    app.include_router(sql_execution.router)
 
     # Uploads API is mounted at /api/threads/{thread_id}/uploads
     app.include_router(uploads.router)

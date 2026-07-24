@@ -57,6 +57,23 @@ export const enUS: Translations = {
     showBrowser: "Open browser panel",
   },
 
+  sqlExecution: {
+    execute: "Execute",
+    executing: "Executing...",
+    title: "SQL Result",
+    success: "Success",
+    failed: "Failed",
+    loading: "Executing SQL...",
+    empty: "The query completed successfully with no rows.",
+    truncated: "Result truncated",
+    rows: "rows",
+    duration: "Duration",
+    database: "Database",
+    rerun: "Run again",
+    close: "Close SQL result",
+    noResult: "Run a SQL code block to view its raw result.",
+  },
+
   runDuration: {
     reasoning: "Reasoning",
     working: "Working…",

@@ -1,8 +1,26 @@
 import { describe, expect, it } from "@rstest/core";
-import { createElement, type ImgHTMLAttributes } from "react";
+import {
+  createElement,
+  type ComponentType,
+  type ImgHTMLAttributes,
+  type ReactNode,
+} from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { MarkdownContent } from "@/components/workspace/messages/markdown-content";
+import { SqlExecutionProvider } from "@/components/workspace/sql-execution";
+import { I18nProvider } from "@/core/i18n/context";
+
+const TestI18nProvider = I18nProvider as ComponentType<{
+  initialLocale: "en-US" | "zh-CN";
+  children?: ReactNode;
+}>;
+const TestSqlExecutionProvider = SqlExecutionProvider as ComponentType<{
+  threadId: string;
+  agentName?: string;
+  enabled: boolean;
+  children?: ReactNode;
+}>;
 
 function renderMarkdown(
   content: string,
@@ -120,5 +138,77 @@ describe("MarkdownContent strikethrough", () => {
     const html = renderMarkdown("状态：~~已取消~~", false);
 
     expect(html).toContain("<del>已取消</del>");
+  });
+});
+
+describe("MarkdownContent SQL execution", () => {
+  it("shows execute before the standard actions for completed DataAgent SQL", () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        TestI18nProvider,
+        { initialLocale: "zh-CN" },
+        createElement(
+          TestSqlExecutionProvider,
+          {
+            threadId: "thread-1",
+            agentName: "data-agent",
+            enabled: true,
+          },
+          createElement(MarkdownContent, {
+            content: ["```sql", "SELECT region FROM orders", "```"].join("\n"),
+            isLoading: false,
+          }),
+        ),
+      ),
+    );
+
+    expect(html).toContain('data-testid="sql-execute-button"');
+    expect(html).toContain("执行");
+    expect(html.indexOf('data-testid="sql-execute-button"')).toBeLessThan(
+      html.indexOf('data-streamdown="code-block-download-button"'),
+    );
+    expect(html).toContain('data-streamdown="code-block-copy-button"');
+  });
+
+  it("does not show execute for a normal agent or a streaming SQL fence", () => {
+    const normalAgent = renderToStaticMarkup(
+      createElement(
+        TestI18nProvider,
+        { initialLocale: "en-US" },
+        createElement(
+          TestSqlExecutionProvider,
+          {
+            threadId: "thread-1",
+            agentName: "lead-agent",
+            enabled: false,
+          },
+          createElement(MarkdownContent, {
+            content: ["```sql", "SELECT 1", "```"].join("\n"),
+            isLoading: false,
+          }),
+        ),
+      ),
+    );
+    const streaming = renderToStaticMarkup(
+      createElement(
+        TestI18nProvider,
+        { initialLocale: "en-US" },
+        createElement(
+          TestSqlExecutionProvider,
+          {
+            threadId: "thread-1",
+            agentName: "data-agent",
+            enabled: true,
+          },
+          createElement(MarkdownContent, {
+            content: ["```sql", "SELECT 1", "```"].join("\n"),
+            isLoading: true,
+          }),
+        ),
+      ),
+    );
+
+    expect(normalAgent).not.toContain('data-testid="sql-execute-button"');
+    expect(streaming).not.toContain('data-testid="sql-execute-button"');
   });
 });

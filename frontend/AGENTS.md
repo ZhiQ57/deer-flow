@@ -38,6 +38,7 @@ E2E tests live under `tests/e2e/` and use Playwright with Chromium. They mock al
 
 ```
 Frontend (Next.js) ──▶ LangGraph SDK ──▶ LangGraph Backend (lead_agent)
+         └───────────▶ Gateway SQL API ──▶ shared SqlExecutionService
                                               ├── Sub-Agents
                                               └── Tools & Skills
 ```
@@ -50,10 +51,10 @@ The frontend is a stateful chat application. Users create **threads** (conversat
 - **`components/`** — React components:
   - `ui/` — Shadcn UI primitives (auto-generated, ESLint-ignored)
   - `ai-elements/` — Vercel AI SDK elements (auto-generated, ESLint-ignored)
-  - `workspace/` — Chat page components (messages, artifacts, settings)
+  - `workspace/` — Chat page components (messages, artifacts, SQL execution panel, settings)
   - `landing/` — Landing page sections
   - `docs/` — Docs / MDX rendering components
-- **`core/`** — Business logic, the heart of the app. Domains include `threads/` (creation, streaming, state), `api/` (LangGraph client singleton), `agents/` (custom agents), `auth/` (authentication), `artifacts/`, `channels/` (IM connections), `i18n/` (en-US, zh-CN), `settings/`, `memory/`, `skills/`, `messages/`, `mcp/`, `models/`, `input-polish/` (pre-send draft rewrite API), `voice-input/` (browser speech-recognition helpers), `suggestions/`, `tasks/`, `todos/`, `tools/`, `workspace-changes/` (run-scoped changed-file summaries and diff fetching), `config/`, `notification/`, `blog/`, plus rendering helpers (`rehype/`, `streamdown/`) and `utils/`.
+- **`core/`** — Business logic, the heart of the app. Domains include `threads/` (creation, streaming, state), `api/` (LangGraph client singleton), `agents/` (custom agents), `auth/` (authentication), `artifacts/`, `channels/` (IM connections), `i18n/` (en-US, zh-CN), `settings/`, `memory/`, `skills/`, `messages/`, `mcp/`, `models/`, `sql-execution/` (manual DataAgent SQL Gateway client and types), `input-polish/` (pre-send draft rewrite API), `voice-input/` (browser speech-recognition helpers), `suggestions/`, `tasks/`, `todos/`, `tools/`, `workspace-changes/` (run-scoped changed-file summaries and diff fetching), `config/`, `notification/`, `blog/`, plus rendering helpers (`rehype/`, `streamdown/`) and `utils/`.
 - **`hooks/`** — Shared React hooks
 - **`lib/`** — Utilities (`cn()` from clsx + tailwind-merge)
 - **`content/`** — MDX content (blog posts, docs) rendered by the app
@@ -64,6 +65,8 @@ The frontend is a stateful chat application. Users create **threads** (conversat
 ### Data Flow
 
 DataAgent query labels remain part of the normal thread message stream. Parse `data_query_labels` v1 artifacts in `src/core/messages/data-query.ts`, group them as `assistant:query-intent`, and reuse the existing human-input response path for confirmation; do not create a separate DataAgent chat runtime.
+
+Completed `sql` fenced code blocks use the Streamdown custom renderer in `components/workspace/sql-execution/sql-code-block.tsx`. The execute action is available only when the current custom-agent metadata reports `type=data_query` and `sql_execution_enabled=true`; streaming fences and ordinary agents keep the normal code block. `ChatBox` owns `SqlExecutionProvider` so both message code blocks and the `sql-result` right panel share one request state. `core/sql-execution/api.ts` posts to `POST /api/threads/{thread_id}/sql/execute` through the CSRF-aware fetch wrapper. Do not put database credentials, SQL validation, or driver logic in the frontend.
 
 1. Optional composer helpers such as `core/input-polish` can rewrite the local draft before submission, and `core/voice-input` can transcribe browser microphone input into that same local draft; confirmed user input then flows to thread hooks (`core/threads/hooks.ts`) → LangGraph SDK streaming
 2. Stream events update thread state (messages, artifacts, todos, goal)

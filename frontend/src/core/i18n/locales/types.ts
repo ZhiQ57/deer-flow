@@ -46,6 +46,23 @@ export interface Translations {
     showBrowser: string;
   };
 
+  sqlExecution: {
+    execute: string;
+    executing: string;
+    title: string;
+    success: string;
+    failed: string;
+    loading: string;
+    empty: string;
+    truncated: string;
+    rows: string;
+    duration: string;
+    database: string;
+    rerun: string;
+    close: string;
+    noResult: string;
+  };
+
   runDuration: {
     reasoning: string;
     working: string;

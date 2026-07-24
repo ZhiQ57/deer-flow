@@ -130,6 +130,78 @@ def test_sql_execution_service_validates_and_returns_json_safe_rows(monkeypatch:
     assert "secret" not in json.dumps(result, ensure_ascii=False)
 
 
+def test_sql_execution_service_supports_manual_ui_without_retrieval_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """前端手动执行必须复用只读和白名单校验，但不要求伪造 Query Snapshot。"""
+    config = _config()
+    service = SqlExecutionService(config)
+
+    validation = service.validate(
+        SqlValidationRequest(
+            sql="SELECT orders.region FROM public.orders",
+            source="manual_ui",
+        )
+    )
+    monkeypatch.setattr(
+        "deerflow.agents.service_agent.sql_executor._execute_postgres",
+        lambda sql, dsn, ability: (["region"], [("华东",)]),
+    )
+
+    result = service.execute(
+        SqlExecutionRequest(
+            sql=validation["executable_sql"],
+            validation_digest=validation["validation_digest"],
+            validation=validation,
+            source="manual_ui",
+        )
+    )
+
+    assert validation["valid"] is True
+    assert validation["source"] == "manual_ui"
+    assert validation["snapshot_id"] is None
+    assert result["ok"] is True
+    assert result["rows"] == [{"region": "华东"}]
+
+
+def test_sql_execution_service_rejects_cross_source_validation() -> None:
+    """SubAgent 校验摘要不能被前端手动执行上下文复用。"""
+    config = _config()
+    service = SqlExecutionService(config)
+    validation = service.validate(
+        SqlValidationRequest(
+            sql="SELECT orders.region FROM public.orders",
+            retrieval=_retrieval(config),
+            snapshot_id="snapshot-1",
+        )
+    )
+
+    result = service.execute(
+        SqlExecutionRequest(
+            sql=validation["executable_sql"],
+            validation_digest=validation["validation_digest"],
+            validation=validation,
+            source="manual_ui",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "SQL_DIGEST_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("sql", "error_code"),
+    [
+        ("DELETE FROM public.orders", "SQL_READONLY_REQUIRED"),
+        ("SELECT orders.region FROM public.users", "SQL_TABLE_NOT_ALLOWED"),
+    ],
+)
+def test_manual_ui_keeps_readonly_and_allowlist_guards(sql: str, error_code: str) -> None:
+    """前端手动执行不能绕过只读和数据库对象白名单。"""
+    validation = SqlExecutionService(_config()).validate(SqlValidationRequest(sql=sql, source="manual_ui"))
+
+    assert validation["valid"] is False
+    assert validation["error_code"] == error_code
+
+
 def test_sql_execution_service_returns_repairable_database_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """数据库字段错误必须返回可供 SQL 模型修复的安全结构化信息。"""
 

@@ -28,16 +28,29 @@ import {
 import { BrowserViewPanel, useMaybeBrowserView } from "../browser-view";
 import { useThread } from "../messages/context";
 import { SidecarPanel, useMaybeSidecar } from "../sidecar";
+import {
+  SqlExecutionProvider,
+  SqlResultPanel,
+  useMaybeSqlExecution,
+} from "../sql-execution";
 
 const RIGHT_PANEL_ANIMATION_MS = 280;
 
-type RightPanelKind = "sidecar" | "artifacts" | "browser";
+type RightPanelKind = "sidecar" | "artifacts" | "browser" | "sql-result";
 
-const ChatBox: React.FC<{
+type ChatBoxProps = {
   children: React.ReactNode;
   threadId: string;
   browserEnabled?: boolean;
-}> = ({ children, threadId, browserEnabled = true }) => {
+  agentName?: string;
+  sqlExecutionEnabled?: boolean;
+};
+
+const ChatBoxContent: React.FC<ChatBoxProps> = ({
+  children,
+  threadId,
+  browserEnabled = true,
+}) => {
   const { thread } = useThread();
   const isMobile = useIsMobile();
   const pathname = usePathname();
@@ -56,6 +69,8 @@ const ChatBox: React.FC<{
   const sidecarOpen = sidecar?.open ?? false;
   const browserView = useMaybeBrowserView();
   const browserViewOpen = browserEnabled && (browserView?.open ?? false);
+  const sqlExecution = useMaybeSqlExecution();
+  const sqlResultOpen = sqlExecution?.open ?? false;
 
   const [autoSelectFirstArtifact, setAutoSelectFirstArtifact] = useState(true);
   useEffect(() => {
@@ -102,22 +117,24 @@ const ChatBox: React.FC<{
   ]);
 
   const artifactPanelOpen = useMemo(() => {
-    if (sidecarOpen) {
+    if (sidecarOpen || sqlResultOpen) {
       return false;
     }
     if (env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true") {
       return artifactsOpen && artifacts?.length > 0;
     }
     return artifactsOpen;
-  }, [artifactsOpen, artifacts, sidecarOpen]);
+  }, [artifactsOpen, artifacts, sidecarOpen, sqlResultOpen]);
 
-  const activeRightPanel: RightPanelKind | null = sidecarOpen
-    ? "sidecar"
-    : browserViewOpen
-      ? "browser"
-      : artifactPanelOpen
-        ? "artifacts"
-        : null;
+  const activeRightPanel: RightPanelKind | null = sqlResultOpen
+    ? "sql-result"
+    : sidecarOpen
+      ? "sidecar"
+      : browserViewOpen
+        ? "browser"
+        : artifactPanelOpen
+          ? "artifacts"
+          : null;
   const rightPanelOpen = activeRightPanel !== null;
   const [renderedRightPanel, setRenderedRightPanel] =
     useState<RightPanelKind | null>(activeRightPanel);
@@ -153,7 +170,25 @@ const ChatBox: React.FC<{
     }
   }, [browserEnabled, browserView]);
 
+  useEffect(() => {
+    if (!sqlResultOpen) return;
+    if (sidecarOpen) sidecar?.close();
+    if (browserViewOpen) browserView?.close();
+    if (artifactsOpen) setArtifactsOpen(false);
+  }, [
+    artifactsOpen,
+    browserView,
+    browserViewOpen,
+    setArtifactsOpen,
+    sidecar,
+    sidecarOpen,
+    sqlResultOpen,
+  ]);
+
   const rightPanelContent = useMemo(() => {
+    if (renderedRightPanel === "sql-result") {
+      return <SqlResultPanel />;
+    }
     if (renderedRightPanel === "browser") {
       return <BrowserViewPanel threadId={threadId} className="size-full" />;
     }
@@ -228,6 +263,9 @@ const ChatBox: React.FC<{
             if (sidecarOpen) {
               sidecar?.close();
             }
+            if (sqlResultOpen) {
+              sqlExecution?.close();
+            }
             if (browserViewOpen) {
               browserView?.close();
             }
@@ -246,7 +284,9 @@ const ChatBox: React.FC<{
                   ? "Sidecar"
                   : renderedRightPanel === "browser"
                     ? "Browser"
-                    : "Artifacts"}
+                    : renderedRightPanel === "sql-result"
+                      ? "SQL Result"
+                      : "Artifacts"}
               </SheetTitle>
               <SheetDescription>
                 Browse the side panel for this conversation.
@@ -337,6 +377,22 @@ const ChatBox: React.FC<{
         </>
       )}
     </div>
+  );
+};
+
+const ChatBox: React.FC<ChatBoxProps> = ({
+  agentName,
+  sqlExecutionEnabled = false,
+  ...props
+}) => {
+  return (
+    <SqlExecutionProvider
+      agentName={agentName}
+      enabled={sqlExecutionEnabled}
+      threadId={props.threadId}
+    >
+      <ChatBoxContent {...props} />
+    </SqlExecutionProvider>
   );
 };
 

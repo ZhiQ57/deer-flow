@@ -43,6 +43,12 @@ export type MockAgent = {
   name: string;
   description?: string;
   system_prompt?: string;
+  service_ability?: {
+    type: string;
+    version: number;
+    sql_execution_enabled?: boolean;
+    database_type?: string;
+  } | null;
 };
 
 export type MockSkill = {

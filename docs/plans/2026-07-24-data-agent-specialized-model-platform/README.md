@@ -2,9 +2,9 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | SQL Executor 与 SQL SubAgent 阶段完成，Gateway/Frontend 阶段待开发 |
-| 已完成任务 | SQL Executor、SQL SubAgent 执行与有限修复重试链路 |
-| 下一任务 | Gateway SQL API、前端 SQL 执行入口和结果面板 |
+| 状态 | SQL Executor、SQL SubAgent、Gateway 和前端手动执行链路完成 |
+| 已完成任务 | SQL Executor、SQL SubAgent 修复重试、Gateway SQL API、前端执行按钮和结果面板 |
+| 下一任务 | 配置真实只读 PostgreSQL/MySQL 后执行集成验收 |
 | 后续任务 | SQL SubAgent 模型闭环、Analysis SubAgent、Chart SubAgent、Agent Contract |
 | 实现范围 | 正式 `deerflow.*`、Gateway、Frontend |
 | 排除范围 | `backend/packages/harness/deerflow-dev/` |
@@ -167,7 +167,7 @@ SQL Executor 需要支持两个调用来源：
 - [X] 1.4 抽取结果 JSON 转换、行数限制、单元格限制和总字符限制。
 - [X] 1.5 实现安全数据库错误分类：`error_category`、`retryable`、`recommended_action` 和可选脱敏 `error_message`。
 - [X] 1.6 实现 `subagent` 校验上下文。
-- [ ] 1.7 实现 `manual_ui` 校验上下文。
+- [X] 1.7 实现 `manual_ui` 校验上下文。
 - [X] 1.8 保证 SQL Executor 不记录或返回 DSN、密码和 Token。
 - [X] 1.9 增加 PostgreSQL/MySQL 驱动、结果预算和 SQL 修复重试单元测试。
 - [ ] 1.10 在配置真实只读数据库后运行 PostgreSQL/MySQL 集成测试。
@@ -177,7 +177,7 @@ SQL Executor 需要支持两个调用来源：
 - [X] 可以在单元测试中根据 DataAgent 配置解析目标数据库并执行单条只读 `SELECT/WITH`。
 - [X] 可以返回结构化列、行数、数据行、截断状态和耗时。
 - [X] DDL、DML、多语句、危险函数和越权表列会在驱动调用前被拒绝；超时映射为稳定错误合同。
-- [X] 数据库连接和结果处理代码已从 SQL Tool 抽取到 `SqlExecutionService`；Gateway 接入留待阶段二。
+- [X] 数据库连接和结果处理代码已从 SQL Tool 抽取到 `SqlExecutionService`，并由阶段二 Gateway API 复用。
 
 ## 5. 阶段二：Gateway SQL API
 
@@ -195,8 +195,7 @@ POST /api/threads/{thread_id}/sql/execute
 {
   "agent_name": "data-agent",
   "sql": "SELECT ...",
-  "source": "manual_ui",
-  "snapshot_id": null
+  "source": "manual_ui"
 }
 ```
 
@@ -220,21 +219,21 @@ POST /api/threads/{thread_id}/sql/execute
 
 ### 5.3 Todo
 
-- [ ] 2.1 新增 `sql_execution.py` Gateway Router。
-- [ ] 2.2 定义 Pydantic Request/Response。
-- [ ] 2.3 复用现有用户身份和 thread 所有权校验。
-- [ ] 2.4 按 `agent_name` 加载 DataAgent 配置。
-- [ ] 2.5 拒绝未启用 `data_query/sql_execution` 的 Agent。
-- [ ] 2.6 使用 `asyncio.to_thread` 或现有专用执行器运行同步数据库调用。
-- [ ] 2.7 返回稳定 HTTP 状态码和 SQL 错误码。
-- [ ] 2.8 增加 Router 鉴权、配置、校验、成功和失败测试。
+- [X] 2.1 新增 `sql_execution.py` Gateway Router。
+- [X] 2.2 定义 Pydantic Request/Response。
+- [X] 2.3 复用现有用户身份和 thread 所有权校验。
+- [X] 2.4 按 `agent_name` 加载 DataAgent 配置。
+- [X] 2.5 拒绝未启用 `data_query/sql_execution` 的 Agent。
+- [X] 2.6 使用共享 Service 的 `aexecute()` 把同步数据库调用移出 Event Loop。
+- [X] 2.7 返回稳定 HTTP 状态码和 SQL 错误码。
+- [X] 2.8 增加 Router 鉴权、配置、校验、成功和失败测试。
 
 ### 5.4 阶段验收
 
-- [ ] 已登录用户可以执行自己线程中的 DataAgent SQL。
-- [ ] 普通 Agent、其他用户线程和无 SQL 配置的 Agent 无法执行。
-- [ ] API 不泄露数据库凭据和原始异常堆栈。
-- [ ] Gateway 并发请求不会阻塞 Event Loop。
+- [X] 已登录用户可以执行自己线程中的 DataAgent SQL。
+- [X] 普通 Agent、其他用户线程和无 SQL 配置的 Agent 无法执行。
+- [X] API 不泄露数据库凭据和原始异常堆栈。
+- [X] Gateway 数据库驱动调用通过 `aexecute()` 在线程池运行，不阻塞 Event Loop。
 
 ## 6. 阶段三：前端 SQL 执行按钮和结果面板
 
@@ -305,23 +304,23 @@ SQL Result Panel 显示：
 
 ### 6.5 Todo
 
-- [ ] 3.1 新增 SQL Execution API Client 和 TypeScript 类型。
-- [ ] 3.2 新增 SQL Execution Context，保存当前 SQL、Loading、Result 和 Error。
-- [ ] 3.3 新增 SQL CodeBlock Renderer。
-- [ ] 3.4 在 SQL 代码块 Action 区增加 Execute Button。
-- [ ] 3.5 扩展 ChatBox 支持 `sql-result` RightPanel。
-- [ ] 3.6 实现结果表格、空结果、截断结果和错误展示。
-- [ ] 3.7 增加中英文文案。
-- [ ] 3.8 增加按钮显示、执行状态和面板渲染单元测试。
-- [ ] 3.9 增加点击 SQL 执行按钮的前端 E2E 测试。
+- [X] 3.1 新增 SQL Execution API Client 和 TypeScript 类型。
+- [X] 3.2 新增 SQL Execution Context，保存当前 SQL、Loading、Result 和 Error。
+- [X] 3.3 新增 SQL CodeBlock Renderer。
+- [X] 3.4 在 SQL 代码块 Action 区增加 Execute Button。
+- [X] 3.5 扩展 ChatBox 支持 `sql-result` RightPanel。
+- [X] 3.6 实现结果表格、空结果、截断结果和错误展示。
+- [X] 3.7 增加中英文文案。
+- [X] 3.8 增加按钮显示、执行状态和面板渲染单元测试。
+- [X] 3.9 增加点击 SQL 执行按钮的前端 E2E 测试。
 
 ### 6.6 阶段验收
 
-- [ ] SQL 代码块出现执行按钮，位置和交互符合目标图。
-- [ ] 点击按钮后可以调用 Gateway API。
-- [ ] 成功结果在右侧面板以表格显示。
-- [ ] 空结果、错误、超时和截断结果可以正确显示。
-- [ ] 非 SQL 代码块和普通 Agent 不受影响。
+- [X] SQL 代码块出现执行按钮，位于下载和复制操作之前。
+- [X] 点击按钮后可以调用 Gateway API。
+- [X] 成功结果在右侧面板以表格显示。
+- [X] 空结果、错误、超时和截断结果可以正确显示。
+- [X] 非 SQL 代码块和普通 Agent 不受影响。
 
 ## 7. 阶段四：接入现有 SQL SubAgent
 
@@ -359,17 +358,17 @@ data_execute_sql
 
 - [X] SQL SubAgent 使用新的 SQL Executor。
 - [X] SQL SubAgent 可以完成生成、校验、执行和有限错误修复闭环。
-- [ ] Frontend 和 SQL SubAgent 使用同一数据库执行实现（待阶段二 Gateway API 与阶段三前端）。
+- [X] Frontend 和 SQL SubAgent 使用同一 `SqlExecutionService` 数据库执行实现。
 - [X] Harness 内不存在第二套数据库连接和结果转换逻辑。
 
 ## 8. 阶段五：测试、文档与交付
 
-- [X] 5.1 运行 Backend SQL Executor、SQL SubAgent、状态和 Harness 边界测试；Gateway Router 尚未进入本阶段。
+- [X] 5.1 运行 Backend SQL Executor、SQL SubAgent 和 Gateway Router 相关测试。
 - [X] 5.2 运行 Backend Ruff 和格式检查。
-- [ ] 5.3 运行 Frontend Unit、Typecheck 和 Lint。
-- [ ] 5.4 运行 SQL Execute Button E2E。
+- [X] 5.3 运行 Frontend Unit、Typecheck、Lint 和生产构建。
+- [X] 5.4 运行 SQL Execute Button E2E。
 - [X] 5.5 更新 `docs/guide/used-api.md`。
-- [X] 5.6 更新 `backend/AGENTS.md`；本次未修改前端，因此不更新 `frontend/AGENTS.md`。
+- [X] 5.6 更新 `backend/AGENTS.md` 和 `frontend/AGENTS.md`。
 - [X] 5.7 更新 DataAgent README 和用户配置说明。
 - [X] 5.8 编写 `docs/reviews/` Review，记录验证结果和遗留风险。
 - [ ] 5.9 测试通过后合并回 `dev` 并推送 `origin/dev`。

@@ -3,7 +3,7 @@
 DataAgent 当前包含两条用途不同的路径：正式生产闭环与历史实验路径。两者必须区分，不能把历史实验配置当作生产入口。
 
 1. `docs/agents/data-agent/config.yaml` 与 `SOUL.md` 是 DeerFlow 原生 custom-agent 模板，可复制到 `.deer-flow/users/{user_id}/agents/data-agent/`；配置中的 `service_ability.type=data_query` 会让正式 `lead_agent` 动态装配 DataAgent middleware。
-2. `backend/packages/harness/deerflow-dev/` 保留为历史实验路径，不是本期生产入口；正式 Gateway 仍复用 `lead_agent + agent_name`，不新增路由、图或 checkpoint。
+2. `backend/packages/harness/deerflow-dev/` 是废弃代码，不作为生产、测试或迁移入口；Agent 运行仍复用 `lead_agent + agent_name`，不新增 DataAgent 图或 checkpoint。前端手动执行 SQL 使用独立线程级 Gateway REST 接口，但不会创建 Agent run。
 
 正式能力需要在根 `config.yaml -> subagents.custom_agents` 显式注册 `sql-subagent`，并只允许
 `data_validate_sql`、`data_execute_sql` 两个工具；SQL 子代理不能加载 `table-rag-agent` Skill。
@@ -144,6 +144,21 @@ service_ability:
 当前校验轮次；执行失败后，SQL SubAgent 必须根据 `error_category`、可选的安全 `error_message`、
 `retryable` 和 `recommended_action` 修复或简化 SQL，再次调用 `data_validate_sql` 后才能重新执行。
 单个 SQL 子任务最多执行 `max_execution_attempts` 次，默认 3 次，成功后不能继续执行。
+
+前端手动执行 SQL 使用：
+
+```text
+POST /api/threads/{thread_id}/sql/execute
+```
+
+该接口只接受 `source=manual_ui`，要求当前认证用户严格拥有该线程，并按当前用户加载请求中的
+`agent_name`。只有 `service_ability.type=data_query` 且 `sql_execution.enabled=true` 时允许执行。
+手动执行不伪造 Query Snapshot 或 TableRAG registry，而是由服务端解析当前数据源绑定，并继续执行
+SQL AST、只读、数据库方言、Schema/Table/Column allowlist、超时和结果预算校验。返回结果不会经过 LLM
+总结；DSN、密码、数据库驱动对象和异常堆栈不会返回前端。
+
+Web UI 仅在上述能力开启的 custom-agent 对话中，给已完成的 `sql` fenced code block 显示“执行”按钮。
+点击后结果显示在 ChatBox 右侧 SQL Result Panel；流式 SQL、非 SQL 代码块和普通 Agent 不显示该按钮。
 
 `data-agent.allowable_subagents` 必须显式包含 `sql-subagent`。服务端会把该判定写入本次运行上下文并在
 `SqlStageMiddleware` 与 `task` 工具装配处双重校验；客户端手动设置 `subagent_enabled=true`、模型自行填写
@@ -360,10 +375,10 @@ retrieval_completed
 
 失败阶段会标记为 `sql_validation_failed`、`sql_execution_failed` 或 `chart_failed`。
 
-## 8. 当前限制
+## 8. 废弃实验路径说明
 
-- 该运行层位于 `deerflow-dev`，不是稳定 `deerflow.*` 公共 API，也没有注册独立 Gateway 图路由。
-- 当前主要是主代理内的工具编排，尚未交付可独立训练的 TableRAG 子代理和 NL2SQL 子代理。
-- ChartSpec 已进入状态和控制台流，但前端图表渲染协议尚未接入。
+- 上述实验运行层位于已废弃的 `deerflow-dev`，不是稳定 `deerflow.*` 公共 API，不进入当前生产链路或测试范围。
+- 正式路径已经交付可独立配置模型的 SQL SubAgent；TableRAG 当前仍以 MCP 检索工具接入 DataAgent Lead，不是独立子代理。
+- Analysis SubAgent、Chart SubAgent 和前端图表渲染协议属于后续任务，不是当前 SQL Executor 前置依赖。
 - CSV 中的参考 SQL 目前只作为人工对照数据，未自动参与生成 SQL 的等价性评测。
 - 当前 TableRAG 索引以 Schema/字段值召回为主；若要稳定复现业务标准 SQL，应把指标定义、统计口径、Join 规则和参考 SQL 加工为 Evidence 并写入索引，不能只依赖字段注释猜测。

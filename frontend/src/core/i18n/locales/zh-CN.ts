@@ -57,6 +57,23 @@ export const zhCN: Translations = {
     showBrowser: "打开浏览器面板",
   },
 
+  sqlExecution: {
+    execute: "执行",
+    executing: "执行中...",
+    title: "SQL 执行结果",
+    success: "执行成功",
+    failed: "执行失败",
+    loading: "正在执行 SQL...",
+    empty: "查询执行成功，结果为空。",
+    truncated: "结果已截断",
+    rows: "行",
+    duration: "耗时",
+    database: "数据库",
+    rerun: "重新执行",
+    close: "关闭 SQL 执行结果",
+    noResult: "执行 SQL 代码块后在此查看原始结果。",
+  },
+
   runDuration: {
     reasoning: "思考过程",
     working: "执行中…",

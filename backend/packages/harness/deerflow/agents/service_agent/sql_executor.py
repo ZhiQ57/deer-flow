@@ -22,7 +22,7 @@ from sqlglot.errors import ParseError
 from .binding import resolve_data_source_binding, resolve_execution_dsn
 from .config import DataQueryServiceAbilityConfig
 
-SqlExecutionSource = Literal["subagent"]
+SqlExecutionSource = Literal["subagent", "manual_ui"]
 
 _DANGEROUS_FUNCTIONS = frozenset(
     {
@@ -103,6 +103,7 @@ class SqlValidationResult(TypedDict, total=False):
     database_type: str
     binding_fingerprint: str
     row_limit_applied: bool
+    source: SqlExecutionSource
 
 
 class SqlExecutionResult(TypedDict, total=False):
@@ -136,13 +137,13 @@ class SqlValidationRequest:
 
     Attributes:
         sql: SQL 模型生成的候选 SQL。
-        retrieval: 当前 Query Snapshot 的 TableRAG registry 和数据源绑定。
+        retrieval: 当前 Query Snapshot 的 TableRAG registry 和数据源绑定；前端手动执行不需要提供。
         snapshot_id: 当前已批准 Query Snapshot 标识。
-        source: 调用来源；首版仅允许 SQL SubAgent。
+        source: 调用来源；SQL SubAgent 或前端手动执行。
     """
 
     sql: str
-    retrieval: Mapping[str, Any]
+    retrieval: Mapping[str, Any] | None = None
     snapshot_id: str | None = None
     source: SqlExecutionSource = "subagent"
 
@@ -155,7 +156,7 @@ class SqlExecutionRequest:
         sql: ``data_validate_sql`` 返回的规范 SQL。
         validation_digest: 校验结果绑定的服务端摘要。
         validation: 最近一次 SQL 校验结果。
-        source: 调用来源；首版仅允许 SQL SubAgent。
+        source: 调用来源；必须与校验来源一致。
     """
 
     sql: str
@@ -233,25 +234,29 @@ def _validate_sql(
     request: SqlValidationRequest,
     *,
     config: DataQueryServiceAbilityConfig,
+    manual_binding: Mapping[str, Any] | None = None,
 ) -> SqlValidationResult:
     """执行只读 SQL AST、Evidence 和数据源绑定校验。
 
     Args:
         request: SQL 校验请求。
         config: 当前 DataAgent 查询能力配置。
+        manual_binding: 服务端为前端手动执行解析的数据源绑定。
 
     Returns:
         版本化 SQL 校验结果。
     """
     sql = request.sql
     retrieval = request.retrieval
+    if request.source not in {"subagent", "manual_ui"}:
+        return {"version": 1, "valid": False, "error_code": "SQL_SOURCE_INVALID"}
     if not isinstance(sql, str) or not sql.strip():
         return {"version": 1, "valid": False, "error_code": "SQL_EMPTY"}
     if config.sql_execution.database_type == "mysql" and _MYSQL_EXECUTABLE_COMMENT_PATTERN.search(sql):
         return {"version": 1, "valid": False, "error_code": "SQL_EXECUTABLE_COMMENT_FORBIDDEN"}
     if not config.sql_execution.allowed_schemas or not config.sql_execution.allowed_tables or not config.sql_execution.allowed_columns:
         return {"version": 1, "valid": False, "error_code": "SQL_ALLOWLIST_REQUIRED"}
-    binding = retrieval.get("binding") if isinstance(retrieval, Mapping) else None
+    binding = manual_binding if request.source == "manual_ui" else retrieval.get("binding") if isinstance(retrieval, Mapping) else None
     if not isinstance(binding, Mapping) or not isinstance(binding.get("binding_fingerprint"), str):
         return {"version": 1, "valid": False, "error_code": "SQL_BINDING_REQUIRED"}
     if binding.get("data_source_id") != config.data_source_id or binding.get("database_type") != config.sql_execution.database_type:
@@ -307,27 +312,28 @@ def _validate_sql(
             if not _allowed_object(schema_name, config.sql_execution.allowed_schemas) or not (_allowed_object(table_name, config.sql_execution.allowed_tables) or _allowed_object(qualified, config.sql_execution.allowed_tables)):
                 return {"version": 1, "valid": False, "error_code": "SQL_TABLE_NOT_ALLOWED"}
 
-    registry = retrieval.get("registry") if isinstance(retrieval, Mapping) else None
-    registry = registry if isinstance(registry, Mapping) else {}
     registry_tables: set[str] = set()
     registry_columns: set[str] = set()
-    for item in registry.values():
-        if not isinstance(item, Mapping) or not isinstance(item.get("record"), Mapping):
-            continue
-        record = item["record"]
-        table_name = record.get("table_name")
-        if not isinstance(table_name, str) or not table_name.strip():
-            continue
-        table_name = table_name.strip().lower()
-        if item.get("kind") == "table":
-            registry_tables.add(table_name)
-        if item.get("kind") == "column":
-            registry_tables.add(table_name)
-            column_name = record.get("column_name")
-            if isinstance(column_name, str) and column_name.strip():
-                registry_columns.add(f"{table_name}.{column_name.strip().lower()}")
-    if not registry_tables or not registry_columns:
-        return {"version": 1, "valid": False, "error_code": "SQL_RETRIEVAL_REGISTRY_REQUIRED"}
+    if request.source == "subagent":
+        registry = retrieval.get("registry") if isinstance(retrieval, Mapping) else None
+        registry = registry if isinstance(registry, Mapping) else {}
+        for item in registry.values():
+            if not isinstance(item, Mapping) or not isinstance(item.get("record"), Mapping):
+                continue
+            record = item["record"]
+            table_name = record.get("table_name")
+            if not isinstance(table_name, str) or not table_name.strip():
+                continue
+            table_name = table_name.strip().lower()
+            if item.get("kind") == "table":
+                registry_tables.add(table_name)
+            if item.get("kind") == "column":
+                registry_tables.add(table_name)
+                column_name = record.get("column_name")
+                if isinstance(column_name, str) and column_name.strip():
+                    registry_columns.add(f"{table_name}.{column_name.strip().lower()}")
+        if not registry_tables or not registry_columns:
+            return {"version": 1, "valid": False, "error_code": "SQL_RETRIEVAL_REGISTRY_REQUIRED"}
     select_aliases = {str(expression.alias).lower() for select in parsed.find_all(exp.Select) for expression in select.expressions if isinstance(expression, exp.Alias) and expression.alias}
     for column in parsed.find_all(exp.Column):
         table = column.table.lower() if column.table else ""
@@ -338,15 +344,16 @@ def _validate_sql(
         allowed_name = f"{actual_table}.{name}" if actual_table else name
         if not _allowed_object(name, config.sql_execution.allowed_columns) and not _allowed_object(allowed_name, config.sql_execution.allowed_columns):
             return {"version": 1, "valid": False, "error_code": "SQL_COLUMN_NOT_ALLOWED"}
-        if table in cte_names:
+        if request.source == "manual_ui" or table in cte_names:
             continue
         if actual_table and f"{actual_table}.{name.lower()}" not in registry_columns:
             return {"version": 1, "valid": False, "error_code": "SQL_COLUMN_NOT_IN_RETRIEVAL"}
         if not actual_table and not any(item.endswith(f".{name.lower()}") for item in registry_columns):
             return {"version": 1, "valid": False, "error_code": "SQL_COLUMN_NOT_IN_RETRIEVAL"}
-    for table in physical_tables:
-        if table.name.lower() not in registry_tables:
-            return {"version": 1, "valid": False, "error_code": "SQL_TABLE_NOT_IN_RETRIEVAL"}
+    if request.source == "subagent":
+        for table in physical_tables:
+            if table.name.lower() not in registry_tables:
+                return {"version": 1, "valid": False, "error_code": "SQL_TABLE_NOT_IN_RETRIEVAL"}
 
     executable = parsed.sql(dialect=_dialect(config), pretty=False).strip()
     existing_limit = parsed.args.get("limit")
@@ -366,11 +373,12 @@ def _validate_sql(
         "valid": True,
         "executable_sql": executable,
         "sql_sha256": sql_digest(executable),
-        "validation_digest": sql_digest(f"{config.data_source_id}\n{config.sql_execution.database_type}\n{binding_fingerprint}\n{request.snapshot_id or ''}\n{executable}"),
+        "validation_digest": sql_digest(f"{config.data_source_id}\n{config.sql_execution.database_type}\n{binding_fingerprint}\n{request.source}\n{request.snapshot_id or ''}\n{executable}"),
         "snapshot_id": request.snapshot_id,
         "database_type": config.sql_execution.database_type,
         "binding_fingerprint": binding_fingerprint,
         "row_limit_applied": row_limit_applied,
+        "source": request.source,
     }
 
 
@@ -688,7 +696,17 @@ class SqlExecutionService:
         Returns:
             版本化 SQL 校验结果。
         """
-        return _validate_sql(request, config=self._config)
+        manual_binding: Mapping[str, Any] | None = None
+        if request.source == "manual_ui":
+            try:
+                manual_binding = resolve_data_source_binding(
+                    self._config,
+                    env=self._env,
+                    secrets=self._secrets,
+                )
+            except ValueError:
+                return {"version": 1, "valid": False, "error_code": "SQL_BINDING_MISMATCH"}
+        return _validate_sql(request, config=self._config, manual_binding=manual_binding)
 
     def execute(self, request: SqlExecutionRequest) -> SqlExecutionResult:
         """执行最近一次已校验 SQL。
@@ -707,7 +725,7 @@ class SqlExecutionService:
             "sql_sha256": validation.get("sql_sha256"),
             "validation_digest": validation.get("validation_digest"),
         }
-        if validation.get("valid") is not True or validation.get("sql_sha256") != sql_digest(request.sql) or validation.get("validation_digest") != request.validation_digest:
+        if validation.get("valid") is not True or validation.get("sql_sha256") != sql_digest(request.sql) or validation.get("validation_digest") != request.validation_digest or validation.get("source") != request.source:
             return {
                 "version": 1,
                 "ok": False,

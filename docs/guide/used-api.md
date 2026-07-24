@@ -2,7 +2,7 @@
 
 ## DataAgent 生产 Text2SQL
 
-- **正式入口**：Gateway、Web 和 IM 均继续使用 `assistantId=lead_agent`，通过运行上下文的 `agent_name` 加载 custom-agent；没有 DataAgent 专属路由、LangGraph、checkpoint 或 SSE。
+- **正式入口**：Agent 运行仍使用 `assistantId=lead_agent`，通过运行上下文的 `agent_name` 加载 custom-agent；不增加 DataAgent 专属 LangGraph、checkpoint 或 SSE。前端手动执行 SQL 单独使用线程级 Gateway REST 接口，不创建 Agent run。
 - **能力启用**：`AgentConfig.service_ability` 是唯一扩展入口。`type=data_query`、`version=1`、`enable_sql_rag=true` 时由 `deerflow.agents.service_agent.registry.resolve_service_ability()` 动态提供工具和 middleware；v1 不支持标签-only 半能力，停用时移除整个 `service_ability`。未配置能力的 Agent 维持原工具面和 middleware 链。
 - **脱敏 Agents API**：Agents API 的 `service_ability` 只返回能力类型、版本、数据源 ID、确认模式和 SQL 开关，不返回 DSN 环境变量名之外的连接配置或 Secret。
 - **TableRAG 登记**：`TableRagStageMiddleware` 只拦截名称严格等于 `sqlrag_retrieve` 的单一 MCP 工具，不兼容 Server 前缀或旧工具名。`operation` 只允许 `hybrid-search`、四类 `search-*` 与 `expand-join-graph`；成功结果生成类型化 ref 和 retrieval digest，补充检索同时登记 operation 与独立关键词。首次失败/空结果进入 `needs_refinement`，同轮补充检索失败只记录安全错误并保留最近成功 Evidence。
@@ -12,11 +12,12 @@
 - **确认协议**：需要确认时复用 human-input v1，request 使用 `source=ask_clarification` 与 `request_id=data-query:<digest>`。DataAgent 不重复创建独立聊天运行时，而是在标签卡内展示逐项审核项；前端将逐项结果编码为 v1 文本响应，后端验证 snapshot、item ID 和最终动作后才允许 SQL 阶段。仍支持 `execute`、`sql_only`、`cancel` 和自由文本修改。
 - **SQL 子代理**：父 DataAgent 只通过现有 `task` 调用 `service_ability.sql_subagent_name`，`SqlStageMiddleware` 将 prompt 替换为严格 JSON envelope。custom-agent 的 `allowable_subagents` 必须包含该名称；全局 `config.yaml -> subagents.custom_agents` 还必须把其工具 allowlist 限制为 `data_validate_sql`、`data_execute_sql` 且设置 `skills: []`。两个服务端门禁缺一不可。
 - **数据源绑定**：`same_physical_target` 要求 TableRAG 检索目标与 SQL 执行目标 fingerprint 相同；`logical_data_source` 用于服务端明确配置的异构拓扑，例如 PostgreSQL TableRAG 索引元数据对应 MySQL 业务执行库。两种模式都生成不可由模型覆盖的 `binding_fingerprint`。
-- **SQL Executor**：`deerflow.agents.service_agent.sql_executor.SqlExecutionService` 是正式共享执行入口，集中处理 typed request/result、sqlglot PostgreSQL/MySQL AST、数据源绑定、只读事务、数据库驱动、timeout、行数/单元格/结果字符预算和安全错误分类。后续 Gateway SQL API 必须复用该 Service，不能在 `app.*` 重新实现数据库执行。
+- **SQL Executor**：`deerflow.agents.service_agent.sql_executor.SqlExecutionService` 是正式共享执行入口，集中处理 typed request/result、sqlglot PostgreSQL/MySQL AST、数据源绑定、只读事务、数据库驱动、timeout、行数/单元格/结果字符预算和安全错误分类。`source=subagent` 必须绑定当前 Query Snapshot 和 TableRAG registry；`source=manual_ui` 使用服务端当前数据源绑定，只执行 AST、只读、方言和配置 allowlist 校验，不伪造 Snapshot。两个来源的校验摘要不能交叉复用。
+- **Gateway SQL API**：`POST /api/threads/{thread_id}/sql/execute` 只接受 `source=manual_ui`。Router 要求当前用户严格拥有非空 owner 的线程，按当前用户和 `agent_name` 加载 custom-agent，拒绝普通 Agent、无效 `service_ability` 和关闭的 `sql_execution`，再调用共享 `SqlExecutionService.validate()` / `aexecute()`。SQL 校验与数据库执行失败使用 HTTP 200 的结构化 SQL 结果；线程、Agent、权限和请求合同错误使用 4xx。响应不包含 DSN、Secret、驱动对象或异常堆栈。
 - **SQL 工具**：SQL 工具由 task 运行时按当前 approved snapshot 动态创建，默认 lead-agent 看不到 schema。`data_execute_sql` 只委托给共享 `SqlExecutionService`。每次执行都会消费最近一次校验；失败后必须重新调用 `data_validate_sql`，才能在 `sql_execution.max_execution_attempts` 预算内再次执行。结构化失败包含 `error_category`、可选脱敏 `error_message`、`retryable` 和 `recommended_action`。`sql_only` 只装配 `data_validate_sql`，不会装配执行工具。
 - **并行调用**：同一 AIMessage 内只保留第一个 TableRAG 调用、标签发布和目标 SQL SubAgent 委派；补充检索、标签修订和 SQL 修复必须在后续模型轮次串行进行。
 - **SQL 结果真相源**：父流程只从 SQL SubAgent 捕获的 `data_validate_sql` / `data_execute_sql` ToolMessage 重建结果，拒绝把子代理最终自由文本中的 SQL 行或执行状态当作数据库事实。
-- **前端**：`frontend/src/core/messages/data-query.ts` 严格解析 v1 artifact；现有消息分组新增 `assistant:query-intent`，`QueryIntentCard` 复用 `HumanInputCard` 提交确认，不创建 DataAgent 专属聊天运行时。
+- **前端**：`frontend/src/core/messages/data-query.ts` 严格解析 v1 artifact；现有消息分组新增 `assistant:query-intent`，`QueryIntentCard` 复用 `HumanInputCard` 提交确认。启用 `data_query` 且 `sql_execution_enabled=true` 的 custom-agent 会给已完成的 SQL fenced code block 增加执行按钮；`core/sql-execution` 调用 Gateway，`components/workspace/sql-execution` 保存本次请求状态并在 ChatBox 的 `sql-result` 右侧面板显示未经过 LLM 改写的结果。流式 SQL、非 SQL 代码块和普通 Agent 不显示执行入口。
 - **Skill**：`table-rag-agent` 只把当前 TableRAG registry 作为数据库事实来源，不允许伪造 snapshot、Evidence ref、validation digest 或执行结果。
 
 ## 配置引用
@@ -28,4 +29,4 @@
 
 ## 历史实验路径
 
-`backend/packages/harness/deerflow-dev` 与 `backend/tests/service_agent/test-data-agent` 仍用于历史实验和对照测试，不是生产 Gateway 路径。其 MySQL 顶层状态、ChartSpec 和独立图工厂合同不得用于新生产代码。
+`backend/packages/harness/deerflow-dev` 是废弃代码，不属于生产、测试或本方案实现范围。其 MySQL 顶层状态、ChartSpec 和独立图工厂合同不得用于新生产代码。
