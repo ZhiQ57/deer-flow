@@ -96,6 +96,7 @@ class SqlValidationResult(TypedDict, total=False):
     version: int
     valid: bool
     error_code: str
+    error_message: str
     executable_sql: str
     sql_sha256: str
     validation_digest: str
@@ -188,20 +189,20 @@ def sql_digest(sql: str) -> str:
     return f"sha256:{sha256(sql.encode('utf-8')).hexdigest()}"
 
 
-def _allowed_object(name: str, allowlist: list[str]) -> bool:
-    """按大小写不敏感方式匹配数据库对象白名单。
+def _is_allowed_schema(name: str, allowed_schemas: list[str]) -> bool:
+    """按大小写不敏感方式匹配允许访问的 Schema。
 
     Args:
-        name: Schema、Table 或 Column 名称。
-        allowlist: 服务端配置的授权对象列表。
+        name: SQL 使用的 Schema 名称。
+        allowed_schemas: 服务端配置的 Schema 列表。
 
     Returns:
-        名称是否位于白名单。
+        Schema 是否允许访问。
     """
-    if not allowlist:
+    if not allowed_schemas:
         return False
     lowered = name.lower()
-    return any(item.lower() == lowered for item in allowlist)
+    return any(item.lower() == lowered for item in allowed_schemas)
 
 
 def _dialect(config: DataQueryServiceAbilityConfig) -> str:
@@ -254,8 +255,8 @@ def _validate_sql(
         return {"version": 1, "valid": False, "error_code": "SQL_EMPTY"}
     if config.sql_execution.database_type == "mysql" and _MYSQL_EXECUTABLE_COMMENT_PATTERN.search(sql):
         return {"version": 1, "valid": False, "error_code": "SQL_EXECUTABLE_COMMENT_FORBIDDEN"}
-    if not config.sql_execution.allowed_schemas or not config.sql_execution.allowed_tables or not config.sql_execution.allowed_columns:
-        return {"version": 1, "valid": False, "error_code": "SQL_ALLOWLIST_REQUIRED"}
+    if not config.sql_execution.allowed_schemas:
+        return {"version": 1, "valid": False, "error_code": "SQL_SCHEMA_REQUIRED"}
     binding = manual_binding if request.source == "manual_ui" else retrieval.get("binding") if isinstance(retrieval, Mapping) else None
     if not isinstance(binding, Mapping) or not isinstance(binding.get("binding_fingerprint"), str):
         return {"version": 1, "valid": False, "error_code": "SQL_BINDING_REQUIRED"}
@@ -308,9 +309,13 @@ def _validate_sql(
             schema_name = node.db or _default_schema(config)
             if config.sql_execution.database_type == "mysql" and schema_name.lower() in _MYSQL_SYSTEM_DATABASES:
                 return {"version": 1, "valid": False, "error_code": "SQL_SYSTEM_DATABASE_FORBIDDEN"}
-            qualified = f"{schema_name}.{table_name}"
-            if not _allowed_object(schema_name, config.sql_execution.allowed_schemas) or not (_allowed_object(table_name, config.sql_execution.allowed_tables) or _allowed_object(qualified, config.sql_execution.allowed_tables)):
-                return {"version": 1, "valid": False, "error_code": "SQL_TABLE_NOT_ALLOWED"}
+            if not _is_allowed_schema(schema_name, config.sql_execution.allowed_schemas):
+                return {
+                    "version": 1,
+                    "valid": False,
+                    "error_code": "SQL_SCHEMA_NOT_ALLOWED",
+                    "error_message": f"Schema `{schema_name}` 未配置在 sql_execution.allowed_schemas 中。",
+                }
 
     registry_tables: set[str] = set()
     registry_columns: set[str] = set()
@@ -341,9 +346,6 @@ def _validate_sql(
         if not table and name.lower() in select_aliases:
             continue
         actual_table = table_aliases.get(table, table)
-        allowed_name = f"{actual_table}.{name}" if actual_table else name
-        if not _allowed_object(name, config.sql_execution.allowed_columns) and not _allowed_object(allowed_name, config.sql_execution.allowed_columns):
-            return {"version": 1, "valid": False, "error_code": "SQL_COLUMN_NOT_ALLOWED"}
         if request.source == "manual_ui" or table in cte_names:
             continue
         if actual_table and f"{actual_table}.{name.lower()}" not in registry_columns:
@@ -644,13 +646,12 @@ def _classify_execution_error(exc: Exception, database_type: str, *, dsn: str) -
         category = "connection_error"
         retryable = True
         recommended_action = "retry_same_sql"
-    include_message = category in {"syntax_error", "unknown_column", "unknown_table", "ambiguous_column", "type_mismatch"}
     return _ExecutionError(
         error_code=error_code,
         category=category,
         retryable=retryable,
         recommended_action=recommended_action,
-        message=_safe_database_message(exc, dsn=dsn, include=include_message),
+        message=_safe_database_message(exc, dsn=dsn, include=True),
     )
 
 

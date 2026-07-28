@@ -4,17 +4,53 @@ import {
   CheckCircle2Icon,
   DatabaseIcon,
   Loader2Icon,
+  MessageCircleIcon,
   PlayIcon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
+import { type MouseEvent, useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useMaybeSidecar } from "@/components/workspace/sidecar";
 import { useI18n } from "@/core/i18n/hooks";
+import type { SidecarContext } from "@/core/sidecar";
 import type { SqlExecutionResult } from "@/core/sql-execution/types";
+import { cn } from "@/lib/utils";
 
 import { useSqlExecution } from "./context";
+
+const SELECTION_TOOLBAR_MARGIN = 8;
+const SELECTION_TOOLBAR_ESTIMATED_HEIGHT = 42;
+
+type SelectionToolbarState = {
+  context: SidecarContext;
+  x: number;
+  y: number;
+  placement: "top" | "bottom";
+};
+
+/**
+ * 构造 SQL 执行结果的对话引用。
+ *
+ * @param content 用户选中的 SQL、错误或结果文本。
+ * @param label 引用在输入框中显示的来源名称。
+ * @returns 非空选择对应的引用上下文；空文本返回 null。
+ */
+export function buildSqlResultSidecarContext(
+  content: string,
+  label: string,
+): SidecarContext | null {
+  const normalized = content.trim();
+  if (!normalized) return null;
+  return {
+    type: "referenced_message",
+    label,
+    role: "assistant",
+    content: normalized,
+  };
+}
 
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -49,7 +85,87 @@ export function SqlResultPanelView({
   onRerun: () => void;
 }) {
   const { t } = useI18n();
+  const sidecar = useMaybeSidecar();
+  const [selectionToolbar, setSelectionToolbar] =
+    useState<SelectionToolbarState | null>(null);
   const failed = Boolean(error) || Boolean(result && !result.ok);
+
+  const clearSelectionToolbar = useCallback(() => {
+    setSelectionToolbar(null);
+  }, []);
+
+  useEffect(() => {
+    setSelectionToolbar(null);
+  }, [error, loading, result, sql]);
+
+  useEffect(() => {
+    if (!selectionToolbar) return;
+
+    const hideOnScroll = () => setSelectionToolbar(null);
+    const hideOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectionToolbar(null);
+    };
+    window.addEventListener("scroll", hideOnScroll, true);
+    document.addEventListener("keydown", hideOnEscape);
+    return () => {
+      window.removeEventListener("scroll", hideOnScroll, true);
+      document.removeEventListener("keydown", hideOnEscape);
+    };
+  }, [selectionToolbar]);
+
+  const handleTextSelection = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      if (!sidecar) return;
+      const selection = window.getSelection();
+      const selectedText = selection?.toString().trim();
+      if (
+        !selection ||
+        selection.isCollapsed ||
+        !selectedText ||
+        selection.rangeCount === 0 ||
+        !selection.anchorNode ||
+        !selection.focusNode
+      ) {
+        setSelectionToolbar(null);
+        return;
+      }
+      if (
+        !event.currentTarget.contains(selection.anchorNode) ||
+        !event.currentTarget.contains(selection.focusNode)
+      ) {
+        setSelectionToolbar(null);
+        return;
+      }
+      const context = buildSqlResultSidecarContext(
+        selectedText,
+        t.sqlExecution.title,
+      );
+      if (!context) return;
+
+      const rect = selection.getRangeAt(0).getBoundingClientRect();
+      const fitsAbove =
+        rect.top -
+          SELECTION_TOOLBAR_MARGIN -
+          SELECTION_TOOLBAR_ESTIMATED_HEIGHT >=
+        0;
+      setSelectionToolbar({
+        context,
+        x: rect.left + rect.width / 2,
+        y: fitsAbove
+          ? rect.top - SELECTION_TOOLBAR_MARGIN
+          : rect.bottom + SELECTION_TOOLBAR_MARGIN,
+        placement: fitsAbove ? "top" : "bottom",
+      });
+    },
+    [sidecar, t.sqlExecution.title],
+  );
+
+  const handleAddSelectionToConversation = useCallback(() => {
+    if (!selectionToolbar || !sidecar) return;
+    sidecar.addContextToConversation(selectionToolbar.context);
+    window.getSelection()?.removeAllRanges();
+    setSelectionToolbar(null);
+  }, [selectionToolbar, sidecar]);
 
   return (
     <section
@@ -102,7 +218,10 @@ export function SqlResultPanelView({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
+      <div
+        className="min-h-0 flex-1 space-y-4 overflow-auto p-4"
+        onMouseUp={handleTextSelection}
+      >
         {sql ? (
           <pre className="bg-muted max-h-48 overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">
             {sql}
@@ -124,9 +243,12 @@ export function SqlResultPanelView({
               {result.error_code ?? t.sqlExecution.failed}
             </p>
             {result.error_message ? (
-              <p className="text-muted-foreground break-words">
+              <pre
+                className="text-destructive overflow-auto text-xs whitespace-pre-wrap"
+                data-testid="sql-result-error-message"
+              >
                 {result.error_message}
-              </p>
+              </pre>
             ) : null}
           </div>
         ) : result?.ok ? (
@@ -193,6 +315,41 @@ export function SqlResultPanelView({
           </p>
         )}
       </div>
+      {selectionToolbar && sidecar ? (
+        <div
+          className={cn(
+            "bg-popover text-popover-foreground border-border fixed z-50 flex -translate-x-1/2 items-center gap-1 rounded-full border p-1 shadow-lg",
+            selectionToolbar.placement === "bottom"
+              ? "translate-y-0"
+              : "-translate-y-full",
+          )}
+          data-sql-result-selection-toolbar
+          style={{ left: selectionToolbar.x, top: selectionToolbar.y }}
+        >
+          <Button
+            className="h-8 rounded-full px-2.5 text-xs"
+            onClick={handleAddSelectionToConversation}
+            onMouseDown={(event) => event.preventDefault()}
+            size="sm"
+            type="button"
+            variant="ghost"
+          >
+            <MessageCircleIcon className="size-3.5" />
+            {t.sidecar.addToConversation}
+          </Button>
+          <Button
+            aria-label={t.common.close}
+            className="size-8 rounded-full"
+            onClick={clearSelectionToolbar}
+            onMouseDown={(event) => event.preventDefault()}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <span aria-hidden="true">×</span>
+          </Button>
+        </div>
+      ) : null}
     </section>
   );
 }

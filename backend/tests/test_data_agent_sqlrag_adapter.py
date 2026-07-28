@@ -40,8 +40,6 @@ def _config() -> DataQueryServiceAbilityConfig:
                 "dsn_env": "DATA_AGENT_SQL_DSN",
                 "readonly": True,
                 "allowed_schemas": ["public"],
-                "allowed_tables": ["orders"],
-                "allowed_columns": ["id", "amount"],
             },
         }
     )
@@ -64,8 +62,6 @@ def _binding() -> dict[str, Any]:
         "execution_target_fingerprint": "sha256:target",
         "binding_fingerprint": "sha256:binding",
         "allowed_schemas": ["public"],
-        "allowed_tables": ["orders"],
-        "allowed_columns": ["id", "amount"],
     }
 
 

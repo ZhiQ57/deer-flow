@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from html import escape
 from typing import Any
@@ -95,6 +96,28 @@ def _tool_call_args(tool_call: dict[str, Any]) -> dict[str, Any]:
     return args if isinstance(args, dict) else {}
 
 
+def _read_legacy_sql_stage_error(message: ToolMessage) -> str | None:
+    """识别旧版本 SQL 阶段拦截消息，避免历史任务永久显示运行中。
+
+    Args:
+        message: 历史 task ToolMessage。
+    Returns:
+        SQL 错误码；不是旧格式 SQL 阶段错误时返回 None。
+    """
+    if message.name != "task" or not isinstance(message.content, str):
+        return None
+    try:
+        payload = json.loads(message.content)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != 1 or payload.get("ok") is not False:
+        return None
+    error_code = payload.get("error_code")
+    if not isinstance(error_code, str) or not error_code.startswith("SQL_"):
+        return None
+    return error_code
+
+
 def extract_delegations(messages: list[AnyMessage]) -> list[DelegationEntry]:
     """Enumerate `task` delegations from AI tool calls and paired results."""
     entries_by_id: dict[str, DelegationEntry] = {}
@@ -129,6 +152,10 @@ def extract_delegations(messages: list[AnyMessage]) -> list[DelegationEntry]:
         if entry is None:
             continue
         structured = read_subagent_result_metadata(message.additional_kwargs)
+        if structured is None:
+            legacy_error = _read_legacy_sql_stage_error(message)
+            if legacy_error is not None:
+                structured = {"status": "failed", "error": legacy_error}
         if structured is None:
             continue
         entry["status"] = structured["status"]

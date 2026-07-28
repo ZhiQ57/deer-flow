@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 class SqlExecutionConfig(BaseModel):
     """SQL 只读执行配置。"""
 
-    # ADD: 定义 DataAgent SQL 执行边界，支持受控的 PostgreSQL/MySQL 只读闭环。
-    model_config = ConfigDict(extra="allow")
+    # ADD: 定义 DataAgent SQL 执行参数；表/字段权限由检索证据或 Executor 授权层负责。
+    model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
     database_type: str = "postgresql"
@@ -37,8 +37,6 @@ class SqlExecutionConfig(BaseModel):
     max_cell_chars: int = Field(default=2_000, ge=100, le=100_000)
     max_result_chars: int = Field(default=100_000, ge=1_000, le=1_000_000)
     allowed_schemas: list[str] = Field(default_factory=list)
-    allowed_tables: list[str] = Field(default_factory=list)
-    allowed_columns: list[str] = Field(default_factory=list)
 
     # ADD: 阻止 Pydantic 把 Python bool 静默转换成 SQL 数值预算 1/0。
     @field_validator(
@@ -75,12 +73,12 @@ class SqlExecutionConfig(BaseModel):
             raise ValueError("sql_execution.dsn_env 必须是环境变量名或 secret:// 引用。")
         return value.strip()
 
-    @field_validator("allowed_schemas", "allowed_tables", "allowed_columns")
+    @field_validator("allowed_schemas")
     @classmethod
-    def _validate_allowlist(cls, values: list[str]) -> list[str]:
-        """校验数据库对象白名单格式。"""
+    def _validate_allowed_schemas(cls, values: list[str]) -> list[str]:
+        """校验允许访问的 Schema 配置格式。"""
         if any(not isinstance(item, str) or not item.strip() for item in values):
-            raise ValueError("SQL 对象白名单不能包含空值。")
+            raise ValueError("sql_execution.allowed_schemas 不能包含空值。")
         return [item.strip() for item in values]
 
     @model_validator(mode="after")

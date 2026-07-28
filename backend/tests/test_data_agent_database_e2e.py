@@ -72,8 +72,6 @@ def test_real_tablerag_retrieval_and_readonly_mysql_execution() -> None:
                 "max_cell_chars": 200,
                 "max_result_chars": 20_000,
                 "allowed_schemas": ["text2sql"],
-                "allowed_tables": [table_name, f"text2sql.{table_name}"],
-                "allowed_columns": [column_name, f"{table_name}.{column_name}"],
             },
         }
     )

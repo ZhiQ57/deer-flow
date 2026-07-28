@@ -76,6 +76,17 @@ describe("parseSubtaskResult", () => {
     });
   });
 
+  it("maps legacy SQL stage error JSON to a terminal failed status", () => {
+    expect(
+      parseSubtaskResult(
+        '{"version":1,"ok":false,"error_code":"SQL_STAGE_NOT_APPROVED"}',
+      ),
+    ).toEqual({
+      status: "failed",
+      error: "SQL_STAGE_NOT_APPROVED",
+    });
+  });
+
   it("keeps unknown content-only task results in progress", () => {
     const parsed = parseSubtaskResult("partial streaming chunk");
 

@@ -519,8 +519,6 @@ def test_make_lead_agent_wires_data_query_ability_and_server_allowlist(monkeypat
                 "dsn_env": "DATA_AGENT_MYSQL_DSN",
                 "readonly": True,
                 "allowed_schemas": ["text2sql"],
-                "allowed_tables": ["orders"],
-                "allowed_columns": ["orders.region"],
             },
         },
     )

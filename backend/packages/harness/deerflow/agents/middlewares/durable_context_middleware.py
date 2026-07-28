@@ -225,10 +225,35 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
     def _capture_delegations(self, state: AgentState, runtime: Runtime | None) -> dict | None:
         run_id = _runtime_run_id(runtime)
         pre_existing_message_ids = _runtime_pre_existing_message_ids(runtime)
-        messages = _current_run_messages(state["messages"], run_id, pre_existing_message_ids)
+        all_messages = state["messages"]
+        messages = _current_run_messages(all_messages, run_id, pre_existing_message_ids)
         existing = state.get("delegations") or []
+        current_delegations = _with_run_id(extract_delegations(messages), run_id, existing)
+        existing_by_id = {entry.get("id"): entry for entry in existing if isinstance(entry, dict)}
+        historical_terminal_updates = []
+        stale_run_updates = []
+        if run_id:
+            for entry in existing_by_id.values():
+                previous_run_id = entry.get("run_id")
+                if entry.get("status") == "in_progress" and isinstance(previous_run_id, str) and previous_run_id != run_id:
+                    stale_run_updates.append(
+                        {
+                            **entry,
+                            "status": "failed",
+                            "result_brief": "Task run ended before a terminal result was recorded.",
+                        }
+                    )
+        if any(entry.get("status") == "in_progress" for entry in existing_by_id.values()):
+            for entry in extract_delegations(all_messages):
+                previous = existing_by_id.get(entry.get("id"))
+                if previous is None or previous.get("status") != "in_progress":
+                    continue
+                if any(update.get("id") == entry.get("id") for update in stale_run_updates):
+                    continue
+                if entry.get("status") in TERMINAL_STATUSES:
+                    historical_terminal_updates.append(entry)
         delegations = _filter_changed_delegations(
-            _with_run_id(extract_delegations(messages), run_id, existing),
+            [*current_delegations, *historical_terminal_updates, *stale_run_updates],
             existing,
         )
         if delegations:

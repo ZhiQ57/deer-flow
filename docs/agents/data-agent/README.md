@@ -8,7 +8,7 @@ DataAgent 当前包含两条用途不同的路径：正式生产闭环与历史�
 正式能力需要在根 `config.yaml -> subagents.custom_agents` 显式注册 `sql-subagent`，并只允许
 `data_validate_sql`、`data_execute_sql` 两个工具；SQL 子代理不能加载 `table-rag-agent` Skill。
 真实本地拓扑由 PostgreSQL 保存 TableRAG 索引元数据、MySQL 保存业务表，执行库通过
-`DATA_AGENT_MYSQL_DSN` 环境变量提供。`allowed_tables` 与 `allowed_columns` 为空时服务端拒绝 SQL 执行。
+`DATA_AGENT_MYSQL_DSN` 环境变量提供。SQL Executor 不在 custom-agent 配置中维护静态表/字段列表；表和字段由 Schema-RAG 检索证据约束，未来由 SQL Executor 权限层按当前用户实时判断。
 同库部署仍可使用 PostgreSQL 执行源，但必须选择 `same_physical_target` 并让检索/执行 fingerprint 一致。
 
 第 2 条实验性路径曾包含本文早期版本中的**检索后标签门禁**、可选 QueryContext Tool、
@@ -75,7 +75,7 @@ uv run pytest "D:\A-PythonWork\AOpenGithub\deer-flow\backend\tests\service_agent
 2026 年 7 月 16 日真实环境核验确认：当前 `tablerag.yaml` 的 PostgreSQL 库保存 TableRAG 索引，
 检索返回的业务表实际位于 MySQL `text2sql`。因此正式路径使用
 `source_binding_mode: logical_data_source`，由服务端把 PostgreSQL 检索目标与 MySQL 执行目标共同写入
-`binding_fingerprint`。这不是让模型任意跨库；两个 DSN、逻辑 `data_source_id` 和 allowlist 都必须由服务端配置。
+`binding_fingerprint`。这不是让模型任意跨库；两个 DSN、逻辑 `data_source_id` 和允许访问的 Schema 都必须由服务端配置。
 
 `extensions_config.example.json` 已包含默认关闭的 `tablerag` stdio MCP。复制为本地配置后，将 `mcpServers.tablerag.enabled` 改为 `true`：
 
@@ -132,8 +132,6 @@ service_ability:
     readonly: true
     max_execution_attempts: 3
     allowed_schemas: [text2sql]
-    allowed_tables: []   # 部署前填写服务端授权表
-    allowed_columns: []  # 部署前填写服务端授权列
 ```
 
 正式 SQL 校验同时支持 PostgreSQL/MySQL AST。`sql_only` 快照只向 SQL SubAgent 提供
@@ -154,11 +152,14 @@ POST /api/threads/{thread_id}/sql/execute
 该接口只接受 `source=manual_ui`，要求当前认证用户严格拥有该线程，并按当前用户加载请求中的
 `agent_name`。只有 `service_ability.type=data_query` 且 `sql_execution.enabled=true` 时允许执行。
 手动执行不伪造 Query Snapshot 或 TableRAG registry，而是由服务端解析当前数据源绑定，并继续执行
-SQL AST、只读、数据库方言、Schema/Table/Column allowlist、超时和结果预算校验。返回结果不会经过 LLM
-总结；DSN、密码、数据库驱动对象和异常堆栈不会返回前端。
+SQL AST、只读、数据库方言、Schema、超时和结果预算校验。SQL Execution 配置不维护静态表/字段列表；
+未来按当前登录用户查询权限的检查应接入 SQL Executor 授权层。返回结果不会经过 LLM
+总结；Schema 或数据源绑定校验失败会返回直接原因，数据库执行失败会返回驱动主错误的最小脱敏文本。
+DSN、密码、数据库驱动对象和异常堆栈不会返回前端。
 
 Web UI 仅在上述能力开启的 custom-agent 对话中，给已完成的 `sql` fenced code block 显示“执行”按钮。
 点击后结果显示在 ChatBox 右侧 SQL Result Panel；流式 SQL、非 SQL 代码块和普通 Agent 不显示该按钮。
+用户可以选中面板中的 SQL、错误或结果文本，点击“添加到对话”，将选中文本作为引用上下文附加到下一次请求。
 
 `data-agent.allowable_subagents` 必须显式包含 `sql-subagent`。服务端会把该判定写入本次运行上下文并在
 `SqlStageMiddleware` 与 `task` 工具装配处双重校验；客户端手动设置 `subagent_enabled=true`、模型自行填写

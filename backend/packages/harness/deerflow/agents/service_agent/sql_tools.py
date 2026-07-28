@@ -171,7 +171,7 @@ def build_sql_tools(
         StructuredTool.from_function(
             func=validate,
             name="data_validate_sql",
-            description="按当前 DataAgent Evidence、数据库方言和 allowlist 校验单条只读 SQL；SQL 修复后必须重新调用。",
+            description="按当前 DataAgent Evidence、数据库方言和 Schema 约束校验单条只读 SQL；SQL 修复后必须重新调用。",
         )
     ]
     if action == "execute":

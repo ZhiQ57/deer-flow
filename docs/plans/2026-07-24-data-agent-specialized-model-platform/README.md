@@ -2,9 +2,9 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | SQL Executor、SQL SubAgent、Gateway 和前端手动执行链路完成 |
-| 已完成任务 | SQL Executor、SQL SubAgent 修复重试、Gateway SQL API、前端执行按钮和结果面板 |
-| 下一任务 | 配置真实只读 PostgreSQL/MySQL 后执行集成验收 |
+| 状态 | SQL Executor、SQL SubAgent、Gateway、前端手动执行和错误上下文链路完成 |
+| 已完成任务 | SQL Executor、SQL SubAgent 修复重试、Gateway SQL API、前端执行按钮、原始错误展示和结果引用 |
+| 下一任务 | 配置真实只读 PostgreSQL，并补充成功查询的跨数据库集成验收 |
 | 后续任务 | SQL SubAgent 模型闭环、Analysis SubAgent、Chart SubAgent、Agent Contract |
 | 实现范围 | 正式 `deerflow.*`、Gateway、Frontend |
 | 排除范围 | `backend/packages/harness/deerflow-dev/` |
@@ -131,8 +131,6 @@ service_ability:
     max_cell_chars: 2000
     max_result_chars: 100000
     allowed_schemas: []
-    allowed_tables: []
-    allowed_columns: []
 ```
 
 ### 4.3 Executor 接口
@@ -155,7 +153,7 @@ Gateway 和 SQL SubAgent 使用同一个 Service。
 SQL Executor 需要支持两个调用来源：
 
 1. `subagent`：必须绑定当前 Query Snapshot、Evidence、`validation_digest` 和执行授权。
-2. `manual_ui`：由用户点击代码块执行；必须执行 AST、只读、方言和配置 allowlist 校验，但不伪造 Query Snapshot。
+2. `manual_ui`：由用户点击代码块执行；必须执行 AST、只读、方言、Schema 和数据源绑定校验，但不伪造 Query Snapshot。
 
 两个来源最终使用相同数据库执行和结果限制逻辑。
 
@@ -373,7 +371,70 @@ data_execute_sql
 - [X] 5.8 编写 `docs/reviews/` Review，记录验证结果和遗留风险。
 - [ ] 5.9 测试通过后合并回 `dev` 并推送 `origin/dev`。
 
-## 9. 后续任务
+## 9. 阶段六：SQL 错误明细与执行结果上下文
+
+### 9.1 问题
+
+数据库访问权限不应由 custom-agent 配置中的静态表/字段列表承担。Schema-RAG 已经负责检索和 SQL 生成阶段的数据范围约束，未来 SQL Executor 还会根据当前登录用户查询实时权限。静态 `allowed_tables`、`allowed_columns` 会造成配置重复、Schema 变更后失效，并且可能在数据库执行前屏蔽真正的数据库错误。
+
+### 9.2 目标
+
+- SQL Executor 不再读取或校验 `allowed_tables`、`allowed_columns`。
+- `allowed_schemas` 继续用于限制 SQL 访问的数据库 Schema。
+- `source=subagent` 继续要求当前 TableRAG registry 中存在 SQL 使用的表和字段。
+- `source=manual_ui` 不伪造 TableRAG registry，只执行 AST、只读、方言、Schema 和数据源绑定校验。
+- 数据库执行失败返回数据库驱动的主错误信息，只移除 DSN、凭据、控制字符和异常堆栈。
+- SQL Result Panel 同时展示错误码和错误信息，不用二次文案替换数据库主错误。
+- 用户可选中 SQL、错误信息或查询结果文本，点击“添加到对话”，作为下一次请求的引用上下文。
+- DataAgent SQL Result Artifact 保留相同错误信息，使消息卡和后续模型上下文使用同一份执行事实。
+
+### 9.3 Todo
+
+- [X] 6.1 从 SQL Execution 配置模型删除 `allowed_tables`、`allowed_columns`。
+- [X] 6.2 从数据源绑定和 Query Snapshot 完整性合同删除静态表/字段 allowlist。
+- [X] 6.3 删除 manual UI 的表/字段静态 allowlist 校验。
+- [X] 6.4 保留 subagent 的 TableRAG registry 表/字段证据校验。
+- [X] 6.5 SQL Result Panel 展示数据库主错误。
+- [X] 6.6 SQL Result Artifact 保留执行错误明细。
+- [X] 6.7 SQL Result Panel 支持选中文本并“添加到对话”。
+- [X] 6.8 迁移 Backend 测试、配置示例和开发文档。
+
+### 9.4 验收
+
+- [X] 配置模型不再接受 `allowed_tables`、`allowed_columns` 字段。
+- [X] manual UI 不因静态表/字段列表缺失而拒绝合法只读 SQL。
+- [X] subagent 仍不能执行不在当前 TableRAG registry 的表或字段。
+- [X] MySQL 1054 等可修复错误在页面显示数据库主错误，例如 `Unknown column '...' in 'where clause'`。
+- [X] API 和页面不显示 DSN、密码、驱动对象或异常堆栈。
+- [X] 用户选中 SQL 执行结果文本后，可以把引用内容加入下一次对话。
+- [X] SQL SubAgent 和前端手动执行继续复用同一 `SqlExecutionService`。
+
+## 10. SQL SubAgent 卡住问题修复
+
+### 10.1 问题定位
+
+- 旧的 `data_query` `needs_refinement` 快照会跨越新的可见用户消息继续存在。
+- `publish_query_labels` 因旧阶段状态被拒绝，前端没有成功的标签 artifact，因此不会显示审核卡。
+- SQL 阶段门禁返回普通错误 ToolMessage，没有 `subagent_status`，前端和 delegation ledger 无法把 task 标记为失败。
+- 历史 checkpoint 中的旧 `SQL_*` JSON 错误会持续被当作 `in_progress`，影响模型上下文和页面状态。
+
+### 10.2 实现
+
+- [X] 10.1 在正式 `deerflow.agents.service_agent` 增加 `DataAgentTurnResetMiddleware`，并在 TableRAG middleware 前注册。
+- [X] 10.2 新可见用户轮次先写入当前数据源的 `idle` 快照；隐藏 human-input 确认不创建新轮次。
+- [X] 10.3 SQL 阶段拒绝委派时返回带 `subagent_status=failed`、`subagent_error` 的 task ToolMessage。
+- [X] 10.4 delegation ledger 和前端任务卡兼容历史 `SQL_*` JSON 错误并恢复为终态失败。
+- [X] 10.5 新运行开始时将带旧 `run_id` 且没有终态结果的 delegation 收敛为失败。
+- [X] 10.6 增加轮次隔离、任务终态、历史状态迁移和前端解析回归测试。
+
+### 10.3 验收
+
+- [X] 新用户消息不会复用上一轮 `needs_refinement`、标签或 SQL approval 快照。
+- [X] 标签发布成功后可以生成现有 Query Intent / human-input 审核卡。
+- [X] SQL SubAgent 被门禁拒绝时，任务卡显示失败，不再永久显示“子任务运行中”。
+- [X] 旧 checkpoint 的 SQL 阶段错误不会继续向模型声明存在一个 `in_progress` SQL SubAgent。
+
+## 11. 后续任务
 
 以下任务在 SQL Executor 完成后单独立项：
 

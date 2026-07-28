@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -117,21 +118,23 @@ async def _load_sql_config(agent_name: str, user_id: str):
     return config
 
 
-def _validation_failure(error_code: str, database_type: str) -> SqlExecuteResponse:
+def _validation_failure(validation: Mapping[str, Any], database_type: str) -> SqlExecuteResponse:
     """把 SQL 校验失败转换为稳定的前端执行响应。
 
     Args:
-        error_code: SQL Executor 校验错误码。
+        validation: SQL Executor 返回的校验结果。
         database_type: 当前配置的数据库类型。
 
     Returns:
-        不包含内部异常信息的失败响应。
+        包含直接校验原因但不包含内部异常信息的失败响应。
     """
+    error_message = validation.get("error_message")
     return SqlExecuteResponse(
         ok=False,
         database_type=database_type,
-        error_code=error_code,
+        error_code=str(validation.get("error_code") or "SQL_VALIDATION_FAILED"),
         error_category="validation_error",
+        error_message=error_message[:500] if isinstance(error_message, str) and error_message.strip() else None,
         retryable=False,
         recommended_action="edit_sql",
     )
@@ -173,7 +176,7 @@ async def execute_sql(thread_id: str, body: SqlExecuteRequest, request: Request)
     )
     if validation.get("valid") is not True:
         return _validation_failure(
-            str(validation.get("error_code") or "SQL_VALIDATION_FAILED"),
+            validation,
             config.sql_execution.database_type,
         )
 

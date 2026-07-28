@@ -30,6 +30,7 @@
         "8001"
       ],
       "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/.env",
       "env": {
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
@@ -39,7 +40,10 @@
         "DEER_FLOW_CONFIG_PATH": "${workspaceFolder}/config.yaml",
         "DEER_FLOW_EXTENSIONS_CONFIG_PATH": "${workspaceFolder}/extensions_config.json",
         "DEER_FLOW_STREAM_BRIDGE_REDIS_URL": "redis://localhost:6379/0",
-        "GATEWAY_CORS_ORIGINS": "http://localhost:3000,http://127.0.0.1:3000"
+        "GATEWAY_CORS_ORIGINS": "http://localhost:3000,http://127.0.0.1:3000",
+        "TABLERAG_CONFIG": "D:\\A-PythonWork\\AOpenGithub\\deer-flow\\tablerag.yaml",
+        "TABLERAG_MCP_INDEX_DSN": "postgresql://postgres:postgres@127.0.0.1:55433/text2sql",
+        "DATA_AGENT_MYSQL_DSN": "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql"
       },
       "console": "integratedTerminal",
       "justMyCode": false,

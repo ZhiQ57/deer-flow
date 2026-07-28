@@ -14,6 +14,8 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
+from deerflow.subagents.status_contract import make_subagent_additional_kwargs
+
 from .config import DataQueryServiceAbilityConfig
 from .sql_executor import SqlExecutionService, SqlValidationRequest
 from .state import get_active_service_state, make_service_state
@@ -32,14 +34,24 @@ class SqlStageMiddleware(AgentMiddleware):
         self._sql_executor = SqlExecutionService(config)
 
     @staticmethod
-    def _error(request: ToolCallRequest, code: str) -> ToolMessage:
-        """返回不泄露内部信息的阶段错误。"""
+    def _error(request: ToolCallRequest, code: str) -> Command:
+        """返回带子代理失败终态的阶段错误。"""
         tool_call_id = str(request.tool_call.get("id") or "missing-tool-call-id")
-        return ToolMessage(
-            content=json.dumps({"version": 1, "ok": False, "error_code": code}, ensure_ascii=False),
-            tool_call_id=tool_call_id,
-            name="task",
-            status="error",
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({"version": 1, "ok": False, "error_code": code}, ensure_ascii=False),
+                        tool_call_id=tool_call_id,
+                        name="task",
+                        status="error",
+                        additional_kwargs=make_subagent_additional_kwargs(
+                            "failed",
+                            error=code,
+                        ),
+                    )
+                ]
+            }
         )
 
     def _envelope(self, request: ToolCallRequest) -> dict[str, Any] | None:

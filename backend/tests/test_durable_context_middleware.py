@@ -186,7 +186,7 @@ class TestBeforeModelCapture:
         assert [entry["id"] for entry in out["delegations"]] == ["new-call"]
         assert out["delegations"][0]["run_id"] == "run-new"
 
-    def test_missing_current_run_marker_does_not_retag_old_run_delegations(self):
+    def test_missing_current_run_marker_repairs_old_run_delegations(self):
         middleware = DurableContextMiddleware()
         runtime = SimpleNamespace(context={"run_id": "run-new"})
         messages = [
@@ -214,7 +214,11 @@ class TestBeforeModelCapture:
             }
         ]
 
-        assert middleware.before_model({"messages": messages, "delegations": existing}, runtime) is None
+        out = middleware.before_model({"messages": messages, "delegations": existing}, runtime)
+
+        assert out is not None
+        assert out["delegations"][0]["id"] == "old-call"
+        assert out["delegations"][0]["status"] == "failed"
 
     def test_resume_run_captures_new_delegation_after_pre_existing_boundary(self):
         middleware = DurableContextMiddleware()
@@ -260,10 +264,11 @@ class TestBeforeModelCapture:
         out = middleware.after_model({"messages": messages, "delegations": existing}, runtime)
 
         assert out is not None
-        assert [entry["id"] for entry in out["delegations"]] == ["new-call"]
+        assert [entry["id"] for entry in out["delegations"]] == ["new-call", "old-call"]
         assert out["delegations"][0]["run_id"] == "run-new"
+        assert out["delegations"][1]["status"] == "failed"
 
-    def test_run_id_without_human_boundary_does_not_retag_existing_delegations(self):
+    def test_run_id_without_human_boundary_repairs_existing_delegations(self):
         middleware = DurableContextMiddleware()
         runtime = SimpleNamespace(context={"run_id": "run-new"})
         messages = [
@@ -290,7 +295,10 @@ class TestBeforeModelCapture:
             }
         ]
 
-        assert middleware.before_model({"messages": messages, "delegations": existing}, runtime) is None
+        out = middleware.before_model({"messages": messages, "delegations": existing}, runtime)
+
+        assert out is not None
+        assert out["delegations"][0]["status"] == "failed"
 
     def test_resume_without_human_boundary_uses_pre_existing_message_ids(self):
         middleware = DurableContextMiddleware()
@@ -336,8 +344,9 @@ class TestBeforeModelCapture:
         out = middleware.before_model({"messages": messages, "delegations": existing}, runtime)
 
         assert out is not None
-        assert [entry["id"] for entry in out["delegations"]] == ["new-call"]
+        assert [entry["id"] for entry in out["delegations"]] == ["new-call", "old-call"]
         assert out["delegations"][0]["run_id"] == "run-new"
+        assert out["delegations"][1]["status"] == "failed"
 
     def test_resume_boundary_does_not_retag_pre_existing_task_missing_from_ledger(self):
         middleware = DurableContextMiddleware()
@@ -568,6 +577,68 @@ def fake_read_file(path: str) -> str:
 
 
 class TestGraphIntegration:
+    def test_prior_run_in_progress_delegation_is_repaired_as_failed(self):
+        """新运行开始后，旧 run_id 的未终态任务必须从模型上下文中移除。"""
+        middleware = DurableContextMiddleware()
+        state = {
+            "messages": [HumanMessage(content="继续查询")],
+            "delegations": [
+                {
+                    "id": "old-sql-call",
+                    "description": "generate SQL",
+                    "subagent_type": "sql-subagent",
+                    "status": "in_progress",
+                    "run_id": "old-run",
+                    "created_at": "2026-07-27T00:00:00Z",
+                }
+            ],
+        }
+
+        update = middleware.before_model(state, SimpleNamespace(context={"run_id": "new-run"}))
+
+        assert update is not None
+        assert update["delegations"][0]["status"] == "failed"
+        assert update["delegations"][0]["run_id"] == "old-run"
+
+    def test_historical_sql_stage_error_repairs_stale_in_progress_delegation(self):
+        """新一轮模型调用前应把旧 SQL 阶段错误写回 delegation 终态。"""
+        middleware = DurableContextMiddleware()
+        state = {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {"description": "generate SQL", "prompt": "do it", "subagent_type": "sql-subagent"},
+                            "id": "old-sql-call",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                ToolMessage(
+                    content='{"version":1,"ok":false,"error_code":"SQL_STAGE_NOT_APPROVED"}',
+                    tool_call_id="old-sql-call",
+                    name="task",
+                ),
+                HumanMessage(content="请重新执行 SQL"),
+            ],
+            "delegations": [
+                {
+                    "id": "old-sql-call",
+                    "description": "generate SQL",
+                    "subagent_type": "sql-subagent",
+                    "status": "in_progress",
+                    "created_at": "2026-07-27T00:00:00Z",
+                }
+            ],
+        }
+
+        update = middleware.before_model(state, SimpleNamespace(context={}))
+
+        assert update is not None
+        assert update["delegations"][0]["status"] == "failed"
+
     def test_subagent_limit_counts_only_prior_delegations_in_real_middleware_chain(self):
         model = RecordingFakeModel(
             responses=[

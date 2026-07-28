@@ -614,7 +614,7 @@ class TestAgentsAPI:
         assert soul_agent["soul"] == "My soul content"
 
     def test_list_agents_returns_only_sanitized_data_query_ability(self, agent_client):
-        """Agents API 可识别 DataAgent，但不得返回 DSN 引用、allowlist 或连接参数。"""
+        """Agents API 可识别 DataAgent，但不得返回 DSN 引用、Schema 列表或连接参数。"""
         _write_agent(
             agent_client._tmp_path,  # type: ignore[attr-defined]
             "data-agent",
@@ -636,8 +636,6 @@ class TestAgentsAPI:
                         "dsn_env": "DATA_AGENT_MYSQL_DSN",
                         "readonly": True,
                         "allowed_schemas": ["text2sql"],
-                        "allowed_tables": ["femalediagnosticinfo"],
-                        "allowed_columns": ["FemaleFactor"],
                     },
                 },
             },

@@ -89,11 +89,11 @@ class DataAgentServiceAbility:
         from .approval_middleware import QueryApprovalMiddleware
         from .sql_stage_middleware import SqlStageMiddleware
         from .table_rag_middleware import TableRagStageMiddleware
-        # from .turn_reset_middleware import DataAgentTurnResetMiddleware
+        from .turn_reset_middleware import DataAgentTurnResetMiddleware
 
         # ADD: 业务 middleware 只挂在 DataAgent 适配器，默认 lead-agent 不受影响。
         return [
-            # DataAgentTurnResetMiddleware(self.config),
+            DataAgentTurnResetMiddleware(self.config),
             TableRagStageMiddleware(self.config),
             QueryLabelsMiddleware(require_retrieval=True, service_ability=self.config),
             QueryApprovalMiddleware(self.config),

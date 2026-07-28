@@ -150,6 +150,26 @@ export function parseSubtaskResult(
 }
 
 function parseLegacyTaskResult(trimmed: string): SubtaskResultUpdate {
+  // 兼容旧版 SQLStageMiddleware 写入的 JSON 错误 ToolMessage，避免历史任务永久转圈。
+  try {
+    const payload: unknown = JSON.parse(trimmed);
+    if (
+      typeof payload === "object" &&
+      payload !== null &&
+      "version" in payload &&
+      "ok" in payload &&
+      "error_code" in payload &&
+      payload.version === 1 &&
+      payload.ok === false &&
+      typeof payload.error_code === "string" &&
+      payload.error_code.startsWith("SQL_")
+    ) {
+      return { status: "failed", error: payload.error_code };
+    }
+  } catch {
+    // 非 JSON 的旧任务结果继续按文本协议解析。
+  }
+
   if (trimmed.startsWith(SUCCESS_PREFIX)) {
     return {
       status: "completed",

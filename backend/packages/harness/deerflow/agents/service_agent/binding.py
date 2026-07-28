@@ -87,6 +87,4 @@ def resolve_data_source_binding(
         "execution_target_fingerprint": execution_fingerprint,
         "binding_fingerprint": binding_fingerprint,
         "allowed_schemas": list(config.sql_execution.allowed_schemas),
-        "allowed_tables": list(config.sql_execution.allowed_tables),
-        "allowed_columns": list(config.sql_execution.allowed_columns),
     }

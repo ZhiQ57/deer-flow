@@ -376,7 +376,7 @@ def build_query_label_snapshot(
         "ability_version": ability_version,
         "retrieval_digest": retrieval_digest,
         "binding_fingerprint": binding_fingerprint,
-        "constraints_complete": all(bool(binding.get(name)) for name in ("allowed_schemas", "allowed_tables", "allowed_columns")),
+        "constraints_complete": bool(binding.get("allowed_schemas")),
         "intent": intent.strip(),
         "summary": normalized_summary,
         "confidence": float(confidence) if confidence is not None else None,

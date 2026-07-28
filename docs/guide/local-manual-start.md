@@ -112,6 +112,15 @@ curl.exe http://localhost:8001/health
 {"status":"healthy","service":"deer-flow-gateway"}
 ```
 
+MySQL数据库容器: 
+```text
+Host: 127.0.0.1
+Port: 3308
+User: root
+Password: root@123456
+数据库名：text2sql
+```
+
 > 修改 `config.yaml` 的模型配置后，需要重启后端 Gateway。
 
 ### 3.1 使用 VS Code 调试 Gateway

@@ -2,7 +2,10 @@ import { expect, it } from "@rstest/core";
 import { createElement, type ComponentType, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { SqlResultPanelView } from "@/components/workspace/sql-execution/sql-result-panel";
+import {
+  buildSqlResultSidecarContext,
+  SqlResultPanelView,
+} from "@/components/workspace/sql-execution/sql-result-panel";
 import { I18nProvider } from "@/core/i18n/context";
 
 const TestI18nProvider = I18nProvider as ComponentType<{
@@ -62,4 +65,56 @@ it("renders Gateway and SQL execution errors", () => {
 
   expect(html).toContain("SQL Result");
   expect(html).toContain("Gateway unavailable");
+});
+
+it("renders the database primary error without replacing it", () => {
+  const html = renderToStaticMarkup(
+    createElement(
+      TestI18nProvider,
+      { initialLocale: "zh-CN" },
+      createElement(SqlResultPanelView, {
+        sql: "SELECT fd.missing_column FROM femalediagnosticinfo fd",
+        loading: false,
+        error: null,
+        result: {
+          version: 1,
+          ok: false,
+          database_type: "mysql",
+          error_code: "SQL_EXECUTION_FAILED",
+          error_category: "unknown_column",
+          error_message: "Unknown column 'fd.missing_column' in 'field list'",
+          retryable: true,
+          recommended_action: "repair_sql",
+          duration_ms: 8.5,
+          columns: [],
+          rows: [],
+          truncated: false,
+          empty: false,
+        },
+        onClose: () => undefined,
+        onRerun: () => undefined,
+      }),
+    ),
+  );
+
+  expect(html).toContain("SQL_EXECUTION_FAILED");
+  expect(html).toContain(
+    "Unknown column &#x27;fd.missing_column&#x27; in &#x27;field list&#x27;",
+  );
+  expect(html).toContain('data-testid="sql-result-error-message"');
+});
+
+it("builds selected SQL result text as conversation context", () => {
+  expect(
+    buildSqlResultSidecarContext(
+      " Unknown column 'fd.missing_column' in 'field list' ",
+      "SQL 执行结果",
+    ),
+  ).toEqual({
+    type: "referenced_message",
+    label: "SQL 执行结果",
+    role: "assistant",
+    content: "Unknown column 'fd.missing_column' in 'field list'",
+  });
+  expect(buildSqlResultSidecarContext("  ", "SQL 执行结果")).toBeNull();
 });

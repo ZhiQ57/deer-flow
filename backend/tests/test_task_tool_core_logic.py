@@ -516,8 +516,6 @@ def test_task_tool_injects_sql_tools_only_for_server_allowlisted_data_subagent(m
                     "dsn_env": "DATA_AGENT_SQL_DSN",
                     "readonly": True,
                     "allowed_schemas": ["public"],
-                    "allowed_tables": ["orders", "public.orders"],
-                    "allowed_columns": ["orders.region"],
                 },
             },
             "data_query_sql_subagent_allowed": True,

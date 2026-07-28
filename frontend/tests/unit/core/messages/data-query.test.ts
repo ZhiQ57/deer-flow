@@ -30,7 +30,13 @@ function artifact() {
         evidence_refs: ["evidence:sha256:metric"],
       },
     ],
-    evidence: [{ ref: "evidence:sha256:metric", kind: "evidence", summary: "销售额口径" }],
+    evidence: [
+      {
+        ref: "evidence:sha256:metric",
+        kind: "evidence",
+        summary: "销售额口径",
+      },
+    ],
     approval: {
       version: 1,
       snapshot_id: "sha256:snapshot",
@@ -43,12 +49,18 @@ function artifact() {
 
 describe("parseDataQueryLabelsArtifact", () => {
   it("parses the canonical v1 artifact", () => {
-    expect(parseDataQueryLabelsArtifact(artifact())?.labels[0]?.value).toBe("销售额");
+    expect(parseDataQueryLabelsArtifact(artifact())?.labels[0]?.value).toBe(
+      "销售额",
+    );
   });
 
   it("rejects unknown versions, missing fields, and mismatched snapshots", () => {
-    expect(parseDataQueryLabelsArtifact({ ...artifact(), version: 2 })).toBeNull();
-    expect(parseDataQueryLabelsArtifact({ ...artifact(), data_source_id: "" })).toBeNull();
+    expect(
+      parseDataQueryLabelsArtifact({ ...artifact(), version: 2 }),
+    ).toBeNull();
+    expect(
+      parseDataQueryLabelsArtifact({ ...artifact(), data_source_id: "" }),
+    ).toBeNull();
     expect(
       parseDataQueryLabelsArtifact({
         ...artifact(),
@@ -64,11 +76,20 @@ describe("parseDataQueryLabelsArtifact", () => {
   });
 
   it("rejects oversized and structurally malicious fields", () => {
-    expect(parseDataQueryLabelsArtifact({ ...artifact(), summary: "x".repeat(501) })).toBeNull();
+    expect(
+      parseDataQueryLabelsArtifact({ ...artifact(), summary: "x".repeat(501) }),
+    ).toBeNull();
     expect(
       parseDataQueryLabelsArtifact({
         ...artifact(),
-        labels: [{ label: "指标", value: "x", source: "database", evidence_refs: "forged" }],
+        labels: [
+          {
+            label: "指标",
+            value: "x",
+            source: "database",
+            evidence_refs: "forged",
+          },
+        ],
       }),
     ).toBeNull();
   });
@@ -103,7 +124,9 @@ describe("parseDataQueryLabelsArtifact", () => {
       "execute",
     );
 
-    expect(parseDataQueryReviewDecisions(response)["ambiguity:time"]?.decision).toBe("accept");
+    expect(
+      parseDataQueryReviewDecisions(response)["ambiguity:time"]?.decision,
+    ).toBe("accept");
     expect(response.value).toContain('"final_action":"execute"');
   });
 });
@@ -118,7 +141,8 @@ describe("parseDataQuerySqlResultArtifact", () => {
       data_source_id: "sales-pg",
       validation: {
         valid: true,
-        executable_sql: "SELECT region, SUM(order_amount) FROM orders GROUP BY region LIMIT 500",
+        executable_sql:
+          "SELECT region, SUM(order_amount) FROM orders GROUP BY region LIMIT 500",
         sql_sha256: "sha256:sql",
         validation_digest: "sha256:validation",
         snapshot_id: "sha256:snapshot",
@@ -139,7 +163,11 @@ describe("parseDataQuerySqlResultArtifact", () => {
       },
     });
 
-    expect(result?.execution?.ok === true ? result.execution.rows[0]?.region : undefined).toBe("华东");
+    expect(
+      result?.execution?.ok === true
+        ? result.execution.rows[0]?.region
+        : undefined,
+    ).toBe("华东");
   });
 
   it("rejects SQL validation and execution identities that do not match the active artifact", () => {
@@ -172,25 +200,47 @@ describe("parseDataQuerySqlResultArtifact", () => {
       },
     };
 
-    expect(parseDataQuerySqlResultArtifact({
-      ...base,
-      validation: { ...base.validation, snapshot_id: "sha256:stale" },
-    })).toBeNull();
-    expect(parseDataQuerySqlResultArtifact({
-      ...base,
-      execution: { ...base.execution, validation_digest: "sha256:stale" },
-    })).toBeNull();
+    expect(
+      parseDataQuerySqlResultArtifact({
+        ...base,
+        validation: { ...base.validation, snapshot_id: "sha256:stale" },
+      }),
+    ).toBeNull();
+    expect(
+      parseDataQuerySqlResultArtifact({
+        ...base,
+        execution: { ...base.execution, validation_digest: "sha256:stale" },
+      }),
+    ).toBeNull();
   });
 
-  it("keeps safe execution error codes without exposing raw failures", () => {
+  it("keeps safe execution error codes and the sanitized database primary error", () => {
     const result = parseDataQuerySqlResultArtifact({
       version: 1,
       kind: "data_query_sql_result",
       service_name: "data_query",
       snapshot_id: "sha256:snapshot",
       data_source_id: "sales-pg",
-      validation: { valid: true, executable_sql: "SELECT region FROM orders LIMIT 500", sql_sha256: "sha256:sql", validation_digest: "sha256:validation", snapshot_id: "sha256:snapshot", database_type: "postgresql", binding_fingerprint: "sha256:binding" },
-      execution: { version: 1, ok: false, snapshot_id: "sha256:snapshot", validation_digest: "sha256:validation", error_code: "SQL_TIMEOUT" },
+      validation: {
+        valid: true,
+        executable_sql: "SELECT region FROM orders LIMIT 500",
+        sql_sha256: "sha256:sql",
+        validation_digest: "sha256:validation",
+        snapshot_id: "sha256:snapshot",
+        database_type: "postgresql",
+        binding_fingerprint: "sha256:binding",
+      },
+      execution: {
+        version: 1,
+        ok: false,
+        snapshot_id: "sha256:snapshot",
+        validation_digest: "sha256:validation",
+        error_code: "SQL_EXECUTION_FAILED",
+        error_category: "unknown_column",
+        error_message: "Unknown column 'missing_region' in 'where clause'",
+        retryable: true,
+        recommended_action: "repair_sql",
+      },
     });
 
     expect(result?.execution).toEqual({
@@ -198,31 +248,67 @@ describe("parseDataQuerySqlResultArtifact", () => {
       ok: false,
       snapshot_id: "sha256:snapshot",
       validation_digest: "sha256:validation",
-      error_code: "SQL_TIMEOUT",
+      error_code: "SQL_EXECUTION_FAILED",
+      error_category: "unknown_column",
+      error_message: "Unknown column 'missing_region' in 'where clause'",
+      retryable: true,
+      recommended_action: "repair_sql",
     });
-    expect(parseDataQuerySqlResultArtifact({
-      version: 1,
-      kind: "data_query_sql_result",
-      service_name: "data_query",
-      snapshot_id: "sha256:snapshot",
-      data_source_id: "sales-pg",
-      validation: { valid: true, executable_sql: "SELECT region FROM orders LIMIT 500", sql_sha256: "sha256:sql", validation_digest: "sha256:validation", snapshot_id: "sha256:snapshot", database_type: "postgresql", binding_fingerprint: "sha256:binding" },
-      execution: { version: 1, ok: false, snapshot_id: "sha256:snapshot", validation_digest: "sha256:validation", error_code: "SQL_BINDING_MISMATCH" },
-    })?.execution).toEqual({
+    expect(
+      parseDataQuerySqlResultArtifact({
+        version: 1,
+        kind: "data_query_sql_result",
+        service_name: "data_query",
+        snapshot_id: "sha256:snapshot",
+        data_source_id: "sales-pg",
+        validation: {
+          valid: true,
+          executable_sql: "SELECT region FROM orders LIMIT 500",
+          sql_sha256: "sha256:sql",
+          validation_digest: "sha256:validation",
+          snapshot_id: "sha256:snapshot",
+          database_type: "postgresql",
+          binding_fingerprint: "sha256:binding",
+        },
+        execution: {
+          version: 1,
+          ok: false,
+          snapshot_id: "sha256:snapshot",
+          validation_digest: "sha256:validation",
+          error_code: "SQL_BINDING_MISMATCH",
+        },
+      })?.execution,
+    ).toEqual({
       version: 1,
       ok: false,
       snapshot_id: "sha256:snapshot",
       validation_digest: "sha256:validation",
       error_code: "SQL_BINDING_MISMATCH",
     });
-    expect(parseDataQuerySqlResultArtifact({
-      version: 1,
-      kind: "data_query_sql_result",
-      service_name: "data_query",
-      snapshot_id: "sha256:snapshot",
-      data_source_id: "sales-pg",
-      validation: { valid: true, executable_sql: "SELECT region FROM orders LIMIT 500", sql_sha256: "sha256:sql", validation_digest: "sha256:validation", snapshot_id: "sha256:snapshot", database_type: "postgresql", binding_fingerprint: "sha256:binding" },
-      execution: { version: 1, ok: false, snapshot_id: "sha256:snapshot", validation_digest: "sha256:validation", error_code: "postgres://secret" },
-    })).toBeNull();
+    expect(
+      parseDataQuerySqlResultArtifact({
+        version: 1,
+        kind: "data_query_sql_result",
+        service_name: "data_query",
+        snapshot_id: "sha256:snapshot",
+        data_source_id: "sales-pg",
+        validation: {
+          valid: true,
+          executable_sql: "SELECT region FROM orders LIMIT 500",
+          sql_sha256: "sha256:sql",
+          validation_digest: "sha256:validation",
+          snapshot_id: "sha256:snapshot",
+          database_type: "postgresql",
+          binding_fingerprint: "sha256:binding",
+        },
+        execution: {
+          version: 1,
+          ok: false,
+          snapshot_id: "sha256:snapshot",
+          validation_digest: "sha256:validation",
+          error_code: "postgres://secret",
+        },
+      }),
+    ).toBeNull();
   });
 });

@@ -33,7 +33,9 @@ from deerflow.agents.service_agent.state import (
     merge_retrieval_contexts,
 )
 from deerflow.agents.service_agent.table_rag_middleware import TableRagStageMiddleware
-from deerflow.agents.thread_state import ThreadState
+from deerflow.agents.service_agent.turn_reset_middleware import DataAgentTurnResetMiddleware
+from deerflow.agents.thread_state import ThreadState, merge_service_states
+from deerflow.subagents.status_contract import read_subagent_result_metadata
 from deerflow.tools.builtins.query_labels_tool import publish_query_labels_tool
 from deerflow.tools.builtins.task_tool import _build_data_query_sql_result_from_steps
 
@@ -64,8 +66,6 @@ def _config(confirmation_mode: str = "on_ambiguity") -> DataQueryServiceAbilityC
                 "dsn_env": "DATA_AGENT_SQL_DSN",
                 "readonly": True,
                 "allowed_schemas": ["public"],
-                "allowed_tables": ["orders", "public.orders"],
-                "allowed_columns": ["id", "order_amount", "region", "orders.id", "orders.order_amount", "orders.region"],
             },
         }
     )
@@ -81,7 +81,6 @@ def _mysql_config() -> DataQueryServiceAbilityConfig:
             "database_type": "mysql",
             "dsn_env": "DATA_AGENT_MYSQL_DSN",
             "allowed_schemas": ["text2sql"],
-            "allowed_tables": ["orders", "text2sql.orders"],
         }
     )
     return DataQueryServiceAbilityConfig.model_validate(raw)
@@ -126,8 +125,6 @@ def _binding() -> dict:
         "execution_target_fingerprint": "sha256:target",
         "binding_fingerprint": "sha256:binding",
         "allowed_schemas": ["public"],
-        "allowed_tables": ["orders"],
-        "allowed_columns": ["id", "order_amount", "region"],
     }
 
 
@@ -144,8 +141,6 @@ def _mysql_binding(binding_fingerprint: str = "sha256:mysql-binding") -> dict:
         "execution_target_fingerprint": "sha256:mysql-source",
         "binding_fingerprint": binding_fingerprint,
         "allowed_schemas": ["text2sql"],
-        "allowed_tables": ["orders"],
-        "allowed_columns": ["id", "order_amount", "region"],
     }
 
 
@@ -400,6 +395,134 @@ def _tool_request(name: str, *, state: dict | None = None) -> ToolCallRequest:
     )
 
 
+def test_turn_reset_middleware_replaces_stale_query_state_before_retrieval() -> None:
+    """新可见用户轮次必须先建立 idle 状态，使本轮检索可以替换旧轮快照。"""
+    stale_state = {
+        "messages": [
+            HumanMessage(id="turn-1", content="上一轮查询"),
+            HumanMessage(id="turn-2", content="重新执行查询"),
+        ],
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-1",
+                "stage": "needs_refinement",
+                "payload": {"retrieval": {"ok": False}},
+            }
+        ],
+    }
+
+    reset = DataAgentTurnResetMiddleware(_config()).before_agent(stale_state, MagicMock())
+
+    assert reset is not None
+    assert reset["service_states"][0]["turn_id"] == "turn-2"
+    assert reset["service_states"][0]["stage"] == "idle"
+    current = merge_service_states(stale_state["service_states"], reset["service_states"])
+    retrieving = [
+        {
+            "service_name": "data_query",
+            "version": 1,
+            "turn_id": "turn-2",
+            "stage": "retrieving",
+            "payload": {"retrieval": {"ok": True}},
+        }
+    ]
+    assert merge_service_states(current, retrieving)[0]["stage"] == "retrieving"
+
+
+def test_turn_reset_middleware_does_not_reset_hidden_confirmation_resume() -> None:
+    """human-input 隐藏确认属于原轮次恢复，不得清空 awaiting_confirmation 快照。"""
+    state = {
+        "messages": [
+            HumanMessage(id="turn-1", content="查询销售额"),
+            HumanMessage(
+                id="hidden-confirmation",
+                content="已确认",
+                additional_kwargs={
+                    "hide_from_ui": True,
+                    "human_input_response": {
+                        "version": 1,
+                        "kind": "human_input_response",
+                        "source": "ask_clarification",
+                        "request_id": "data-query:req-1",
+                        "response_kind": "text",
+                        "value": "确认执行",
+                    },
+                },
+            ),
+        ],
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-1",
+                "snapshot_id": "snapshot-1",
+                "stage": "awaiting_confirmation",
+                "payload": {},
+            }
+        ],
+    }
+
+    assert DataAgentTurnResetMiddleware(_config()).before_agent(state, MagicMock()) is None
+
+
+def test_data_agent_starts_retrieval_from_new_visible_turn_after_stale_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """正式 DataAgent 图在旧轮次快照存在时仍能从新用户消息开始检索。"""
+    monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+
+    @tool("sqlrag_retrieve")
+    def fake_tablerag(operation: str = "hybrid-search", query: str | None = None, queries: list[str] | None = None) -> str:
+        """返回固定的 TableRAG 检索结果。"""
+        return json.dumps(_retrieval_payload(), ensure_ascii=False)
+
+    model = _DataQueryFlowModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "sqlrag_retrieve",
+                        "id": "rag-new-turn",
+                        "args": {"operation": "hybrid-search", "query": "重新查询"},
+                    }
+                ],
+            ),
+            AIMessage(content="已完成检索"),
+        ]
+    )
+    ability = DataAgentServiceAbility(_config())
+    graph = create_agent(
+        model=model,
+        tools=[fake_tablerag],
+        middleware=ability.build_middlewares(),
+        state_schema=ThreadState,
+    )
+
+    final_state = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(id="turn-old", content="上一轮查询"),
+                HumanMessage(id="turn-new", content="重新查询"),
+            ],
+            "service_states": [
+                {
+                    "service_name": "data_query",
+                    "version": 1,
+                    "turn_id": "turn-old",
+                    "stage": "needs_refinement",
+                    "payload": {"retrieval": {"ok": False}},
+                }
+            ],
+        }
+    )
+
+    active = final_state["service_states"][0]
+    assert active["turn_id"] == "turn-new"
+    assert active["stage"] == "retrieving"
+
+
 def test_table_rag_middleware_registers_successful_result_in_service_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """TableRAG 正式工具调用成功后只写 service_states，不写顶层业务字段。"""
     monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
@@ -552,8 +675,13 @@ def test_new_visible_turn_cannot_execute_old_approval_snapshot() -> None:
         lambda _request: pytest.fail("旧 Snapshot 不得进入 SQL SubAgent"),
     )
 
-    assert isinstance(result, ToolMessage)
-    assert json.loads(result.content)["error_code"] == "SQL_STAGE_NOT_APPROVED"
+    assert not isinstance(result, ToolMessage)
+    message = result.update["messages"][0]
+    assert json.loads(message.content)["error_code"] == "SQL_STAGE_NOT_APPROVED"
+    assert read_subagent_result_metadata(message.additional_kwargs) == {
+        "status": "failed",
+        "error": "SQL_STAGE_NOT_APPROVED",
+    }
 
 
 def test_query_approval_middleware_accepts_only_matching_hidden_response() -> None:
@@ -1385,8 +1513,13 @@ def test_sql_stage_middleware_blocks_target_when_custom_agent_did_not_allowlist_
         lambda _request: pytest.fail("未授权 SQL SubAgent 不得进入 task handler"),
     )
 
-    assert isinstance(result, ToolMessage)
-    assert json.loads(result.content)["error_code"] == "SQL_STAGE_NOT_APPROVED"
+    assert not isinstance(result, ToolMessage)
+    message = result.update["messages"][0]
+    assert json.loads(message.content)["error_code"] == "SQL_STAGE_NOT_APPROVED"
+    assert read_subagent_result_metadata(message.additional_kwargs) == {
+        "status": "failed",
+        "error": "SQL_STAGE_NOT_APPROVED",
+    }
 
 
 def test_sql_stage_middleware_keeps_only_one_sql_subagent_call_per_model_response() -> None:
@@ -1486,8 +1619,13 @@ def test_sql_only_parent_rejects_fabricated_execution_payload() -> None:
 
     result = SqlStageMiddleware(_config()).wrap_tool_call(request, handler)
 
-    assert isinstance(result, ToolMessage)
-    assert json.loads(result.content)["error_code"] == "SQL_SUBAGENT_CONTRACT_INVALID"
+    assert not isinstance(result, ToolMessage)
+    message = result.update["messages"][0]
+    assert json.loads(message.content)["error_code"] == "SQL_SUBAGENT_CONTRACT_INVALID"
+    assert read_subagent_result_metadata(message.additional_kwargs) == {
+        "status": "failed",
+        "error": "SQL_SUBAGENT_CONTRACT_INVALID",
+    }
 
 
 def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch: pytest.MonkeyPatch) -> None:

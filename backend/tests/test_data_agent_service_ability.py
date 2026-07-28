@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from deerflow.agents.service_agent.binding import resolve_data_source_binding
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig, parse_service_ability
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility, resolve_service_ability, resolve_service_ability_safely
+from deerflow.agents.service_agent.turn_reset_middleware import DataAgentTurnResetMiddleware
 from deerflow.agents.thread_state import merge_service_states
 from deerflow.config.agents_config import AgentConfig, preserve_non_managed_fields
 from deerflow.tools.tools import BUILTIN_TOOLS
@@ -51,6 +52,16 @@ def test_agent_config_preserves_service_ability() -> None:
     assert preserved["service_ability"] == raw
 
 
+def test_data_agent_service_ability_registers_turn_reset_first() -> None:
+    """DataAgent 业务 middleware 必须先隔离用户轮次，再处理检索和标签状态。"""
+    config = parse_service_ability(_ability_config())
+    assert config is not None
+
+    middlewares = DataAgentServiceAbility(config).build_middlewares()
+
+    assert isinstance(middlewares[0], DataAgentTurnResetMiddleware)
+
+
 def test_parse_service_ability_normalizes_postgres_alias() -> None:
     """PostgreSQL 方言别名归一化为唯一合同值。"""
     raw = _ability_config()
@@ -61,6 +72,19 @@ def test_parse_service_ability_normalizes_postgres_alias() -> None:
     assert isinstance(parsed, DataQueryServiceAbilityConfig)
     assert parsed.sql_execution.database_type == "postgresql"
     assert parsed.model_extra == {}
+
+
+def test_parse_service_ability_rejects_removed_static_table_column_allowlists() -> None:
+    """已删除的静态表/字段配置不能继续进入 SQL Execution 合同。"""
+    raw = _ability_config()
+    raw["sql_execution"] = {
+        **raw["sql_execution"],  # type: ignore[arg-type]
+        "allowed_tables": ["orders"],
+        "allowed_columns": ["orders.region"],
+    }
+
+    with pytest.raises(ValidationError):
+        parse_service_ability(raw)
 
 
 @pytest.mark.parametrize(

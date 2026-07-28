@@ -49,13 +49,6 @@ def _config(*, max_execution_attempts: int = 3) -> DataQueryServiceAbilityConfig
                 "max_cell_chars": 200,
                 "max_result_chars": 10_000,
                 "allowed_schemas": ["public"],
-                "allowed_tables": ["orders", "public.orders"],
-                "allowed_columns": [
-                    "region",
-                    "missing_region",
-                    "orders.region",
-                    "orders.missing_region",
-                ],
             },
         }
     )
@@ -131,7 +124,7 @@ def test_sql_execution_service_validates_and_returns_json_safe_rows(monkeypatch:
 
 
 def test_sql_execution_service_supports_manual_ui_without_retrieval_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """前端手动执行必须复用只读和白名单校验，但不要求伪造 Query Snapshot。"""
+    """前端手动执行必须复用只读和 Schema 校验，但不要求伪造 Query Snapshot。"""
     config = _config()
     service = SqlExecutionService(config)
 
@@ -160,6 +153,41 @@ def test_sql_execution_service_supports_manual_ui_without_retrieval_registry(mon
     assert validation["snapshot_id"] is None
     assert result["ok"] is True
     assert result["rows"] == [{"region": "华东"}]
+
+
+def test_manual_ui_does_not_require_static_table_or_column_allowlist() -> None:
+    """前端手动执行不能因缺少已删除的表/字段静态配置而拒绝 SQL。"""
+    validation = SqlExecutionService(_config()).validate(
+        SqlValidationRequest(
+            sql="SELECT unknown_column FROM public.unknown_table",
+            source="manual_ui",
+        )
+    )
+
+    assert validation["valid"] is True
+    assert "error_code" not in validation
+
+
+@pytest.mark.parametrize(
+    ("sql", "error_code"),
+    [
+        ("SELECT COUNT(1) FROM public.unknown_table", "SQL_TABLE_NOT_IN_RETRIEVAL"),
+        ("SELECT orders.unknown_column FROM public.orders", "SQL_COLUMN_NOT_IN_RETRIEVAL"),
+    ],
+)
+def test_subagent_keeps_table_rag_registry_constraints(sql: str, error_code: str) -> None:
+    """SQL SubAgent 仍只能使用当前 TableRAG registry 登记的表和字段。"""
+    config = _config()
+    validation = SqlExecutionService(config).validate(
+        SqlValidationRequest(
+            sql=sql,
+            retrieval=_retrieval(config),
+            snapshot_id="snapshot-1",
+        )
+    )
+
+    assert validation["valid"] is False
+    assert validation["error_code"] == error_code
 
 
 def test_sql_execution_service_rejects_cross_source_validation() -> None:
@@ -191,15 +219,17 @@ def test_sql_execution_service_rejects_cross_source_validation() -> None:
     ("sql", "error_code"),
     [
         ("DELETE FROM public.orders", "SQL_READONLY_REQUIRED"),
-        ("SELECT orders.region FROM public.users", "SQL_TABLE_NOT_ALLOWED"),
+        ("SELECT region FROM private.orders", "SQL_SCHEMA_NOT_ALLOWED"),
     ],
 )
-def test_manual_ui_keeps_readonly_and_allowlist_guards(sql: str, error_code: str) -> None:
-    """前端手动执行不能绕过只读和数据库对象白名单。"""
+def test_manual_ui_keeps_readonly_and_schema_guards(sql: str, error_code: str) -> None:
+    """前端手动执行不能绕过只读和 Schema 约束，但不依赖静态表/字段列表。"""
     validation = SqlExecutionService(_config()).validate(SqlValidationRequest(sql=sql, source="manual_ui"))
 
     assert validation["valid"] is False
     assert validation["error_code"] == error_code
+    if error_code == "SQL_SCHEMA_NOT_ALLOWED":
+        assert validation["error_message"] == "Schema `private` 未配置在 sql_execution.allowed_schemas 中。"
 
 
 def test_sql_execution_service_returns_repairable_database_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -247,6 +277,56 @@ def test_sql_execution_service_returns_repairable_database_error(monkeypatch: py
     assert "postgresql://" not in str(result)
 
 
+def test_sql_execution_service_preserves_mysql_primary_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MySQL 字段错误必须把驱动主错误传给前端和 SQL SubAgent。"""
+    monkeypatch.setenv(
+        "DATA_AGENT_SQL_DSN",
+        "mysql+pymysql://readonly:secret@db.local:3306/sales",
+    )
+    monkeypatch.setenv(
+        "TABLERAG_MCP_INDEX_DSN",
+        "mysql+pymysql://readonly:secret@db.local:3306/sales",
+    )
+    payload = _config().model_dump(mode="python")
+    payload["sql_execution"].update(
+        {
+            "database_type": "mysql",
+            "allowed_schemas": ["sales"],
+        }
+    )
+    config = DataQueryServiceAbilityConfig.model_validate(payload)
+    service = SqlExecutionService(config)
+    validation = service.validate(
+        SqlValidationRequest(
+            sql="SELECT orders.missing_region FROM sales.orders",
+            source="manual_ui",
+        )
+    )
+
+    class UnknownColumnError(Exception):
+        """模拟 MySQL 1054 未知字段异常。"""
+
+    monkeypatch.setattr(
+        "deerflow.agents.service_agent.sql_executor._execute_mysql",
+        lambda sql, dsn, ability: (_ for _ in ()).throw(UnknownColumnError(1054, "Unknown column 'orders.missing_region' in 'field list'")),
+    )
+
+    result = service.execute(
+        SqlExecutionRequest(
+            sql=validation["executable_sql"],
+            validation_digest=validation["validation_digest"],
+            validation=validation,
+            source="manual_ui",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error_category"] == "unknown_column"
+    assert result["error_message"] == "Unknown column 'orders.missing_region' in 'field list'"
+
+
 @pytest.mark.parametrize(
     ("database_type", "error_args", "sqlstate", "expected_category", "expected_retryable", "expected_action"),
     [
@@ -282,6 +362,8 @@ def test_sql_executor_classifies_postgres_and_mysql_errors(
     assert result.retryable is expected_retryable
     assert result.recommended_action == expected_action
     assert "super-secret" not in str(result)
+    if database_type == "mysql" and error_args[0] == 1054:
+        assert result.message == "Unknown column 'missing_region' in 'field list'"
 
 
 def test_sql_subagent_can_revalidate_repaired_sql_and_execute_again(monkeypatch: pytest.MonkeyPatch) -> None:

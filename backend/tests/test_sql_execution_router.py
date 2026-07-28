@@ -32,8 +32,6 @@ def _service_ability(*, enabled: bool = True) -> dict:
             "max_cell_chars": 200,
             "max_result_chars": 10_000,
             "allowed_schemas": ["public"],
-            "allowed_tables": ["orders", "public.orders"],
-            "allowed_columns": ["region", "orders.region"],
         },
     }
 
@@ -115,7 +113,8 @@ def test_execute_sql_returns_validation_error_without_calling_driver() -> None:
         validate=lambda request: {
             "version": 1,
             "valid": False,
-            "error_code": "SQL_READONLY_REQUIRED",
+            "error_code": "SQL_SCHEMA_NOT_ALLOWED",
+            "error_message": "Schema `private` 未配置在 sql_execution.allowed_schemas 中。",
         },
         aexecute=AsyncMock(),
     )
@@ -135,8 +134,9 @@ def test_execute_sql_returns_validation_error_without_calling_driver() -> None:
 
     assert response.status_code == 200
     assert response.json()["ok"] is False
-    assert response.json()["error_code"] == "SQL_READONLY_REQUIRED"
+    assert response.json()["error_code"] == "SQL_SCHEMA_NOT_ALLOWED"
     assert response.json()["error_category"] == "validation_error"
+    assert response.json()["error_message"] == "Schema `private` 未配置在 sql_execution.allowed_schemas 中。"
     service.aexecute.assert_not_awaited()
 
 

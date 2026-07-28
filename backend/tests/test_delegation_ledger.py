@@ -149,6 +149,23 @@ class TestExtractDelegations:
         assert out[0]["result_ref"] == "tm_cancelled"
         assert len(out[0]["result_sha256"]) == 64
 
+    def test_legacy_sql_stage_error_is_terminal(self):
+        """旧 SQL 阶段错误消息必须恢复为 failed，不能继续显示 in_progress。"""
+        msgs = [
+            _ai_task_call("call_sql", "generate SQL", "sql-subagent"),
+            ToolMessage(
+                content='{"version":1,"ok":false,"error_code":"SQL_STAGE_NOT_APPROVED"}',
+                tool_call_id="call_sql",
+                id="tm_sql",
+                name="task",
+            ),
+        ]
+
+        out = extract_delegations(msgs)
+
+        assert out[0]["status"] == "failed"
+        assert out[0]["result_brief"] == "SQL_STAGE_NOT_APPROVED"
+
     def test_structured_result_metadata_wins_over_misleading_content(self):
         msgs = [
             _ai_task_call("call_1", "research auth"),
