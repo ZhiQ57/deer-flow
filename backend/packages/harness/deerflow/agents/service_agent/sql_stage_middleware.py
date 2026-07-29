@@ -14,7 +14,8 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
-from deerflow.subagents.status_contract import make_subagent_additional_kwargs
+from deerflow.subagents.status_contract import make_subagent_additional_kwargs, read_subagent_result_metadata
+from deerflow.utils.messages import message_content_to_text
 
 from .config import DataQueryServiceAbilityConfig
 from .sql_executor import SqlExecutionService, SqlValidationRequest
@@ -133,6 +134,42 @@ class SqlStageMiddleware(AgentMiddleware):
             return None
         return next((message for message in reversed(messages) if isinstance(message, ToolMessage)), None)
 
+    @staticmethod
+    def _sql_error_code(error: object) -> str:
+        """从子任务失败元数据中提取安全 SQL 错误码。"""
+        if isinstance(error, str):
+            candidate = error.strip().split(maxsplit=1)[0].strip("。.,;:")
+            if candidate.startswith("SQL_") and len(candidate) <= 100:
+                return candidate
+        return "SQL_SUBAGENT_FAILED"
+
+    @staticmethod
+    def _artifact_payload(message: ToolMessage) -> dict[str, Any] | None:
+        """优先读取 ToolMessage artifact 中的 SQL 结果合同。"""
+        artifact = getattr(message, "artifact", None)
+        if isinstance(artifact, Mapping):
+            return dict(artifact)
+        additional_kwargs = message.additional_kwargs
+        if isinstance(additional_kwargs, Mapping) and isinstance(additional_kwargs.get("artifact"), Mapping):
+            return dict(additional_kwargs["artifact"])
+        return None
+
+    @staticmethod
+    def _content_payload(message: ToolMessage) -> dict[str, Any] | None:
+        """兼容旧 task 文本结果中的 JSON 合同。"""
+        raw = message_content_to_text(message.content)
+        if "Result:" in raw:
+            raw = raw.split("Result:", 1)[1].strip()
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return dict(parsed) if isinstance(parsed, Mapping) else None
+
+    def _payload_from_message(self, message: ToolMessage) -> dict[str, Any] | None:
+        """从 task 结果读取 SQL 合同，artifact 优先，content 仅作兼容。"""
+        return self._artifact_payload(message) or self._content_payload(message)
+
     def _merge_result(self, request: ToolCallRequest, result: ToolMessage | Command) -> ToolMessage | Command:
         """验证子代理返回并投影 sql_ready/failed 阶段。"""
         message = self._result_message(result)
@@ -142,14 +179,13 @@ class SqlStageMiddleware(AgentMiddleware):
         active = get_active_service_state(state)
         if active is None:
             return self._error(request, "SQL_SNAPSHOT_MISSING")
-        content = message.content
-        raw = content if isinstance(content, str) else ""
-        if "Result:" in raw:
-            raw = raw.split("Result:", 1)[1].strip()
-        try:
-            parsed = json.loads(raw)
-        except (TypeError, json.JSONDecodeError):
-            parsed = None
+        subagent_result = read_subagent_result_metadata(message.additional_kwargs)
+        if subagent_result is not None and subagent_result["status"] != "completed":
+            # ADD: task_tool 自己已经知道 SQL 子任务失败原因时，父阶段直接透传真实 SQL_* 错误码，
+            # 避免把上游工具结果无效、超时或执行失败二次误报为合同解析失败。
+            return self._error(request, self._sql_error_code(subagent_result.get("error")))
+
+        parsed = self._payload_from_message(message)
         if (
             not isinstance(parsed, Mapping)
             or parsed.get("version") != 1

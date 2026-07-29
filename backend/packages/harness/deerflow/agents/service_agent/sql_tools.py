@@ -30,6 +30,19 @@ def _json_content(value: Mapping[str, Any]) -> str:
     return json.dumps(dict(value), ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _tool_response(value: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    """构造 SQL 工具的内容和 artifact 双通道响应。
+
+    Args:
+        value: SQL 校验或执行结果。
+
+    Returns:
+        第一个元素是给模型看的 JSON 文本，第二个元素是父流程重建合同使用的结构化 artifact。
+    """
+    payload = dict(value)
+    return _json_content(payload), payload
+
+
 def build_sql_tools(
     config: DataQueryServiceAbilityConfig,
     service_state: Mapping[str, Any],
@@ -66,14 +79,14 @@ def build_sql_tools(
     snapshot_id = str(service_state.get("snapshot_id") or "")
     max_attempts = config.sql_execution.max_execution_attempts
 
-    def validate(sql: str) -> str:
+    def validate(sql: str) -> tuple[str, dict[str, Any]]:
         """校验候选 SQL，并登记新的可执行校验轮次。
 
         Args:
             sql: SQL 模型生成或修复后的候选 SQL。
 
         Returns:
-            版本化 SQL 校验 JSON。
+            版本化 SQL 校验 JSON，以及同内容的结构化 artifact。
         """
         nonlocal validation_generation
         result = sql_executor.validate(
@@ -88,9 +101,9 @@ def build_sql_tools(
                 validation_holder.clear()
                 validation_holder.update(result)
                 validation_generation += 1
-        return _json_content(result)
+        return _tool_response(result)
 
-    def execute(sql: str, validation_digest: str) -> str:
+    def execute(sql: str, validation_digest: str) -> tuple[str, dict[str, Any]]:
         """执行最近一次尚未消费的有效 SQL 校验结果。
 
         Args:
@@ -98,13 +111,13 @@ def build_sql_tools(
             validation_digest: 同一次校验返回的服务端摘要。
 
         Returns:
-            版本化 SQL 执行 JSON。
+            版本化 SQL 执行 JSON，以及同内容的结构化 artifact。
         """
         nonlocal consumed_validation_generation, execution_attempts, execution_succeeded
         with session_lock:
             validation_matches = validation_holder.get("valid") is True and validation_holder.get("sql_sha256") == sql_digest(sql) and validation_holder.get("validation_digest") == validation_digest
             if not validation_matches:
-                return _json_content(
+                return _tool_response(
                     {
                         "version": 1,
                         "ok": False,
@@ -132,7 +145,7 @@ def build_sql_tools(
                     error_category = "validation_reuse"
                     retryable = True
                     recommended_action = "revalidate_sql"
-                return _json_content(
+                return _tool_response(
                     {
                         "version": 1,
                         "ok": False,
@@ -165,13 +178,14 @@ def build_sql_tools(
         if result.get("ok") is True:
             with session_lock:
                 execution_succeeded = True
-        return _json_content(result)
+        return _tool_response(result)
 
     tools: list[BaseTool] = [
         StructuredTool.from_function(
             func=validate,
             name="data_validate_sql",
             description="按当前 DataAgent Evidence、数据库方言和 Schema 约束校验单条只读 SQL；SQL 修复后必须重新调用。",
+            response_format="content_and_artifact",
         )
     ]
     if action == "execute":
@@ -180,6 +194,7 @@ def build_sql_tools(
                 func=execute,
                 name="data_execute_sql",
                 description="执行最近一次尚未消费的 data_validate_sql 结果；执行失败后必须修复或确认 SQL，并重新校验后才能再次执行。",
+                response_format="content_and_artifact",
             )
         )
     return tools

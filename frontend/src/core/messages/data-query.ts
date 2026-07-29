@@ -132,6 +132,7 @@ const DATA_QUERY_INTERNAL_KINDS = new Set([
 
 const DATA_QUERY_INTERNAL_ERROR_LABELS: Record<string, string> = {
   SQL_STAGE_NOT_APPROVED: "SQL 阶段尚未获得查询意图确认",
+  SQL_SUBAGENT_FAILED: "SQL 子任务执行失败",
   SQL_SUBAGENT_CONTRACT_INVALID: "SQL 子任务返回格式不符合 DataAgent 合同",
   SQL_SUBAGENT_TOOL_RESULT_INVALID: "SQL 子任务未产生有效的校验/执行结果",
   SQL_BINDING_MISMATCH: "SQL 绑定与当前查询快照不一致",

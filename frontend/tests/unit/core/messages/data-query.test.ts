@@ -148,6 +148,11 @@ describe("parseDataQueryLabelsArtifact", () => {
     ).toContain("SQL 子任务返回格式不符合 DataAgent 合同");
     expect(
       summarizeDataQueryInternalPayloadText(
+        '{"version":1,"ok":false,"error_code":"SQL_SUBAGENT_FAILED"}',
+      ),
+    ).toContain("SQL 子任务执行失败");
+    expect(
+      summarizeDataQueryInternalPayloadText(
         '{"ok":false,"error":"当前查询阶段不允许重复发布标签。"}',
       ),
     ).toBe("内部工具执行失败，已隐藏协议内容。(当前查询阶段不允许重复发布标签。)");

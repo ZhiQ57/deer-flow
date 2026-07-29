@@ -315,8 +315,8 @@ DataAgent Lead
       ├─ 禁止递归 task
       ├─ 继承用户身份、Thread、Run 和授权上下文
       ├─ 动态装配 SQL 工具
-      │  ├─ data_validate_sql
-      │  └─ data_execute_sql（仅 action=execute）
+      │  ├─ data_validate_sql（content + artifact）
+      │  └─ data_execute_sql（仅 action=execute，content + artifact）
       │
       ├─ SubagentExecutor.execute_async()
       └─ 发送 task_* Custom Event
@@ -397,7 +397,7 @@ SQL SubAgent 模型
                      ├─ 设置执行超时
                      ├─ 执行 SQL
                      ├─ rollback + close
-                     └─ 返回 JSON 安全结果
+      └─ 返回 JSON 安全结果，并同时写入 artifact
                         │
                         ├─ 成功
                         │  ├─ columns
@@ -444,10 +444,13 @@ SubagentExecutor 捕获真实 ToolMessage
    │
    └─ task_tool 重建 data_query_sql_result
       ├─ 不信任 SQL 模型最终自由文本
-      ├─ 只信任真实 SQL 工具输出
+      ├─ 优先读取 SQL 工具 artifact
+      ├─ 兼容旧 content JSON
       └─ 返回 task ToolMessage
          │
          └─ SqlStageMiddleware._merge_result()
+            ├─ 优先读取 task artifact
+            ├─ 若 task 已失败且携带 SQL_* 错误码则直接透传
             ├─ 校验 snapshot_id
             ├─ 校验 data_source_id
             ├─ 校验 validation_digest

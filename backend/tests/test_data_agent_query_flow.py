@@ -35,7 +35,7 @@ from deerflow.agents.service_agent.state import (
 from deerflow.agents.service_agent.table_rag_middleware import TableRagStageMiddleware
 from deerflow.agents.service_agent.turn_reset_middleware import DataAgentTurnResetMiddleware
 from deerflow.agents.thread_state import ThreadState, merge_service_states
-from deerflow.subagents.status_contract import read_subagent_result_metadata
+from deerflow.subagents.status_contract import make_subagent_additional_kwargs, read_subagent_result_metadata
 from deerflow.tools.builtins.query_labels_tool import publish_query_labels_tool
 from deerflow.tools.builtins.task_tool import _build_data_query_sql_result_from_steps
 
@@ -1218,6 +1218,51 @@ def test_sql_only_snapshot_never_exposes_database_execution_tool() -> None:
     assert [tool.name for tool in tools] == ["data_validate_sql"]
 
 
+def test_sql_tools_attach_artifact_for_agent_tool_messages() -> None:
+    """SQL 工具在真实 Agent 工具节点中必须同时输出 content 和 artifact。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    tools = build_sql_tools(
+        _config(),
+        {
+            "snapshot_id": "sha256:snapshot",
+            "payload": {"retrieval": retrieval, "approval": {"status": "approved", "action": "sql_only"}},
+        },
+    )
+    model = _DataQueryFlowModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "data_validate_sql",
+                        "id": "validate-artifact-1",
+                        "args": {"sql": "SELECT orders.region FROM public.orders"},
+                    }
+                ],
+            ),
+            AIMessage(content="已生成 SQL。"),
+        ]
+    )
+    graph = create_agent(
+        model=model,
+        tools=tools,
+        state_schema=ThreadState,
+    )
+
+    final_state = graph.invoke({"messages": [HumanMessage(id="turn-artifact-1", content="生成 SQL")]})
+
+    message = next(message for message in final_state["messages"] if isinstance(message, ToolMessage) and message.name == "data_validate_sql")
+    assert json.loads(message.content)["valid"] is True
+    assert message.artifact["valid"] is True
+    assert message.artifact["snapshot_id"] == "sha256:snapshot"
+
+
 def test_sql_execution_tool_allows_only_one_authorized_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
     """同一快照的授权 SQL 即使连接失败也不能自动重复执行。"""
     monkeypatch.delenv("DATA_AGENT_SQL_DSN", raising=False)
@@ -1320,8 +1365,8 @@ def test_task_result_uses_authoritative_sql_tool_steps_not_subagent_free_text() 
         },
     }
     steps = [
-        {"type": "tool", "name": "data_validate_sql", "content": json.dumps(validation, ensure_ascii=False)},
-        {"type": "tool", "name": "data_execute_sql", "content": json.dumps(execution, ensure_ascii=False)},
+        {"type": "tool", "name": "data_validate_sql", "content": "[budgeted validate preview]", "artifact": validation},
+        {"type": "tool", "name": "data_execute_sql", "content": "[budgeted execute preview]", "artifact": execution},
         {
             "type": "ai",
             "content": json.dumps(
@@ -1364,6 +1409,137 @@ def test_task_result_uses_authoritative_sql_tool_steps_not_subagent_free_text() 
         )
         is None
     )
+
+
+def test_sql_stage_middleware_prefers_task_artifact_over_budgeted_content() -> None:
+    """父 SQL 阶段必须优先读取 task artifact，不能被预算后的 content 截断误伤。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    validation = validate_sql(
+        "SELECT orders.region FROM public.orders",
+        config=_config(),
+        retrieval=retrieval,
+        snapshot_id="sha256:snapshot",
+    )
+    execution = {
+        "version": 1,
+        "ok": True,
+        "snapshot_id": "sha256:snapshot",
+        "validation_digest": validation["validation_digest"],
+        "columns": ["region"],
+        "rows": [{"region": "华东"}],
+        "row_count": 1,
+        "returned_row_count": 1,
+        "truncated": False,
+        "empty": False,
+    }
+    state = {
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-1",
+                "snapshot_id": "sha256:snapshot",
+                "stage": "approved",
+                "payload": {
+                    "retrieval": retrieval,
+                    "labels": {"intent": "detail", "labels": []},
+                    "approval": {"status": "approved", "action": "execute"},
+                },
+            }
+        ]
+    }
+    request = ToolCallRequest(
+        tool_call={
+            "name": "task",
+            "id": "task-artifact",
+            "args": {"description": "SQL", "prompt": "ignored", "subagent_type": "sql-subagent"},
+        },
+        tool=None,
+        state=state,
+        runtime=MagicMock(),
+    )
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        return ToolMessage(
+            content="Task Succeeded. Result: [budgeted content preview]",
+            artifact={
+                "version": 1,
+                "kind": "data_query_sql_result",
+                "snapshot_id": "sha256:snapshot",
+                "data_source_id": "sales-pg",
+                "validation": validation,
+                "execution": execution,
+            },
+            tool_call_id="task-artifact",
+            name="task",
+        )
+
+    result = SqlStageMiddleware(_config()).wrap_tool_call(request, handler)
+
+    assert result.update["service_states"][0]["stage"] == "succeeded"
+    assert result.update["messages"][0].artifact["execution"] == execution
+
+
+def test_sql_stage_middleware_surfaces_task_failure_code_instead_of_contract_error() -> None:
+    """task 已经给出 SQL_* 失败码时，父阶段应透传真实失败原因。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    state = {
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-1",
+                "snapshot_id": "sha256:snapshot",
+                "stage": "approved",
+                "payload": {
+                    "retrieval": retrieval,
+                    "labels": {"intent": "detail", "labels": []},
+                    "approval": {"status": "approved", "action": "execute"},
+                },
+            }
+        ]
+    }
+    request = ToolCallRequest(
+        tool_call={
+            "name": "task",
+            "id": "task-failed",
+            "args": {"description": "SQL", "prompt": "ignored", "subagent_type": "sql-subagent"},
+        },
+        tool=None,
+        state=state,
+        runtime=MagicMock(),
+    )
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        return ToolMessage(
+            content="Task failed. Error: SQL_SUBAGENT_TOOL_RESULT_INVALID",
+            tool_call_id="task-failed",
+            name="task",
+            additional_kwargs=make_subagent_additional_kwargs(
+                "failed",
+                error="SQL_SUBAGENT_TOOL_RESULT_INVALID",
+            ),
+        )
+
+    result = SqlStageMiddleware(_config()).wrap_tool_call(request, handler)
+
+    assert json.loads(result.update["messages"][0].content)["error_code"] == "SQL_SUBAGENT_TOOL_RESULT_INVALID"
+    assert read_subagent_result_metadata(result.update["messages"][0].additional_kwargs) == {
+        "status": "failed",
+        "error": "SQL_SUBAGENT_TOOL_RESULT_INVALID",
+    }
 
 
 def test_sql_only_authoritative_result_rejects_any_execution_step() -> None:
