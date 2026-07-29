@@ -5,6 +5,7 @@ import {
   parseDataQueryReviewDecisions,
   parseDataQueryLabelsArtifact,
   parseDataQuerySqlResultArtifact,
+  summarizeDataQueryInternalPayloadText,
 } from "@/core/messages/data-query";
 
 function artifact() {
@@ -19,7 +20,6 @@ function artifact() {
     binding_fingerprint: "sha256:target",
     intent: "ranking",
     summary: "查询华东销售额最高的商品",
-    confidence: 0.92,
     ambiguities: [],
     ambiguity_items: [],
     labels: [
@@ -128,6 +128,34 @@ describe("parseDataQueryLabelsArtifact", () => {
       parseDataQueryReviewDecisions(response)["ambiguity:time"]?.decision,
     ).toBe("accept");
     expect(response.value).toContain('"final_action":"execute"');
+  });
+
+  it("summarizes internal DataAgent payloads instead of exposing raw JSON text", () => {
+    expect(
+      summarizeDataQueryInternalPayloadText(
+        JSON.stringify({
+          original_query: "查询本月病例数",
+          intent: "aggregation",
+          entities: [],
+          labels: [],
+        }),
+      ),
+    ).toBe("实体抽取结果已进入查询标签流程。");
+    expect(
+      summarizeDataQueryInternalPayloadText(
+        '{"version":1,"ok":false,"error_code":"SQL_SUBAGENT_CONTRACT_INVALID"}',
+      ),
+    ).toContain("SQL 子任务返回格式不符合 DataAgent 合同");
+    expect(
+      summarizeDataQueryInternalPayloadText(
+        '{"ok":false,"error":"当前查询阶段不允许重复发布标签。"}',
+      ),
+    ).toBe("内部工具执行失败，已隐藏协议内容。(当前查询阶段不允许重复发布标签。)");
+    expect(
+      summarizeDataQueryInternalPayloadText(
+        '{"version":1,"kind":"data_query_sql_response","validation":{"status":"pending"}}',
+      ),
+    ).toBe("SQL 子任务返回了未完成的内部响应，已隐藏协议内容。");
   });
 });
 

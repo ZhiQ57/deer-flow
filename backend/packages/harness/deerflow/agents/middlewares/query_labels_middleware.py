@@ -273,8 +273,8 @@ class QueryLabelsMiddleware(AgentMiddleware):
             if not isinstance(item, Mapping):
                 raise ValueError(f"labels[{index}] 必须是对象。")
             normalized_labels.append(dict(item))
-        confidence = args.get("confidence")
-        # ADD: 缺失 ambiguities 不能默认为空数组，否则模型可用高 confidence 绕过人工确认。
+        # ADD: confidence 不再作为模型可见/可控参数，避免模型反复调整置信度造成标签快照抖动。
+        # 缺失 ambiguities 不能默认为空数组，否则模型可绕过人工确认。
         ambiguities_declared = "ambiguities" in args and args.get("ambiguities") is not None
         ambiguities = args.get("ambiguities") if ambiguities_declared else []
         if not ambiguities_declared:
@@ -296,7 +296,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
             intent=str(args.get("intent") or ""),
             labels=normalized_labels,
             summary=args.get("summary") if isinstance(args.get("summary"), str) else None,
-            confidence=confidence,
+            confidence=None,
             ambiguities=ambiguities,
             ambiguities_declared=ambiguities_declared,
         )
@@ -336,7 +336,6 @@ class QueryLabelsMiddleware(AgentMiddleware):
             "turn_id": turn_id,
             "intent": snapshot["intent"],
             "summary": snapshot.get("summary"),
-            "confidence": snapshot.get("confidence"),
             "ambiguities": snapshot["ambiguities"],
             "ambiguity_items": build_query_review_items(snapshot),
             "labels": snapshot["labels"],

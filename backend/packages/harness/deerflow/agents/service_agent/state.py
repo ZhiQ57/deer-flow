@@ -337,13 +337,14 @@ def build_query_label_snapshot(
     intent: str,
     labels: Sequence[Mapping[str, Any]],
     summary: str | None,
-    confidence: float | None,
     ambiguities: Sequence[str],
+    confidence: float | None = None,
     ambiguities_declared: bool = True,
 ) -> dict[str, Any]:
     """构造 DataAgent 查询标签快照。
 
     Args:
+        confidence: 服务端或历史合同提供的可选置信度；当前模型工具不再接收该字段。
         ambiguities_declared: 模型是否明确提交了 ambiguities 字段；缺失字段不能被当作“无歧义”。
     """
     if retrieval.get("ok") is not True or retrieval.get("data_source_id") != data_source_id:
@@ -391,13 +392,18 @@ def build_query_label_snapshot(
     }
 
 
-# ADD: 统一计算自动批准或人工确认，任何缺失字段均按 fail closed 处理。
+# ADD: 统一计算自动批准或人工确认；当前模型路径不再依赖自报 confidence。
 def decide_query_approval(
     config: DataQueryServiceAbilityConfig,
     snapshot: Mapping[str, Any],
 ) -> dict[str, Any]:
     """根据 confirmation_mode 计算标签快照的批准状态。"""
     confidence = snapshot.get("confidence")
+    confidence_ok = confidence is None or (
+        isinstance(confidence, (int, float))
+        and not isinstance(confidence, bool)
+        and float(confidence) >= config.min_auto_confidence
+    )
     ambiguities = snapshot.get("ambiguities")
     complete = (
         isinstance(snapshot.get("snapshot_id"), str)
@@ -407,9 +413,7 @@ def decide_query_approval(
         and isinstance(snapshot.get("labels"), list)
         and bool(snapshot.get("labels"))
         and snapshot.get("ambiguities_declared") is True
-        and isinstance(confidence, (int, float))
-        and not isinstance(confidence, bool)
-        and float(confidence) >= config.min_auto_confidence
+        and confidence_ok
         and isinstance(ambiguities, list)
         and not ambiguities
     )

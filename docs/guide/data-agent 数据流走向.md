@@ -250,7 +250,7 @@ DataAgent Graph 开始
    ├─ 工具：publish_query_labels
    │  └─ QueryLabelsMiddleware 实际接管执行
    │     ├─ 验证 Evidence refs 属于当前 Retrieval
-   │     ├─ 构造 intent / labels / confidence / ambiguities
+   │     ├─ 构造 intent / labels / ambiguities（不再接收模型自报 confidence）
    │     ├─ 服务端生成 snapshot_id
    │     ├─ 生成 data_query_labels Artifact
    │     └─ 执行确认策略

@@ -17,7 +17,6 @@ const artifact: QueryIntentArtifact = {
   binding_fingerprint: "sha256:target",
   intent: "ranking",
   summary: "查询华东销售额最高的商品",
-  confidence: 0.92,
   ambiguities: ["是否排除退款"],
   ambiguity_items: [
     {
@@ -45,7 +44,7 @@ const artifact: QueryIntentArtifact = {
 };
 
 describe("QueryIntentCard", () => {
-  it("renders labels, sources, ambiguity, confidence, and pending status", () => {
+  it("renders friendly intent, labels, sources, ambiguity, evidence count, and pending status", () => {
     const html = renderToStaticMarkup(
       createElement(
         I18nContext.Provider,
@@ -71,10 +70,13 @@ describe("QueryIntentCard", () => {
     );
 
     expect(html).toContain("查询意图");
+    expect(html).toContain("排序查询");
+    expect(html).not.toContain("ranking");
     expect(html).toContain("地区: 华东");
     expect(html).toContain("(database)");
     expect(html).toContain("是否排除退款");
-    expect(html).toContain("92%");
+    expect(html).toContain("已绑定 1 条 TableRAG 依据");
+    expect(html).not.toContain("[evidence]");
     expect(html).toContain("待确认");
     expect(html).toContain("AI 需要你确认的理解");
     expect(html).toContain("按当前理解继续");

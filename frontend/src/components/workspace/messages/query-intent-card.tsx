@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createDataQueryReviewResponse,
+  formatQueryIntentLabel,
   parseDataQueryReviewDecisions,
   parseDataQueryReviewFinalAction,
   type QueryIntentArtifact,
@@ -96,7 +97,7 @@ export function QueryIntentCard({
         </Badge>
       </div>
       <div className="space-y-2 text-sm">
-        <div className="font-medium">{artifact.intent}</div>
+        <div className="font-medium">{formatQueryIntentLabel(artifact.intent)}</div>
         {artifact.summary ? <p className="text-muted-foreground">{artifact.summary}</p> : null}
         <div className="flex flex-wrap gap-2">
         {artifact.labels.map((label) => (
@@ -107,17 +108,11 @@ export function QueryIntentCard({
           ))}
         </div>
         {artifact.evidence.length > 0 ? (
-          <div className="space-y-1">
-            <div className="text-muted-foreground text-xs">TableRAG 依据</div>
-            {artifact.evidence.slice(0, 8).map((item) => (
-              <div key={item.ref} className="text-muted-foreground truncate text-xs" title={item.summary}>
-                [{item.kind}] {item.summary}
-              </div>
-            ))}
-          </div>
+          <p className="text-muted-foreground text-xs">
+            已绑定 {artifact.evidence.length} 条 TableRAG 依据
+          </p>
         ) : null}
         {artifact.ambiguities.length > 0 ? <p className="text-amber-600">待确认：{artifact.ambiguities.join("；")}</p> : null}
-        {artifact.confidence !== null && artifact.confidence !== undefined ? <p className="text-muted-foreground">置信度：{Math.round(artifact.confidence * 100)}%</p> : null}
       </div>
       {reviewItems.length > 0 ? (
         <div className="space-y-3 rounded-md border border-amber-200 bg-amber-50/60 p-3">

@@ -1,5 +1,9 @@
 import type { Message } from "@langchain/langgraph-sdk";
 
+import {
+  formatDataQueryInternalErrorCode,
+  summarizeDataQueryInternalPayloadText,
+} from "../messages/data-query";
 import { normalizeTokenUsage } from "../messages/usage";
 
 import type { Subtask } from "./types";
@@ -128,11 +132,17 @@ export function parseSubtaskResult(
 
   const update: SubtaskResultUpdate = { status: structured.status };
   if (structured.error) {
-    update.error = structured.error;
+    const error = sanitizeSubtaskDisplayText(structured.error);
+    if (error) {
+      update.error = error;
+    }
   }
   const structuredResult = readStructuredResultBrief(additionalKwargs);
   if (structured.status === "completed" && structuredResult) {
-    update.result = structuredResult;
+    const result = sanitizeSubtaskDisplayText(structuredResult);
+    if (result) {
+      update.result = result;
+    }
   }
   const stopReason = readStructuredStopReason(additionalKwargs);
   if (stopReason) {
@@ -171,16 +181,22 @@ function parseLegacyTaskResult(trimmed: string): SubtaskResultUpdate {
   }
 
   if (trimmed.startsWith(SUCCESS_PREFIX)) {
+    const result = sanitizeSubtaskDisplayText(
+      trimmed.slice(SUCCESS_PREFIX.length).trim(),
+    );
     return {
       status: "completed",
-      result: trimmed.slice(SUCCESS_PREFIX.length).trim(),
+      ...(result ? { result } : {}),
     };
   }
 
   if (trimmed.startsWith(FAILURE_PREFIX)) {
+    const error = sanitizeSubtaskDisplayText(
+      trimmed.slice(FAILURE_PREFIX.length).trim(),
+    );
     return {
       status: "failed",
-      error: trimmed.slice(FAILURE_PREFIX.length).trim(),
+      ...(error ? { error } : {}),
     };
   }
 
@@ -201,6 +217,40 @@ function parseLegacyTaskResult(trimmed: string): SubtaskResultUpdate {
   }
 
   return { status: "in_progress" };
+}
+
+export function sanitizeSubtaskDisplayText(
+  text: string | null | undefined,
+): string | undefined {
+  if (typeof text !== "string") {
+    return undefined;
+  }
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const jsonSummary = summarizeDataQueryInternalPayloadText(trimmed);
+  if (jsonSummary) {
+    return jsonSummary;
+  }
+
+  const errorPrefixStripped = trimmed.replace(/^Error:\s*/i, "");
+  if (errorPrefixStripped !== trimmed) {
+    const errorSummary =
+      summarizeDataQueryInternalPayloadText(errorPrefixStripped) ??
+      formatDataQueryInternalErrorCode(errorPrefixStripped);
+    if (errorSummary) {
+      return errorSummary;
+    }
+  }
+
+  const plainErrorSummary = formatDataQueryInternalErrorCode(trimmed);
+  if (plainErrorSummary) {
+    return plainErrorSummary;
+  }
+
+  return trimmed;
 }
 
 export function hasSubtaskToolResult(

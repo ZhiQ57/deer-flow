@@ -1,6 +1,7 @@
 import type { AIMessage, Message } from "@langchain/langgraph-sdk";
 
 import {
+  isDataQueryInternalPayloadText,
   isDataQueryLabelsToolMessage,
   isDataQuerySqlResultToolMessage,
 } from "./data-query";
@@ -43,6 +44,8 @@ const HIDDEN_CONTROL_MESSAGE_NAMES = new Set([
   "todo_reminder",
   "todo_completion_reminder",
 ]);
+
+const HIDDEN_INTERNAL_TOOL_MESSAGE_NAMES = new Set(["entity_extract_tool"]);
 
 export function getMessageGroups(messages: Message[]): MessageGroup[] {
   if (messages.length === 0) {
@@ -597,6 +600,23 @@ export function findToolCallResult(toolCallId: string, messages: Message[]) {
 
 export function isHiddenFromUIMessage(message: Message) {
   const content = extractTextFromMessage(message);
+  if (message.type === "tool") {
+    if (
+      isDataQueryLabelsToolMessage(message) ||
+      isDataQuerySqlResultToolMessage(message)
+    ) {
+      return false;
+    }
+    if (
+      typeof message.name === "string" &&
+      HIDDEN_INTERNAL_TOOL_MESSAGE_NAMES.has(message.name)
+    ) {
+      return true;
+    }
+    if (message.name !== "task" && isDataQueryInternalPayloadText(content)) {
+      return true;
+    }
+  }
   return (
     message.additional_kwargs?.hide_from_ui === true ||
     (typeof message.name === "string" &&

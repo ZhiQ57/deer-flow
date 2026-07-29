@@ -14,6 +14,7 @@ import {
   derivePendingSubtaskStatus,
   hasSubtaskToolResult,
   parseSubtaskResult,
+  sanitizeSubtaskDisplayText,
 } from "@/core/tasks/subtask-result";
 
 interface ContractFile {
@@ -93,6 +94,22 @@ describe("parseSubtaskResult", () => {
     expect(parsed.status).toBe("in_progress");
     expect(parsed.error).toBeUndefined();
     expect(parsed.result).toBeUndefined();
+  });
+
+  it("summarizes internal DataAgent JSON instead of exposing raw subtask text", () => {
+    expect(
+      sanitizeSubtaskDisplayText(
+        '{"version":1,"kind":"data_query_sql_response","validation":{"status":"pending"}}',
+      ),
+    ).toBe("SQL 子任务返回了未完成的内部响应，已隐藏协议内容。");
+    expect(
+      parseSubtaskResult(
+        'Task failed. Error: {"version":1,"ok":false,"error_code":"SQL_SUBAGENT_CONTRACT_INVALID"}',
+      ),
+    ).toEqual({
+      status: "failed",
+      error: "SQL 子任务返回格式不符合 DataAgent 合同（SQL_SUBAGENT_CONTRACT_INVALID）",
+    });
   });
 });
 

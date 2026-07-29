@@ -10,6 +10,8 @@
  * shaping for the live `task_running` event, which still carries the raw message.
  */
 
+import { summarizeDataQueryInternalPayloadText } from "../messages/data-query";
+
 export interface SubtaskStepToolCall {
   name?: string;
   args?: unknown;
@@ -95,6 +97,7 @@ export function stepsForDisplay(
   status: "in_progress" | "completed" | "failed",
 ): SubtaskStep[] {
   const visible = (steps ?? [])
+    .map((step) => normalizeSubtaskStepForDisplay(step))
     .filter((step) => step.kind === "tool" || step.text.trim() !== "")
     .sort((a, b) => a.message_index - b.message_index);
 
@@ -105,6 +108,18 @@ export function stepsForDisplay(
     }
   }
   return visible;
+}
+
+function normalizeSubtaskStepForDisplay(step: SubtaskStep): SubtaskStep {
+  const summary = summarizeDataQueryInternalPayloadText(step.text);
+  if (!summary) {
+    return step;
+  }
+  return {
+    ...step,
+    text: summary,
+    truncated: false,
+  };
 }
 
 type RunEvent = {

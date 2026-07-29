@@ -317,7 +317,7 @@ def test_query_label_snapshot_binds_database_labels_to_registry() -> None:
     ("mode", "confidence", "ambiguities", "expected"),
     [
         ("auto", 0.95, [], "approved"),
-        ("auto", None, [], "awaiting_confirmation"),
+        ("auto", None, [], "approved"),
         ("on_ambiguity", 0.95, [], "approved"),
         ("on_ambiguity", 0.80, [], "awaiting_confirmation"),
         ("on_ambiguity", 0.95, ["时间范围不明确"], "awaiting_confirmation"),
@@ -330,7 +330,7 @@ def test_confirmation_policy_is_fail_closed(
     ambiguities: list[str],
     expected: str,
 ) -> None:
-    """自动策略缺少任一必要条件时都必须转人工确认。"""
+    """自动策略不依赖模型自报置信度，但仍拒绝低置信历史快照和歧义。"""
     decision = decide_query_approval(
         _config(mode),
         {

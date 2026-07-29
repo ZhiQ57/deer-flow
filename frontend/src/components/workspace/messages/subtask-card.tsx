@@ -35,6 +35,7 @@ import {
   resolveSubtaskModelLabel,
 } from "@/core/tasks/presentation";
 import { stepsForDisplay } from "@/core/tasks/steps";
+import { sanitizeSubtaskDisplayText } from "@/core/tasks/subtask-result";
 import { explainLastToolCall } from "@/core/tools/utils";
 import { cn } from "@/lib/utils";
 
@@ -77,6 +78,8 @@ export function SubtaskCard({
   // (AI text) interleaved with the tools it ran (by name). See stepsForDisplay
   // for what is kept/dropped.
   const displaySteps = stepsForDisplay(task.steps, task.status);
+  const displayedTaskResult = sanitizeSubtaskDisplayText(task.result);
+  const displayedTaskError = sanitizeSubtaskDisplayText(task.error) ?? task.error;
 
   // Backfill step history on expand for historical runs (#3779). Live runs
   // already have steps from SSE, so the `steps.length` guard skips the fetch.
@@ -243,8 +246,8 @@ export function SubtaskCard({
               ></ChainOfThoughtStep>
               <ChainOfThoughtStep
                 label={
-                  task.result ? (
-                    <MarkdownContent content={task.result} isLoading={false} />
+                  displayedTaskResult ? (
+                    <MarkdownContent content={displayedTaskResult} isLoading={false} />
                   ) : null
                 }
               ></ChainOfThoughtStep>
@@ -252,7 +255,11 @@ export function SubtaskCard({
           )}
           {task.status === "failed" && (
             <ChainOfThoughtStep
-              label={<div className="text-red-500">{task.error}</div>}
+              label={
+                <div className="text-red-500">
+                  {displayedTaskError}
+                </div>
+              }
               icon={<XCircleIcon className="size-4 text-red-500" />}
             ></ChainOfThoughtStep>
           )}

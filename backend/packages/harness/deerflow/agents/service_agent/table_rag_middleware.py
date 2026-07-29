@@ -73,6 +73,26 @@ class TableRagStageMiddleware(AgentMiddleware):
         content = message.content
         if isinstance(content, Mapping):
             return content
+        # 兼容 LangChain / MCP 把文本内容拆成多个 block 的返回形态。
+        if isinstance(content, Sequence) and not isinstance(content, (str, bytes, bytearray)):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, str):
+                    text = block.strip()
+                    if text:
+                        parts.append(text)
+                    continue
+                if not isinstance(block, Mapping):
+                    continue
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+                    continue
+                inline_content = block.get("content")
+                if isinstance(inline_content, str) and inline_content.strip():
+                    parts.append(inline_content)
+            if parts:
+                content = "".join(parts)
         if isinstance(content, str):
             try:
                 payload = json.loads(content)
