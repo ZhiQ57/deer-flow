@@ -7,10 +7,13 @@ import logging
 import pytest
 from pydantic import ValidationError
 
+from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
+from deerflow.agents.service_agent.approval_middleware import QueryIntentApprovalMiddleware
 from deerflow.agents.service_agent.binding import resolve_data_source_binding
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig, parse_service_ability
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility, resolve_service_ability, resolve_service_ability_safely
-from deerflow.agents.service_agent.turn_reset_middleware import DataAgentTurnResetMiddleware
+from deerflow.agents.service_agent.sql_stage_middleware import SqlStageMiddleware
+from deerflow.agents.service_agent.table_rag_middleware import TableRagStageMiddleware
 from deerflow.agents.thread_state import merge_service_states
 from deerflow.config.agents_config import AgentConfig, preserve_non_managed_fields
 from deerflow.tools.tools import BUILTIN_TOOLS
@@ -52,14 +55,19 @@ def test_agent_config_preserves_service_ability() -> None:
     assert preserved["service_ability"] == raw
 
 
-def test_data_agent_service_ability_registers_turn_reset_first() -> None:
-    """DataAgent 业务 middleware 必须先隔离用户轮次，再处理检索和标签状态。"""
+def test_data_agent_service_ability_registers_data_query_middlewares() -> None:
+    """DataAgent 业务 middleware 不再按轮次强制重置，按检索、标签、意图审批和 SQL 阶段串行。"""
     config = parse_service_ability(_ability_config())
     assert config is not None
 
     middlewares = DataAgentServiceAbility(config).build_middlewares()
 
-    assert isinstance(middlewares[0], DataAgentTurnResetMiddleware)
+    assert [type(middleware) for middleware in middlewares] == [
+        TableRagStageMiddleware,
+        QueryLabelsMiddleware,
+        QueryIntentApprovalMiddleware,
+        SqlStageMiddleware,
+    ]
 
 
 def test_parse_service_ability_normalizes_postgres_alias() -> None:
@@ -164,12 +172,13 @@ def test_invalid_service_ability_logs_readable_path_without_secret(caplog: pytes
 
 
 def test_data_agent_tools_are_scoped_to_service_ability() -> None:
-    """标签工具不得继续暴露给默认 Agent，但适配器必须提供它。"""
+    """DataAgent 专属工具不得暴露给默认 Agent，但适配器必须提供标签与意图审批工具。"""
     resolved = resolve_service_ability(_ability_config())
     assert isinstance(resolved, DataAgentServiceAbility)
 
     assert "publish_query_labels" not in {tool.name for tool in BUILTIN_TOOLS}
-    assert [tool.name for tool in resolved.build_tools()] == ["publish_query_labels"]
+    assert "ask_intent_approval" not in {tool.name for tool in BUILTIN_TOOLS}
+    assert [tool.name for tool in resolved.build_tools()] == ["publish_query_labels", "ask_intent_approval"]
 
 
 def test_public_service_ability_metadata_is_sanitized() -> None:

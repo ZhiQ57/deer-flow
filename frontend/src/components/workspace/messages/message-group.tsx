@@ -845,6 +845,14 @@ function ToolCall({
         icon={MessageCircleQuestionMarkIcon}
       ></ChainOfThoughtStep>
     );
+  } else if (name === "ask_intent_approval") {
+    return (
+      <ChainOfThoughtStep
+        key={id}
+        label={resolveLabel(t.toolCalls.needYourHelp)}
+        icon={MessageCircleQuestionMarkIcon}
+      ></ChainOfThoughtStep>
+    );
   } else if (name === "write_todos") {
     return (
       <ChainOfThoughtStep

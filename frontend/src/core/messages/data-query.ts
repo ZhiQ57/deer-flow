@@ -28,9 +28,17 @@ export type QueryIntentReviewItem = {
 export type QueryIntentApproval = {
   version: 1;
   snapshot_id: string;
-  status: "approved" | "awaiting_confirmation" | "cancelled";
-  action: "execute" | "sql_only" | "cancel" | null;
-  source: "model" | "human" | null;
+  status: "approved" | "awaiting_confirmation" | "revision_requested" | "cancelled";
+  action: "execute" | "sql_only" | "modify" | "cancel" | null;
+  source: "model" | "human" | "policy" | null;
+};
+
+export type QueryIntentApprovalPolicy = {
+  version: 1;
+  snapshot_id: string;
+  required: boolean;
+  mode: "auto" | "on_ambiguity" | "always";
+  reason: string;
 };
 
 export type QueryIntentArtifact = {
@@ -48,7 +56,10 @@ export type QueryIntentArtifact = {
   ambiguity_items: QueryIntentReviewItem[];
   labels: QueryIntentLabel[];
   evidence: QueryIntentEvidence[];
-  approval: QueryIntentApproval;
+  approval_required?: boolean;
+  approval_policy?: QueryIntentApprovalPolicy;
+  approval?: QueryIntentApproval;
+  approval_result?: QueryIntentApproval;
   human_input?: unknown;
 };
 
@@ -354,6 +365,93 @@ function parseReviewItems(
   return items;
 }
 
+function parseApprovalPolicy(
+  value: unknown,
+  snapshotId: string,
+): QueryIntentApprovalPolicy | null {
+  if (!isRecord(value)) return null;
+  if (
+    value.version !== 1 ||
+    value.snapshot_id !== snapshotId ||
+    typeof value.required !== "boolean" ||
+    (value.mode !== "auto" &&
+      value.mode !== "on_ambiguity" &&
+      value.mode !== "always") ||
+    !isBoundedString(value.reason, 500)
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    snapshot_id: value.snapshot_id,
+    required: value.required,
+    mode: value.mode,
+    reason: value.reason,
+  };
+}
+
+function parseApproval(
+  value: unknown,
+  snapshotId: string,
+): QueryIntentApproval | null {
+  if (!isRecord(value)) return null;
+  if (value.version !== 1 || value.snapshot_id !== snapshotId) return null;
+  if (
+    value.status !== "approved" &&
+    value.status !== "awaiting_confirmation" &&
+    value.status !== "revision_requested" &&
+    value.status !== "cancelled"
+  ) {
+    return null;
+  }
+  if (
+    value.action !== null &&
+    value.action !== "execute" &&
+    value.action !== "sql_only" &&
+    value.action !== "modify" &&
+    value.action !== "cancel"
+  ) {
+    return null;
+  }
+  if (
+    value.source !== null &&
+    value.source !== "model" &&
+    value.source !== "human" &&
+    value.source !== "policy"
+  ) {
+    return null;
+  }
+  if (
+    value.status === "approved" &&
+    value.action !== "execute" &&
+    value.action !== "sql_only"
+  ) {
+    return null;
+  }
+  if (
+    value.status === "awaiting_confirmation" &&
+    (value.action !== null || value.source !== null)
+  ) {
+    return null;
+  }
+  if (
+    value.status === "revision_requested" &&
+    (value.action !== "modify" || value.source !== "human")
+  ) {
+    return null;
+  }
+  if (value.status === "cancelled" && value.action !== "cancel") {
+    return null;
+  }
+  return {
+    version: 1,
+    snapshot_id: value.snapshot_id,
+    status: value.status,
+    action: value.action,
+    source: value.source,
+  };
+}
+
 export function parseDataQueryLabelsArtifact(
   value: unknown,
 ): QueryIntentArtifact | null {
@@ -402,47 +500,25 @@ export function parseDataQueryLabelsArtifact(
     evidence.some((item) => item === null)
   )
     return null;
+  const approvalPolicy =
+    value.approval_policy === undefined
+      ? undefined
+      : parseApprovalPolicy(value.approval_policy, value.snapshot_id);
+  if (value.approval_policy !== undefined && approvalPolicy === null) return null;
+  const approval =
+    value.approval === undefined ? undefined : parseApproval(value.approval, value.snapshot_id);
+  if (value.approval !== undefined && approval === null) return null;
+  const approvalResult =
+    value.approval_result === undefined
+      ? undefined
+      : parseApproval(value.approval_result, value.snapshot_id);
+  if (value.approval_result !== undefined && approvalResult === null) return null;
   if (
-    !isRecord(value.approval) ||
-    value.approval.version !== 1 ||
-    value.approval.snapshot_id !== value.snapshot_id
-  )
+    value.approval_required !== undefined &&
+    typeof value.approval_required !== "boolean"
+  ) {
     return null;
-  if (
-    value.approval.status !== "approved" &&
-    value.approval.status !== "awaiting_confirmation" &&
-    value.approval.status !== "cancelled"
-  )
-    return null;
-  if (
-    value.approval.action !== null &&
-    value.approval.action !== "execute" &&
-    value.approval.action !== "sql_only" &&
-    value.approval.action !== "cancel"
-  )
-    return null;
-  if (
-    value.approval.source !== null &&
-    value.approval.source !== "model" &&
-    value.approval.source !== "human"
-  )
-    return null;
-  if (
-    value.approval.status === "approved" &&
-    value.approval.action !== "execute" &&
-    value.approval.action !== "sql_only"
-  )
-    return null;
-  if (
-    value.approval.status === "awaiting_confirmation" &&
-    (value.approval.action !== null || value.approval.source !== null)
-  )
-    return null;
-  if (
-    value.approval.status === "cancelled" &&
-    value.approval.action !== "cancel"
-  )
-    return null;
+  }
   return {
     version: 1,
     kind: "data_query_labels",
@@ -458,13 +534,12 @@ export function parseDataQueryLabelsArtifact(
     ambiguity_items: ambiguityItems,
     labels: labels as QueryIntentLabel[],
     evidence: evidence as QueryIntentEvidence[],
-    approval: {
-      version: 1,
-      snapshot_id: value.approval.snapshot_id,
-      status: value.approval.status,
-      action: value.approval.action,
-      source: value.approval.source,
-    },
+    ...(typeof value.approval_required === "boolean"
+      ? { approval_required: value.approval_required }
+      : {}),
+    ...(approvalPolicy ? { approval_policy: approvalPolicy } : {}),
+    ...(approval ? { approval } : {}),
+    ...(approvalResult ? { approval_result: approvalResult } : {}),
     ...(value.human_input !== undefined
       ? { human_input: value.human_input }
       : {}),
@@ -474,13 +549,24 @@ export function parseDataQueryLabelsArtifact(
 export function extractDataQueryLabelsArtifact(
   message: Message,
 ): QueryIntentArtifact | null {
-  if (message.type !== "tool" || message.name !== "publish_query_labels")
+  if (
+    message.type !== "tool" ||
+    (message.name !== "publish_query_labels" && message.name !== "ask_intent_approval")
+  )
     return null;
   return parseDataQueryLabelsArtifact(readMessageArtifact(message));
 }
 
 export function isDataQueryLabelsToolMessage(message: Message): boolean {
   return extractDataQueryLabelsArtifact(message) !== null;
+}
+
+export function isDataQueryIntentApprovalToolMessage(message: Message): boolean {
+  return message.type === "tool" && message.name === "ask_intent_approval" && extractDataQueryLabelsArtifact(message) !== null;
+}
+
+export function findLatestDataQueryIntentMessage(messages: Message[]) {
+  return [...messages].reverse().find((message) => extractDataQueryLabelsArtifact(message) !== null) ?? null;
 }
 
 export function parseDataQuerySqlResultArtifact(

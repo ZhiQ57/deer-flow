@@ -210,10 +210,11 @@ class TableRagStageMiddleware(AgentMiddleware):
                 "tool_name": tool_name,
                 "error_code": error_code,
             }
+            refinement_digest = sha256(f"{turn_id}\n{tool_name}".encode()).hexdigest()
             service_state = make_service_state(
                 turn_id=turn_id,
                 stage="needs_refinement",
-                snapshot_id=f"needs-refinement:sha256:{sha256(f'{turn_id}\n{tool_name}'.encode()).hexdigest()}",
+                snapshot_id=f"needs-refinement:sha256:{refinement_digest}",
                 data_source_id=self._config.data_source_id,
                 payload={
                     "retrieval": retrieval,
@@ -243,7 +244,17 @@ class TableRagStageMiddleware(AgentMiddleware):
             "retrieval_calls": retrieval_calls,
             "retrieval_attempts": attempts,
         }
-        for stale_key in ("labels", "approval", "approval_request", "approval_error_code", "sql_result", "last_retrieval_error"):
+        for stale_key in (
+            "labels",
+            "approval",
+            "approval_policy",
+            "approval_request",
+            "approval_result",
+            "approval_error_code",
+            "review_items",
+            "sql_result",
+            "last_retrieval_error",
+        ):
             next_payload.pop(stale_key, None)
         service_state = make_service_state(
             turn_id=turn_id,

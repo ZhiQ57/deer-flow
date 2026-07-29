@@ -21,7 +21,6 @@ from .config import DataQueryServiceAbilityConfig
 from .sql_executor import SqlExecutionService, SqlValidationRequest
 from .state import get_active_service_state, make_service_state
 from .tool_call_limits import keep_first_matching_tool_call
-from .turn_reset_middleware import current_visible_turn_id
 
 
 class SqlStageMiddleware(AgentMiddleware):
@@ -55,22 +54,58 @@ class SqlStageMiddleware(AgentMiddleware):
             }
         )
 
-    def _envelope(self, request: ToolCallRequest) -> dict[str, Any] | None:
-        """从当前状态构造严格 JSON SQL SubAgent 请求。"""
+    def _approval_from_payload(
+        self,
+        active: Mapping[str, Any],
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """读取当前快照已确认授权，或按策略生成自动放行授权。
+
+        Args:
+            active: 当前 DataAgent service state。
+            payload: 当前 service state payload。
+
+        Returns:
+            可以进入 SQL 阶段的审批对象；不满足门禁时返回 None。
+        """
+        approval = payload.get("approval")
+        if (
+            active.get("stage") in {"approved", "sql_ready", "succeeded"}
+            and isinstance(approval, Mapping)
+            and approval.get("status") == "approved"
+            and approval.get("action") in {"execute", "sql_only"}
+        ):
+            return dict(approval)
+
+        policy = payload.get("approval_policy")
+        if (
+            active.get("stage") == "labels_published"
+            and isinstance(policy, Mapping)
+            and policy.get("required") is False
+        ):
+            return {
+                "version": 1,
+                "snapshot_id": active.get("snapshot_id"),
+                "status": "approved",
+                "action": "execute",
+                "source": "policy",
+                "reason": policy.get("reason"),
+            }
+        return None
+
+    def _envelope(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """从当前状态构造严格 JSON SQL SubAgent 请求与审批授权。"""
         state = request.state if isinstance(request.state, Mapping) else {}
         if not self._config.enable_sql_rag:
             return None
         active = get_active_service_state(state)
-        if active is None or active.get("stage") != "approved":
-            return None
-        visible_turn_id = current_visible_turn_id(state)
-        if visible_turn_id is not None and visible_turn_id != active.get("turn_id"):
+        if active is None:
             return None
         payload = active.get("payload")
         if not isinstance(payload, Mapping):
             return None
-        approval = payload.get("approval")
-        if not isinstance(approval, Mapping) or approval.get("action") not in {"execute", "sql_only"}:
+        approval = self._approval_from_payload(active, payload)
+        if approval is None:
             return None
         retrieval = payload.get("retrieval")
         labels = payload.get("labels")
@@ -82,7 +117,7 @@ class SqlStageMiddleware(AgentMiddleware):
         if "data_query_service_ability" in runtime_context and runtime_context.get("data_query_sql_subagent_allowed") is not True:
             return None
         # ADD: 只传递当前 snapshot 的最小结构化证据，不传 DSN、Secret 或完整数据库行。
-        return {
+        envelope = {
             "version": 1,
             "kind": "data_query_sql_request",
             "service_name": "data_query",
@@ -111,6 +146,7 @@ class SqlStageMiddleware(AgentMiddleware):
                 "validation 必须原样保留 sql_sha256 和 validation_digest；禁止 Markdown 和自由文本。"
             ),
         }
+        return envelope, approval
 
     @staticmethod
     def _replace_task_args(request: ToolCallRequest, envelope: Mapping[str, Any]) -> ToolCallRequest:
@@ -170,7 +206,12 @@ class SqlStageMiddleware(AgentMiddleware):
         """从 task 结果读取 SQL 合同，artifact 优先，content 仅作兼容。"""
         return self._artifact_payload(message) or self._content_payload(message)
 
-    def _merge_result(self, request: ToolCallRequest, result: ToolMessage | Command) -> ToolMessage | Command:
+    def _merge_result(
+        self,
+        request: ToolCallRequest,
+        result: ToolMessage | Command,
+        approval: Mapping[str, Any],
+    ) -> ToolMessage | Command:
         """验证子代理返回并投影 sql_ready/failed 阶段。"""
         message = self._result_message(result)
         if message is None:
@@ -214,7 +255,7 @@ class SqlStageMiddleware(AgentMiddleware):
         )
         if server_validation.get("valid") is not True or validation.get("sql_sha256") != server_validation.get("sql_sha256") or validation.get("validation_digest") != server_validation.get("validation_digest"):
             return self._error(request, "SQL_VALIDATION_FAILED")
-        action = active.get("payload", {}).get("approval", {}).get("action") if isinstance(active.get("payload"), Mapping) else None
+        action = approval.get("action")
         execution = parsed.get("execution")
         if action == "execute":
             if isinstance(execution, Mapping) and execution.get("ok") is False:
@@ -267,7 +308,7 @@ class SqlStageMiddleware(AgentMiddleware):
             stage=stage,
             snapshot_id=str(active.get("snapshot_id") or ""),
             data_source_id=self._config.data_source_id,
-            payload={**dict(active_payload), "sql_result": dict(parsed)},
+            payload={**dict(active_payload), "approval": dict(approval), "sql_result": dict(parsed)},
         )
         if isinstance(result, ToolMessage):
             return Command(update={"messages": [projected_message], "service_states": [service_state]})
@@ -310,17 +351,19 @@ class SqlStageMiddleware(AgentMiddleware):
         """同步阻断未授权 SQL 委派并校验返回合同。"""
         if not self._is_target(request):
             return handler(request)
-        envelope = self._envelope(request)
-        if envelope is None:
+        authorized = self._envelope(request)
+        if authorized is None:
             return self._error(request, "SQL_STAGE_NOT_APPROVED")
-        return self._merge_result(request, handler(self._replace_task_args(request, envelope)))
+        envelope, approval = authorized
+        return self._merge_result(request, handler(self._replace_task_args(request, envelope)), approval)
 
     @override
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]) -> ToolMessage | Command:
         """异步阻断未授权 SQL 委派并校验返回合同。"""
         if not self._is_target(request):
             return await handler(request)
-        envelope = self._envelope(request)
-        if envelope is None:
+        authorized = self._envelope(request)
+        if authorized is None:
             return self._error(request, "SQL_STAGE_NOT_APPROVED")
-        return self._merge_result(request, await handler(self._replace_task_args(request, envelope)))
+        envelope, approval = authorized
+        return self._merge_result(request, await handler(self._replace_task_args(request, envelope)), approval)

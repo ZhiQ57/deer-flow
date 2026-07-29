@@ -392,12 +392,12 @@ def build_query_label_snapshot(
     }
 
 
-# ADD: 统一计算自动批准或人工确认；当前模型路径不再依赖自报 confidence。
+# ADD: 统一计算查询意图是否需要人工审批；当前模型路径不再依赖自报 confidence。
 def decide_query_approval(
     config: DataQueryServiceAbilityConfig,
     snapshot: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """根据 confirmation_mode 计算标签快照的批准状态。"""
+    """根据 confirmation_mode 计算查询意图的审批策略。"""
     confidence = snapshot.get("confidence")
     confidence_ok = confidence is None or (
         isinstance(confidence, (int, float))
@@ -417,13 +417,21 @@ def decide_query_approval(
         and isinstance(ambiguities, list)
         and not ambiguities
     )
-    auto_approved = config.confirmation_mode in {"auto", "on_ambiguity"} and complete
+    required = config.confirmation_mode == "always" or (
+        config.confirmation_mode == "on_ambiguity" and not complete
+    )
+    if config.confirmation_mode == "always":
+        reason = "confirmation_mode=always，必须调用 ask_intent_approval。"
+    elif config.confirmation_mode == "on_ambiguity" and not complete:
+        reason = "存在未消解歧义或快照未满足自动放行条件，需要人类审批。"
+    else:
+        reason = "当前查询可由模型继续判断是否请求人类审批。"
     return {
         "version": 1,
         "snapshot_id": snapshot.get("snapshot_id"),
-        "status": "approved" if auto_approved else "awaiting_confirmation",
-        "action": "execute" if auto_approved else None,
-        "source": "model" if auto_approved else None,
+        "required": required,
+        "mode": config.confirmation_mode,
+        "reason": reason,
     }
 
 
@@ -455,7 +463,7 @@ def build_query_review_items(snapshot: Mapping[str, Any]) -> list[dict[str, Any]
 
 # ADD: 复用 DeerFlow human-input v1 请求并把 snapshot 绑定保留在服务端 artifact。
 def build_query_approval_request(snapshot: Mapping[str, Any], *, tool_call_id: str) -> dict[str, Any]:
-    """构造 DataAgent 查询确认请求。"""
+    """构造 DataAgent 查询意图审批请求。"""
     snapshot_id = snapshot.get("snapshot_id")
     if not isinstance(snapshot_id, str) or not snapshot_id:
         raise ValueError("确认请求缺少 snapshot_id。")
@@ -467,7 +475,7 @@ def build_query_approval_request(snapshot: Mapping[str, Any], *, tool_call_id: s
     return {
         "version": 1,
         "kind": "human_input_request",
-        "source": "ask_clarification",
+        "source": "ask_intent_approval",
         "request_id": f"data-query:{request_digest}",
         "tool_call_id": tool_call_id,
         "snapshot_id": snapshot_id,

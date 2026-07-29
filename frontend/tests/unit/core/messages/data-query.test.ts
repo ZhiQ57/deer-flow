@@ -42,7 +42,7 @@ function artifact() {
       snapshot_id: "sha256:snapshot",
       status: "approved",
       action: "execute",
-      source: "model",
+      source: "policy",
     },
   };
 }
@@ -114,7 +114,7 @@ describe("parseDataQueryLabelsArtifact", () => {
       {
         version: 1,
         kind: "human_input_request",
-        source: "ask_clarification",
+        source: "ask_intent_approval",
         request_id: "data-query:req",
         question: "确认",
         input_mode: "choice_with_other",

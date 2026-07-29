@@ -29,6 +29,7 @@ import { extractArtifactsFromThread } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   extractDataQueryLabelsArtifact,
+  findLatestDataQueryIntentMessage,
   extractDataQuerySqlResultArtifact,
 } from "@/core/messages/data-query";
 import {
@@ -1156,7 +1157,7 @@ export function MessageList({
               }
               return withRunDuration(group, groupIndex, null);
             } else if (group.type === "assistant:query-intent") {
-              const message = group.messages[0];
+              const message = findLatestDataQueryIntentMessage(group.messages);
               if (!message) return null;
               const artifact = extractDataQueryLabelsArtifact(message);
               if (!artifact) return null;

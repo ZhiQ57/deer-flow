@@ -10,8 +10,8 @@ from langgraph.graph.message import add_messages
 
 import deerflow.checkpoint_patches as _checkpoint_patches  # noqa: F401 - import-time saver fixes
 from deerflow.agents.goal_state import GoalState
-from deerflow.config.database_config import CheckpointChannelMode
 from deerflow.agents.service_agent.data_agent_thread_state import ServiceState, normalize_service_state_version
+from deerflow.config.database_config import CheckpointChannelMode
 from deerflow.subagents.status_contract import SUBAGENT_STATUS_VALUES
 
 
@@ -274,7 +274,9 @@ def _can_replace_data_query_state(current: Mapping[str, object], incoming: Mappi
     incoming_stage = incoming.get("stage")
     current_stage = current.get("stage")
     if isinstance(current_turn, str) and isinstance(incoming_turn, str) and current_turn != incoming_turn:
-        return incoming_stage == "idle"
+        # 新用户问题不再依赖单独的 turn-reset middleware 先写 idle；
+        # TableRAG 检索可以直接开启新快照，但旧轮 SQL/审批结果仍不能覆盖当前轮。
+        return incoming_stage in {"idle", "retrieving", "needs_refinement"}
 
     current_snapshot = current.get("snapshot_id")
     incoming_snapshot = incoming.get("snapshot_id")

@@ -34,7 +34,7 @@ export function QueryIntentCard({
   onSubmit?: (response: HumanInputResponse) => HumanInputSubmitResult | Promise<HumanInputSubmitResult>;
 }) {
   const parsedRequest = request ?? parseHumanInputRequest(artifact.human_input);
-  const status = artifact.approval.status;
+  const approval = artifact.approval ?? artifact.approval_result;
   const answeredAction = parseDataQueryReviewFinalAction(answeredResponse);
   const answeredDecisions = parseDataQueryReviewDecisions(answeredResponse);
   const reviewItems = artifact.ambiguity_items;
@@ -42,13 +42,21 @@ export function QueryIntentCard({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const statusLabel =
-    answeredAction === "cancel" || status === "cancelled"
+    answeredAction === "cancel" || approval?.status === "cancelled"
       ? "已取消"
-      : answeredAction === "modify"
+      : answeredAction === "modify" || approval?.status === "revision_requested"
         ? "已修改"
-        : answeredAction === "execute" || answeredAction === "sql_only" || status === "approved"
+        : answeredAction === "execute" ||
+            answeredAction === "sql_only" ||
+            approval?.status === "approved"
           ? "已确认"
-          : "待确认";
+          : parsedRequest
+            ? approval?.status === "awaiting_confirmation"
+              ? "待确认"
+              : "待审批"
+            : artifact.approval_required === false
+              ? "可继续"
+              : "待审批";
 
   const submitReview = async (finalAction: "execute" | "sql_only" | "cancel") => {
     if (!parsedRequest || !onSubmit || disabled || pending || answeredResponse) return;
@@ -114,7 +122,7 @@ export function QueryIntentCard({
         ) : null}
         {artifact.ambiguities.length > 0 ? <p className="text-amber-600">待确认：{artifact.ambiguities.join("；")}</p> : null}
       </div>
-      {reviewItems.length > 0 ? (
+      {parsedRequest && reviewItems.length > 0 ? (
         <div className="space-y-3 rounded-md border border-amber-200 bg-amber-50/60 p-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">AI 需要你确认的理解</h3>

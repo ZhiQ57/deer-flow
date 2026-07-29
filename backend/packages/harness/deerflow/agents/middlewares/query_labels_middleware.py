@@ -15,13 +15,11 @@ from typing import Any, override
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langgraph.config import get_stream_writer
-from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deerflow.agents.service_agent.state import (
-    build_query_approval_request,
     build_query_label_snapshot,
     build_query_review_items,
     decide_query_approval,
@@ -29,7 +27,7 @@ from deerflow.agents.service_agent.state import (
     make_service_state,
 )
 from deerflow.agents.service_agent.tool_call_limits import keep_first_matching_tool_call
-from deerflow.agents.service_agent.turn_reset_middleware import current_visible_turn_id
+from deerflow.agents.service_agent.turn_context import current_visible_turn_id
 
 logger = logging.getLogger(__name__)
 
@@ -228,14 +226,14 @@ class QueryLabelsMiddleware(AgentMiddleware):
         return payload
 
     # ADD: 依据当前 service_states 构造不可伪造的 DataAgent 标签快照。
-    def _build_service_payload(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any], bool]:
-        """构造 DataAgent v1 标签 artifact、状态更新和是否需要确认标志。
+    def _build_service_payload(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any]]:
+        """构造 DataAgent v1 标签 artifact 与状态更新。
 
         Args:
             request: 当前 publish_query_labels 工具请求。
 
         Returns:
-            artifact、service_states 快照和是否等待确认。
+            artifact 和 service_states 快照。
 
         Raises:
             ValueError: 检索、标签或快照合同不合法。
@@ -300,21 +298,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
             ambiguities=ambiguities,
             ambiguities_declared=ambiguities_declared,
         )
-        approval = decide_query_approval(self._service_ability, snapshot)
-        runtime_context = getattr(request.runtime, "context", None)
-        confirmation_disabled = isinstance(runtime_context, Mapping) and bool(runtime_context.get("non_interactive") or runtime_context.get("disable_clarification"))
-        approval_error_code: str | None = None
-        if approval["status"] == "awaiting_confirmation" and confirmation_disabled:
-            # ADD: 非交互/禁用澄清场景禁止等待确认或猜测执行数据库，直接安全取消当前快照。
-            approval = {
-                "version": 1,
-                "snapshot_id": snapshot["snapshot_id"],
-                "status": "cancelled",
-                "action": "cancel",
-                "source": "model",
-            }
-            approval_error_code = "DATA_QUERY_CONFIRMATION_UNAVAILABLE"
-        tool_call_id = str(request.tool_call.get("id") or "")
+        approval_policy = decide_query_approval(self._service_ability, snapshot)
         # ADD: 只把有限长度的 Evidence 摘要投影给前端，原始检索对象仍留在受控服务状态。
         evidence: list[dict[str, str]] = []
         registry = retrieval.get("registry") if isinstance(retrieval.get("registry"), Mapping) else {}
@@ -342,28 +326,23 @@ class QueryLabelsMiddleware(AgentMiddleware):
             "evidence": evidence,
             "retrieval_digest": snapshot["retrieval_digest"],
             "binding_fingerprint": snapshot["binding_fingerprint"],
-            "approval": approval,
+            "approval_required": bool(approval_policy["required"]),
+            "approval_policy": dict(approval_policy),
         }
         service_payload = {
             "retrieval": dict(retrieval),
             "labels": dict(snapshot),
-            "approval": dict(approval),
+            "approval_policy": dict(approval_policy),
             "review_items": build_query_review_items(snapshot),
         }
-        if approval_error_code is not None:
-            service_payload["approval_error_code"] = approval_error_code
-        if approval["status"] == "awaiting_confirmation":
-            approval_request = build_query_approval_request(snapshot, tool_call_id=tool_call_id)
-            artifact["human_input"] = approval_request
-            service_payload["approval_request"] = approval_request
         service_state = make_service_state(
             turn_id=turn_id,
-            stage=("awaiting_confirmation" if approval["status"] == "awaiting_confirmation" else "cancelled" if approval["status"] == "cancelled" else "approved"),
+            stage=self._stage_name or "labels_published",
             snapshot_id=snapshot["snapshot_id"],
             data_source_id=self._service_ability.data_source_id,
             payload=service_payload,
         )
-        return artifact, service_state, approval["status"] == "awaiting_confirmation"
+        return artifact, service_state
 
     @staticmethod
     def _emit_stream_event(payload: dict[str, Any]) -> None:
@@ -396,7 +375,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
         """
         if self._service_ability is not None:
             try:
-                payload, service_state, awaiting_confirmation = self._build_service_payload(request)
+                payload, service_state = self._build_service_payload(request)
             except ValueError as exc:
                 return self._error(request, str(exc))
             tool_call_id = str(request.tool_call.get("id") or "")
@@ -410,9 +389,6 @@ class QueryLabelsMiddleware(AgentMiddleware):
             )
             self._emit_stream_event(payload)
             update: dict[str, Any] = {"messages": [message], "service_states": [service_state]}
-            if awaiting_confirmation:
-                # ADD: 复用 DeerFlow human-input v1，确认期间终止当前图运行。
-                return Command(update=update, goto=END)
             return Command(update=update)
 
         try:

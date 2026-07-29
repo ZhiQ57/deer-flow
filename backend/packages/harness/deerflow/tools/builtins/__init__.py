@@ -3,6 +3,7 @@ from .entity_extract_tool import entity_extract_tool
 from .list_uploaded_files_tool import list_uploaded_files
 from .present_file_tool import present_file_tool
 from .query_labels_tool import publish_query_labels_tool
+from .ask_intent_approval_tool import ask_intent_approval_tool
 from .review_skill_package_tool import review_skill_package
 from .setup_agent_tool import setup_agent
 from .task_tool import task_tool
@@ -14,6 +15,7 @@ __all__ = [
     "update_agent",
     "present_file_tool",
     "publish_query_labels_tool",
+    "ask_intent_approval_tool",
     "entity_extract_tool",
     "review_skill_package",
     "ask_clarification_tool",

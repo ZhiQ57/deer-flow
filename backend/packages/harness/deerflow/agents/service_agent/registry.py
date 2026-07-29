@@ -44,9 +44,10 @@ class DataAgentServiceAbility:
 
     def build_tools(self) -> list[BaseTool]:
         """返回 DataAgent 当前阶段允许的业务工具。"""
+        from deerflow.tools.builtins.ask_intent_approval_tool import ask_intent_approval_tool
         from deerflow.tools.builtins.query_labels_tool import publish_query_labels_tool
 
-        return [publish_query_labels_tool]
+        return [publish_query_labels_tool, ask_intent_approval_tool]
 
     def filter_tools(self, tools: list[BaseTool]) -> list[BaseTool]:
         """收敛 DataAgent 的 SQLRAG MCP 工具面。
@@ -86,17 +87,15 @@ class DataAgentServiceAbility:
         """返回 DataAgent 当前阶段的业务 middleware。"""
         from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 
-        from .approval_middleware import QueryApprovalMiddleware
+        from .approval_middleware import QueryIntentApprovalMiddleware
         from .sql_stage_middleware import SqlStageMiddleware
         from .table_rag_middleware import TableRagStageMiddleware
-        from .turn_reset_middleware import DataAgentTurnResetMiddleware
 
         # ADD: 业务 middleware 只挂在 DataAgent 适配器，默认 lead-agent 不受影响。
         return [
-            DataAgentTurnResetMiddleware(self.config),
             TableRagStageMiddleware(self.config),
             QueryLabelsMiddleware(require_retrieval=True, service_ability=self.config),
-            QueryApprovalMiddleware(self.config),
+            QueryIntentApprovalMiddleware(self.config),
             SqlStageMiddleware(self.config),
         ]
 

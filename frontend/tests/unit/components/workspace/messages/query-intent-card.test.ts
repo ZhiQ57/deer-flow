@@ -54,7 +54,7 @@ describe("QueryIntentCard", () => {
           request: {
             version: 1,
             kind: "human_input_request",
-            source: "ask_clarification",
+            source: "ask_intent_approval",
             request_id: "data-query:req",
             question: "确认查询意图",
             input_mode: "choice_with_other",
@@ -93,9 +93,9 @@ describe("QueryIntentCard", () => {
         ),
       );
 
-    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_clarification", request_id: "req", response_kind: "option", option_id: "execute", value: "execute" })).toContain("已确认");
-    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_clarification", request_id: "req", response_kind: "option", option_id: "sql_only", value: "sql_only" })).toContain("已确认");
-    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_clarification", request_id: "req", response_kind: "text", value: "改查去年" })).toContain("已修改");
-    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_clarification", request_id: "req", response_kind: "option", option_id: "cancel", value: "cancel" })).toContain("已取消");
+    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "option", option_id: "execute", value: "execute" })).toContain("已确认");
+    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "option", option_id: "sql_only", value: "sql_only" })).toContain("已确认");
+    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "text", value: "改查去年" })).toContain("已修改");
+    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "option", option_id: "cancel", value: "cancel" })).toContain("已取消");
   });
 });

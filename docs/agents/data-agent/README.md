@@ -166,18 +166,17 @@ Web UI 仅在上述能力开启的 custom-agent 对话中，给已完成的 `sql
 `subagent_type=sql-subagent` 都不能替代此授权。同一模型响应中的多个 TableRAG、标签或 SQL SubAgent 调用
 只保留第一个，补充检索必须串行执行，避免产生冲突快照或重复 SQL 执行。
 
-## 4. 实验性流程与安全边界
+## 4. 正式流程与安全边界
 
-实验性运行层复用 lead-agent 的模型、prompt、Skill、MCP 和多数 middleware，并额外增加：
+正式 `service_ability.type=data_query` 路径复用 lead-agent 的模型、prompt、Skill、MCP 和多数 middleware，并额外增加：
 
-- `DataAgentTurnResetMiddleware`：只在新真实用户轮次开始时重置上一轮 QueryContext、查询标签、检索、SQL、图表和强制收敛状态，不执行实体抽取。
-- `publish_query_labels`：稳定 SDK 中的标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels`、`confidence` 和显式 `ambiguities`，不调用模型。没有歧义时必须传 `ambiguities: []`，不能省略或只在最终回答中描述待确认项。
-- `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`；实验性 DataAgent 使用 `require_retrieval=True` 和 `stage_name="labels_published"`，因此任何标签都必须在首次有效 TableRAG 检索后发布。middleware 会生成顶层 ToolMessage artifact、写入 `data_query_labels`、发送 custom stream 事件并继续当前图执行；数据库来源标签还必须关联 Evidence 摘要。
-- `entity_extract_tool`：现有实体抽取工具继续保留，可在确实需要独立模型抽取时按需调用，但不再是 TableRAG 或 SQL 的前置条件。
-- `DataAgentOrchestrationMiddleware`：允许 lead-agent 直接为 `sqlrag_retrieve` 组织 `operation`、`query`、`queries` 与表列范围；强制 `TableRAG -> 查询标签 -> SQL 校验 -> SQL 执行 -> 可选 ChartSpec -> 最终回答` 顺序。实体抽取仍不是前置条件。
-- `data_validate_sql`：只允许单条 MySQL `SELECT/WITH`，拒绝 DDL/DML、多语句、锁、文件写出、危险函数、优化器 Hint、占位符、跨业务库和系统库访问，并自动收紧 `LIMIT`。
-- `data_execute_sql`：只执行最近校验返回的同一条 `executable_sql`；使用只读事务、连接/读取/查询超时、行数、单元格和结果总字符预算。
-- `data_build_chart_spec`：只消费成功 SQL 结果，并校验图表字段和数值轴。
+- `TableRagStageMiddleware`：登记无前缀 `sqlrag_retrieve` 的检索结果，生成 retrieval digest、registry、data_source_id 与 binding_fingerprint。新可见用户问题可以由本 middleware 直接创建新的 `retrieving` 快照，不再依赖每轮强制 reset。
+- `publish_query_labels`：DataAgent 专属标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels`、可选 `summary` 和显式 `ambiguities`，不再接收模型自报 `confidence`，也不调用额外模型。没有歧义时必须传 `ambiguities: []`，不能省略或只在最终回答中描述待确认项。
+- `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`；正式 DataAgent 使用 `require_retrieval=True`，因此任何标签都必须在首次有效 TableRAG 检索后发布。middleware 会生成 `data_query_labels` artifact、写入 `service_states` 的 `labels_published` 快照，并附带 `approval_policy`，但不会直接创建人工确认请求。
+- `ask_intent_approval`：DataAgent 专属查询意图审批工具。模型在标签结果显示 `approval_policy.required=true` 或自行判断需要用户确认时调用它；后端生成 human-input v1 审批卡并暂停运行。
+- `QueryIntentApprovalMiddleware`：拦截 `ask_intent_approval`，把人类审批结果以同一工具调用的 ToolMessage 结果写回对话历史，并把 service state 推进到 `approved`、`cancelled` 或新的 `retrieving` 修订快照。
+- `SqlStageMiddleware`：父 DataAgent 只通过 `task` 委派配置中的 SQL SubAgent；只有历史/当前快照已 `approved`，或 `approval_policy.required=false` 时才允许进入 SQL 阶段。它不再按“当前可见 turn”机械拒绝历史已确认意图，模型可读取历史审批工具结果判断追问是否仍相关。
+- `data_validate_sql` / `data_execute_sql`：SQL SubAgent 专属工具，支持 PostgreSQL/MySQL 只读 AST 校验、数据源绑定、预算、超时和安全错误分类。`sql_only` 只提供校验工具；`execute` 才提供执行工具。
 
 lead-agent 可以直接从用户问题中组织 TableRAG 检索关键词。标签展示由
 `publish_query_labels` 完成，但必须在首次有效检索之后：`source=user` 和
@@ -190,9 +189,16 @@ TableRAG Evidence。后续再次调用会替换当前完整标签快照，并生
 
 ```text
 deerflow/
+├── agents/
+│   ├── middlewares/query_labels_middleware.py
+│   └── service_agent/
+│       ├── table_rag_middleware.py
+│       ├── approval_middleware.py
+│       ├── sql_stage_middleware.py
+│       └── turn_context.py
 └── tools/builtins/
-    ├── entity_extract_tool.py      # 保留的可选实体抽取工具
-    └── query_labels_tool.py        # SDK 标签声明工具
+    ├── query_labels_tool.py
+    └── ask_intent_approval_tool.py
 
 deerflow-dev/
 ├── agents/
@@ -217,7 +223,7 @@ deerflow-dev/
 
 - `read_file` 等必要 DeerFlow 框架工具；
 - 唯一且无前缀的只读 MCP 工具 `sqlrag_retrieve`；
-- DataAgent 标签、可选 QueryContext、SQL 和 ChartSpec 工具。
+- DataAgent 标签工具、意图审批工具和 SQL SubAgent 动态工具。
 
 不会暴露 Bash、写文件、其他 MCP，也不会兼容旧的多工具 TableRAG 名称。通用子代理默认关闭；如显式启用，只接受配置了明确工具白名单、且工具名严格为 `sqlrag_retrieve` 的自定义子代理。
 

@@ -64,7 +64,7 @@ The frontend is a stateful chat application. Users create **threads** (conversat
 
 ### Data Flow
 
-DataAgent query labels remain part of the normal thread message stream. Parse `data_query_labels` v1 artifacts in `src/core/messages/data-query.ts`, group them as `assistant:query-intent`, and reuse the existing human-input response path for confirmation; do not create a separate DataAgent chat runtime.
+DataAgent query labels remain part of the normal thread message stream. Parse `data_query_labels` v1 artifacts in `src/core/messages/data-query.ts`, group `publish_query_labels` and `ask_intent_approval` messages as `assistant:query-intent`, and reuse the existing human-input response path for the approval tool result; do not create a separate DataAgent chat runtime.
 
 Completed `sql` fenced code blocks use the Streamdown custom renderer in `components/workspace/sql-execution/sql-code-block.tsx`. The execute action is available only when the current custom-agent metadata reports `type=data_query` and `sql_execution_enabled=true`; streaming fences and ordinary agents keep the normal code block. `ChatBox` owns `SqlExecutionProvider` so both message code blocks and the `sql-result` right panel share one request state. `core/sql-execution/api.ts` posts to `POST /api/threads/{thread_id}/sql/execute` through the CSRF-aware fetch wrapper. The SQL Result Panel displays the Gateway's minimally sanitized database primary error without replacing it, and its text selection toolbar can add a selected SQL, error, or row fragment to the next conversation through Sidecar references. Do not put database credentials, SQL validation, or driver logic in the frontend.
 

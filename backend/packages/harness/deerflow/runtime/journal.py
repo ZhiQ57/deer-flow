@@ -49,8 +49,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _LEGACY_SUMMARY_MESSAGE_NAME = "summary"
-_RECONCILED_TOOL_MESSAGE_NAMES = frozenset({"ask_clarification"})
-_PERSISTED_HIDDEN_HUMAN_INPUT_RESPONSE_SOURCES = frozenset({"ask_clarification"})
+_RECONCILED_TOOL_MESSAGE_NAMES = frozenset({"ask_clarification", "ask_intent_approval"})
+_PERSISTED_HIDDEN_HUMAN_INPUT_RESPONSE_SOURCES = frozenset({"ask_clarification", "ask_intent_approval"})
 
 
 def _should_persist_human_input_message(message: BaseMessage) -> bool:

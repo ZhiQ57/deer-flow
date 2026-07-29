@@ -328,5 +328,5 @@ export function buildHumanInputResponseText(
   request: HumanInputRequest,
   response: HumanInputResponse,
 ) {
-  return `For your clarification "${request.question}", my answer is: ${response.value}`;
+  return `针对“${request.question}”，我的回答是：${response.value}`;
 }
