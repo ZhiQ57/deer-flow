@@ -18,6 +18,39 @@ import { parseHumanInputRequest, type HumanInputRequest, type HumanInputResponse
 
 import { HumanInputCard, type HumanInputSubmitResult } from "./human-input-card";
 
+/**
+ * 构造查询意图逐项审批提交内容。
+ *
+ * 描述：未被用户手动处理的审批项默认按当前理解接受；只有用户明确选择修改但未填写修改内容时阻止提交。
+ *
+ * Args:
+ *   reviewItems: 当前查询意图卡片中的待确认项列表。
+ *   decisions: 用户已经手动选择的逐项审批结果。
+ *   drafts: 用户填写的逐项修改草稿。
+ *
+ * Return:
+ *   可提交的审批项列表；如果存在不可提交状态，则返回错误文案。
+ */
+export function buildQueryIntentReviewSubmission(
+  reviewItems: QueryIntentArtifact["ambiguity_items"],
+  decisions: Record<string, QueryIntentReviewDecision>,
+  drafts: Record<string, string>,
+): { decisions: QueryIntentReviewDecision[]; error: string | null } {
+  const normalized: QueryIntentReviewDecision[] = [];
+  for (const item of reviewItems) {
+    const decision = decisions[item.id] ?? { id: item.id, decision: "accept" as const };
+    if (decision.decision === "modify" && !drafts[item.id]?.trim()) {
+      return { decisions: [], error: "请填写需要修改的查询条件。" };
+    }
+    const modifiedValue = drafts[item.id]?.trim();
+    normalized.push({
+      ...decision,
+      ...(decision.decision === "modify" && modifiedValue ? { value: modifiedValue } : {}),
+    });
+  }
+  return { decisions: normalized, error: null };
+}
+
 export function QueryIntentCard({
   artifact,
   request,
@@ -61,25 +94,13 @@ export function QueryIntentCard({
   const submitReview = async (finalAction: "execute" | "sql_only" | "cancel") => {
     if (!parsedRequest || !onSubmit || disabled || pending || answeredResponse) return;
     if (finalAction !== "cancel") {
-      const normalized: QueryIntentReviewDecision[] = [];
-      for (const item of reviewItems) {
-        const decision = decisions[item.id];
-        if (!decision) {
-          setError("请逐项确认所有不清晰点后再继续。");
-          return;
-        }
-        if (decision.decision === "modify" && !drafts[item.id]?.trim()) {
-          setError("请填写需要修改的查询条件。");
-          return;
-        }
-        const modifiedValue = drafts[item.id]?.trim();
-        normalized.push({
-          ...decision,
-          ...(decision.decision === "modify" && modifiedValue ? { value: modifiedValue } : {}),
-        });
+      const submission = buildQueryIntentReviewSubmission(reviewItems, decisions, drafts);
+      if (submission.error) {
+        setError(submission.error);
+        return;
       }
       setError(null);
-      await onSubmit(createDataQueryReviewResponse(parsedRequest, artifact, normalized, finalAction));
+      await onSubmit(createDataQueryReviewResponse(parsedRequest, artifact, submission.decisions, finalAction));
       return;
     }
     setError(null);

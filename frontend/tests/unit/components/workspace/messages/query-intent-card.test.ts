@@ -2,7 +2,10 @@ import { describe, expect, it } from "@rstest/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { QueryIntentCard } from "@/components/workspace/messages/query-intent-card";
+import {
+  buildQueryIntentReviewSubmission,
+  QueryIntentCard,
+} from "@/components/workspace/messages/query-intent-card";
 import { I18nContext } from "@/core/i18n/context";
 import type { QueryIntentArtifact } from "@/core/messages/data-query";
 
@@ -97,5 +100,29 @@ describe("QueryIntentCard", () => {
     expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "option", option_id: "sql_only", value: "sql_only" })).toContain("已确认");
     expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "text", value: "改查去年" })).toContain("已修改");
     expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "option", option_id: "cancel", value: "cancel" })).toContain("已取消");
+  });
+
+  it("defaults untouched review items to accept when submitting final approval", () => {
+    const firstItem = artifact.ambiguity_items[0];
+    if (!firstItem) {
+      throw new Error("test artifact is missing the first review item");
+    }
+    const items = [
+      ...artifact.ambiguity_items,
+      {
+        id: "ambiguity:sha256:count-path",
+        question: "病例数统计口径：使用 COUNT(DISTINCT CycleId) 还是 COUNT(*)?",
+        status: "pending" as const,
+        options: firstItem.options,
+      },
+    ];
+
+    const submission = buildQueryIntentReviewSubmission(items, {}, {});
+
+    expect(submission.error).toBeNull();
+    expect(submission.decisions).toEqual([
+      { id: "ambiguity:sha256:refund", decision: "accept" },
+      { id: "ambiguity:sha256:count-path", decision: "accept" },
+    ]);
   });
 });
