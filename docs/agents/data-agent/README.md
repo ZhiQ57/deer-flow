@@ -172,16 +172,16 @@ Web UI 仅在上述能力开启的 custom-agent 对话中，给已完成的 `sql
 
 - `TableRagStageMiddleware`：登记无前缀 `sqlrag_retrieve` 的检索结果，生成 retrieval digest、registry、data_source_id 与 binding_fingerprint。新可见用户问题可以由本 middleware 直接创建新的 `retrieving` 快照，不再依赖每轮强制 reset。
 - `publish_query_labels`：DataAgent 专属标签声明工具，只接收 lead-agent 已经确认的 `intent`、`labels`、可选 `summary` 和显式 `ambiguities`，不再接收模型自报 `confidence`，也不调用额外模型。没有歧义时必须传 `ambiguities: []`，不能省略或只在最终回答中描述待确认项。
-- `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`；正式 DataAgent 使用 `require_retrieval=True`，因此任何标签都必须在首次有效 TableRAG 检索后发布。middleware 会生成 `data_query_labels` artifact、写入 `service_states` 的 `labels_published` 快照，并附带 `approval_policy`，但不会直接创建人工确认请求。
+- `QueryLabelsMiddleware`：稳定实现位于 `deerflow.agents.middlewares.query_labels_middleware`；正式 DataAgent 使用 `require_retrieval=True`，因此任何标签都必须绑定有效 TableRAG 检索上下文。用户在旧轮取消、失败或完成后再次表达“重新执行”时，模型可以基于历史检索快照重新调用 `publish_query_labels`，middleware 会用最新可见用户消息生成新的 `labels_published` 快照并记录 `resumed_from`，但不会直接创建人工确认请求。
 - `ask_intent_approval`：DataAgent 专属查询意图审批工具。模型在标签结果显示 `approval_policy.required=true` 或自行判断需要用户确认时调用它；后端生成 human-input v1 审批卡并暂停运行。
-- `QueryIntentApprovalMiddleware`：拦截 `ask_intent_approval`，把人类审批结果以同一工具调用的 ToolMessage 结果写回对话历史，并把 service state 推进到 `approved`、`cancelled` 或新的 `retrieving` 修订快照。
-- `SqlStageMiddleware`：父 DataAgent 只通过 `task` 委派配置中的 SQL SubAgent；只有历史/当前快照已 `approved`，或 `approval_policy.required=false` 时才允许进入 SQL 阶段。它不再按“当前可见 turn”机械拒绝历史已确认意图，模型可读取历史审批工具结果判断追问是否仍相关。
+- `QueryIntentApprovalMiddleware`：拦截 `ask_intent_approval`，把人类审批结果以同一工具调用的 ToolMessage 结果写回对话历史；`approved`、`cancelled` 都保留给模型阅读。若当前快照已经取消，直接再次调用审批工具只会得到“先重新发布标签”的提示，避免复活旧取消态。
+- `SqlStageMiddleware`：父 DataAgent 只通过 `task` 委派配置中的 SQL SubAgent；只有当前持久化快照已 `approved`，或 `approval_policy.required=false` 时才允许进入 SQL 阶段。模型可读取历史审批工具结果判断追问是否仍相关，但后端不会从 `cancelled` 快照直接生成 SQL 授权；取消后重新执行应先重新发布标签并按需审批。
 - `data_validate_sql` / `data_execute_sql`：SQL SubAgent 专属工具，支持 PostgreSQL/MySQL 只读 AST 校验、数据源绑定、预算、超时和安全错误分类。`sql_only` 只提供校验工具；`execute` 才提供执行工具。
 
 lead-agent 可以直接从用户问题中组织 TableRAG 检索关键词。标签展示由
-`publish_query_labels` 完成，但必须在首次有效检索之后：`source=user` 和
-`source=derived` 也不能提前发布，`source=database` 还必须引用当前轮次的
-TableRAG Evidence。后续再次调用会替换当前完整标签快照，并生成可逐项审核的
+`publish_query_labels` 完成，但必须绑定有效检索上下文：`source=user` 和
+`source=derived` 也不能在没有检索锚点时提前发布，`source=database` 还必须引用当前可执行
+检索快照中的 TableRAG Evidence。后续再次调用会替换当前完整标签快照，并生成可逐项审核的
 `ambiguity_items`。标签工具不会额外请求模型，也不能把历史对话、memory 或旧 SQL
 当成当前数据库 Schema 的证明。实时消息和历史 values 都必须携带 artifact，否则前端会退化为普通工具轨迹。
 

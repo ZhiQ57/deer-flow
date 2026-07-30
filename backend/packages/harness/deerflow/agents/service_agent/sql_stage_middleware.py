@@ -93,7 +93,7 @@ class SqlStageMiddleware(AgentMiddleware):
             }
         return None
 
-    def _envelope(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    def _envelope(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any], Mapping[str, Any]] | None:
         """从当前状态构造严格 JSON SQL SubAgent 请求与审批授权。"""
         state = request.state if isinstance(request.state, Mapping) else {}
         if not self._config.enable_sql_rag:
@@ -146,7 +146,7 @@ class SqlStageMiddleware(AgentMiddleware):
                 "validation 必须原样保留 sql_sha256 和 validation_digest；禁止 Markdown 和自由文本。"
             ),
         }
-        return envelope, approval
+        return envelope, approval, active
 
     @staticmethod
     def _replace_task_args(request: ToolCallRequest, envelope: Mapping[str, Any]) -> ToolCallRequest:
@@ -211,15 +211,12 @@ class SqlStageMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         result: ToolMessage | Command,
         approval: Mapping[str, Any],
+        active: Mapping[str, Any],
     ) -> ToolMessage | Command:
         """验证子代理返回并投影 sql_ready/failed 阶段。"""
         message = self._result_message(result)
         if message is None:
             return self._error(request, "SQL_SUBAGENT_RESULT_MISSING")
-        state = request.state if isinstance(request.state, Mapping) else {}
-        active = get_active_service_state(state)
-        if active is None:
-            return self._error(request, "SQL_SNAPSHOT_MISSING")
         subagent_result = read_subagent_result_metadata(message.additional_kwargs)
         if subagent_result is not None and subagent_result["status"] != "completed":
             # ADD: task_tool 自己已经知道 SQL 子任务失败原因时，父阶段直接透传真实 SQL_* 错误码，
@@ -354,8 +351,8 @@ class SqlStageMiddleware(AgentMiddleware):
         authorized = self._envelope(request)
         if authorized is None:
             return self._error(request, "SQL_STAGE_NOT_APPROVED")
-        envelope, approval = authorized
-        return self._merge_result(request, handler(self._replace_task_args(request, envelope)), approval)
+        envelope, approval, active = authorized
+        return self._merge_result(request, handler(self._replace_task_args(request, envelope)), approval, active)
 
     @override
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]) -> ToolMessage | Command:
@@ -365,5 +362,5 @@ class SqlStageMiddleware(AgentMiddleware):
         authorized = self._envelope(request)
         if authorized is None:
             return self._error(request, "SQL_STAGE_NOT_APPROVED")
-        envelope, approval = authorized
-        return self._merge_result(request, await handler(self._replace_task_args(request, envelope)), approval)
+        envelope, approval, active = authorized
+        return self._merge_result(request, await handler(self._replace_task_args(request, envelope)), approval, active)

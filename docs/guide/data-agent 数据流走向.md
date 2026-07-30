@@ -270,8 +270,14 @@ Run A：用户问题
 Run B：用户提交审核结果
 └─ 隐藏 HumanMessage(human_input_response)
    └─ QueryIntentApprovalMiddleware.before_agent()
-      └─ ask_intent_approval ToolMessage 结果写回历史，stage = approved
-         └─ DataAgent Lead 才能继续委派 SQL SubAgent
+       └─ ask_intent_approval ToolMessage 结果写回历史，stage = approved
+          └─ DataAgent Lead 才能继续委派 SQL SubAgent
+
+后续可见用户消息不会被机械视为“必须重新确认的新轮次”。模型可以阅读历史 ToolMessage，
+自行判断“重新生成 SQL / 继续执行 / 重新执行”是否仍指向同一查询意图；如果当前持久化快照
+已 approved，可直接委派 SQL。如果历史结果是 cancelled、未确认或本轮语义变化，模型可以
+重新检索，也可以基于历史检索快照再次调用 `publish_query_labels`，重新展示标签/审批组件。
+系统不会根据“重新执行”等关键词写死流程，只在工具调用时校验安全合同。
 ```
 
 ## 五、SQL SubAgent 执行链路
@@ -284,7 +290,7 @@ DataAgent Lead
    )
    │
    ├─ SqlStageMiddleware.wrap_tool_call()
-   │  ├─ 检查已 approved 或 approval_policy.required=false
+   │  ├─ 检查当前持久化快照已 approved / approval_policy.required=false
    │  ├─ 检查 action == execute / sql_only
    │  ├─ 检查 allowable_subagents
    │  ├─ 禁止同一个响应重复委派 SQL SubAgent

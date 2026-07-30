@@ -160,6 +160,29 @@ def build_branch_history_seed_events(
     return events
 
 
+def build_checkpoint_history_seed_events(
+    messages: Sequence[Any],
+    *,
+    thread_id: str,
+    run_id: str,
+    seed_metadata: Mapping[str, Any] | None = None,
+) -> list[dict]:
+    """Serialize checkpoint messages into non-branch history seed events."""
+    events = build_branch_history_seed_events(
+        messages,
+        thread_id=thread_id,
+        run_id=run_id,
+        parent_thread_id=thread_id,
+    )
+    for event in events:
+        metadata = dict(event.get("metadata") or {})
+        metadata.pop("branch_seed", None)
+        metadata.pop("branch_parent_thread_id", None)
+        metadata.update(seed_metadata or {})
+        event["metadata"] = metadata
+    return events
+
+
 class RunJournal(BaseCallbackHandler):
     """LangChain callback handler that captures events to RunEventStore."""
 

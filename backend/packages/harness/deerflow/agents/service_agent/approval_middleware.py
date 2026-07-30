@@ -416,7 +416,7 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
         if stage == "cancelled":
             return self._hidden_status_message(
                 request,
-                content="当前查询意图审批已经取消，请停止本次 DataAgent 查询流程。",
+                content="当前查询意图审批已经取消；如果用户重新执行并仍需确认，请先重新发布标签快照，再调用 ask_intent_approval。",
             )
 
         if stage != "labels_published":

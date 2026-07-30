@@ -262,6 +262,39 @@ _DATA_QUERY_STAGE_RANK = {
     "cancelled": 8,
 }
 _DATA_QUERY_TERMINAL_STAGES = frozenset({"succeeded", "failed", "cancelled", "unsupported_version"})
+_DATA_QUERY_LABEL_REENTRY_SOURCE_STAGES = frozenset(
+    {
+        "retrieving",
+        "labels_published",
+        "awaiting_confirmation",
+        "approved",
+        "sql_ready",
+        "succeeded",
+        "failed",
+        "cancelled",
+    }
+)
+
+
+def _is_resumed_data_query_label_publish(current: Mapping[str, object], incoming: Mapping[str, object]) -> bool:
+    """判断新标签快照是否是在显式延续当前历史快照。
+
+    Args:
+        current: checkpoint 中当前 DataAgent 活动快照。
+        incoming: 本次工具调用产生的新 DataAgent 快照。
+
+    Returns:
+        新快照带有匹配的 resumed_from 来源时返回 True。
+    """
+    if current.get("stage") not in _DATA_QUERY_LABEL_REENTRY_SOURCE_STAGES or incoming.get("stage") != "labels_published":
+        return False
+    payload = incoming.get("payload")
+    if not isinstance(payload, Mapping):
+        return False
+    resumed_from = payload.get("resumed_from")
+    if not isinstance(resumed_from, Mapping):
+        return False
+    return resumed_from.get("turn_id") == current.get("turn_id") and resumed_from.get("snapshot_id") == current.get("snapshot_id")
 
 
 # ADD: 对 DataAgent 活动快照执行单向状态机合并，丢弃旧轮次、旧 snapshot 和阶段回退写入。
@@ -273,13 +306,16 @@ def _can_replace_data_query_state(current: Mapping[str, object], incoming: Mappi
     incoming_turn = incoming.get("turn_id")
     incoming_stage = incoming.get("stage")
     current_stage = current.get("stage")
-    if isinstance(current_turn, str) and isinstance(incoming_turn, str) and current_turn != incoming_turn:
-        # 新用户问题不再依赖单独的 turn-reset middleware 先写 idle；
-        # TableRAG 检索可以直接开启新快照，但旧轮 SQL/审批结果仍不能覆盖当前轮。
-        return incoming_stage in {"idle", "retrieving", "needs_refinement"}
-
     current_snapshot = current.get("snapshot_id")
     incoming_snapshot = incoming.get("snapshot_id")
+    if isinstance(current_turn, str) and isinstance(incoming_turn, str) and current_turn != incoming_turn:
+        # 新用户问题不再依赖单独的 turn-reset middleware 先写 idle；
+        # TableRAG 检索可以直接开启新快照；如果模型显式复用当前历史快照重新发布标签，
+        # 也允许 labels_published 进入新 turn。旧轮 SQL/审批结果仍不能覆盖当前轮。
+        if _is_resumed_data_query_label_publish(current, incoming):
+            return True
+        return incoming_stage in {"idle", "retrieving", "needs_refinement"}
+
     if current_snapshot == incoming_snapshot:
         if current_stage in _DATA_QUERY_TERMINAL_STAGES:
             return incoming_stage == current_stage

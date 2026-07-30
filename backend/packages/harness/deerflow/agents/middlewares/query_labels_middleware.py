@@ -32,6 +32,23 @@ from deerflow.agents.service_agent.turn_context import current_visible_turn_id
 logger = logging.getLogger(__name__)
 
 _PUBLISH_QUERY_LABELS_TOOL_NAME = "publish_query_labels"
+_RECOVERABLE_LABEL_CONTEXT_MISSING = (
+    "当前没有可用于发布标签的有效 TableRAG 检索上下文。"
+    "请根据本轮请求与历史对话自行判断下一步：可以重新调用 sqlrag_retrieve 建立检索上下文，"
+    "也可以向用户说明历史快照已不足以安全继续。"
+)
+_LABEL_REENTRY_STAGES = frozenset(
+    {
+        "retrieving",
+        "labels_published",
+        "awaiting_confirmation",
+        "approved",
+        "sql_ready",
+        "succeeded",
+        "failed",
+        "cancelled",
+    }
+)
 _LABEL_SOURCES = frozenset(
     {
         "user",  # 用户直接声明的标签
@@ -243,16 +260,18 @@ class QueryLabelsMiddleware(AgentMiddleware):
         state = request.state if isinstance(request.state, Mapping) else {}
         active = get_active_service_state(state)
         if active is None:
-            raise ValueError("发布查询标签前必须先完成当前用户轮次的 TableRAG 检索。")
-        if active.get("stage") not in {"retrieving", "labels_published"}:
-            raise ValueError("当前查询阶段不允许重复发布标签。")
+            raise ValueError(_RECOVERABLE_LABEL_CONTEXT_MISSING)
+        if active.get("stage") not in _LABEL_REENTRY_STAGES:
+            stage = str(active.get("stage") or "unknown")
+            raise ValueError(
+                f"当前 DataAgent 查询快照处于 {stage} 阶段，不能直接复用其检索上下文发布标签。"
+                "请根据历史对话自行判断是否需要重新检索、向用户追问，或结束本次查询。"
+            )
         visible_turn_id = current_visible_turn_id(state)
-        if visible_turn_id is not None and visible_turn_id != active.get("turn_id"):
-            raise ValueError("查询标签不属于当前可见用户轮次。")
         payload = active.get("payload")
         retrieval = payload.get("retrieval") if isinstance(payload, Mapping) else None
         if not isinstance(retrieval, Mapping) or retrieval.get("ok") is not True:
-            raise ValueError("当前 TableRAG 检索没有有效结果，不能发布数据库标签。")
+            raise ValueError(_RECOVERABLE_LABEL_CONTEXT_MISSING)
         args = request.tool_call.get("args") or {}
         if not isinstance(args, Mapping):
             raise ValueError("标签工具参数必须是对象。")
@@ -285,7 +304,17 @@ class QueryLabelsMiddleware(AgentMiddleware):
                 raise ValueError("ambiguities 必须是 JSON 数组。") from exc
         if not isinstance(ambiguities, list):
             raise ValueError("ambiguities 必须是数组。")
-        turn_id = str(active.get("turn_id") or "")
+        active_turn_id = str(active.get("turn_id") or "")
+        turn_id = str(visible_turn_id or active_turn_id)
+        resumed_from: dict[str, Any] | None = None
+        if turn_id and active_turn_id and turn_id != active_turn_id:
+            # ADD: 新一轮可见用户消息可以基于历史检索快照重新发布标签，
+            # 但必须显式记录来源，避免旧取消/完成状态被误认为当前轮次原生快照。
+            resumed_from = {
+                "turn_id": active_turn_id,
+                "snapshot_id": active.get("snapshot_id"),
+                "stage": active.get("stage"),
+            }
         snapshot = build_query_label_snapshot(
             turn_id=turn_id,
             data_source_id=self._service_ability.data_source_id,
@@ -329,12 +358,16 @@ class QueryLabelsMiddleware(AgentMiddleware):
             "approval_required": bool(approval_policy["required"]),
             "approval_policy": dict(approval_policy),
         }
+        if resumed_from is not None:
+            artifact["resumed_from"] = dict(resumed_from)
         service_payload = {
             "retrieval": dict(retrieval),
             "labels": dict(snapshot),
             "approval_policy": dict(approval_policy),
             "review_items": build_query_review_items(snapshot),
         }
+        if resumed_from is not None:
+            service_payload["resumed_from"] = dict(resumed_from)
         service_state = make_service_state(
             turn_id=turn_id,
             stage=self._stage_name or "labels_published",
