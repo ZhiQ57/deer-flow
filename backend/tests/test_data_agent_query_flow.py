@@ -17,7 +17,7 @@ from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
-from deerflow.agents.service_agent.approval_middleware import QueryIntentApprovalMiddleware
+from deerflow.agents.service_agent.query_intent_approval_middleware import QueryIntentApprovalMiddleware
 from deerflow.agents.service_agent.binding import resolve_data_source_binding
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility

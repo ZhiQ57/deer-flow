@@ -67,9 +67,8 @@ def build_retrieval_context(
     payload: Mapping[str, Any],
     *,
     tool_name: str,
-    turn_id: str,
+    tool_call_id: str,
     data_source_id: str,
-    binding: Mapping[str, Any] | None = None,
     request_args: object = None,
 ) -> dict[str, Any]:
     """构造当前用户轮次的 TableRAG 检索上下文。
@@ -77,7 +76,7 @@ def build_retrieval_context(
     Args:
         payload: TableRAG MCP 工具返回的 JSON 对象。
         tool_name: 实际注册的 MCP 工具名。
-        turn_id: 当前可见用户消息 ID。
+        tool_call_id: 当前可见用户消息 ID。
         data_source_id: service ability 绑定的数据源 ID。
         binding: 服务端解析的无密钥 DataSourceBindingV1。
         request_args: 当前 MCP 工具调用参数，用于登记 query 或 queries。
@@ -140,11 +139,10 @@ def build_retrieval_context(
     return {
         "version": 1,
         "ok": True,
-        "turn_id": turn_id,
+        "tool_call_id": tool_call_id,
         "data_source_id": data_source_id,
         "tool_name": tool_name,
         "operation": operation,
-        "binding": dict(binding or {}),
         "query": query,
         "keyword_queries": keyword_queries,
         **normalized,
@@ -225,7 +223,7 @@ def merge_retrieval_contexts(
     return {
         "version": 1,
         "ok": True,
-        "turn_id": supplemental["turn_id"],
+        "tool_call_id": supplemental["tool_call_id"],
         "data_source_id": supplemental["data_source_id"],
         "tool_name": supplemental.get("tool_name"),
         "operation": supplemental.get("operation"),
@@ -265,7 +263,7 @@ def get_active_service_state(state: Mapping[str, Any] | None, *, service_name: s
 # ADD: 生成最小、可持久化的 DataAgent 服务状态更新。
 def make_service_state(
     *,
-    turn_id: str,
+    tool_call_id: str,
     stage: str,
     payload: Mapping[str, Any] | None = None,
     snapshot_id: str | None = None,
@@ -276,7 +274,7 @@ def make_service_state(
     body: dict[str, Any] = {
         "service_name": "data_query",
         "version": 1,
-        "turn_id": turn_id,
+        "tool_call_id": tool_call_id,
         "stage": stage,
         "payload": dict(payload or {}),
     }

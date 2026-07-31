@@ -87,7 +87,7 @@ class DataAgentServiceAbility:
         """返回 DataAgent 当前阶段的业务 middleware。"""
         from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 
-        from .approval_middleware import QueryIntentApprovalMiddleware
+        from .query_intent_approval_middleware import QueryIntentApprovalMiddleware
         from .sql_stage_middleware import SqlStageMiddleware
         from .table_rag_middleware import TableRagStageMiddleware
 

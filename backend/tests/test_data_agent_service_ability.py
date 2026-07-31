@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
-from deerflow.agents.service_agent.approval_middleware import QueryIntentApprovalMiddleware
+from deerflow.agents.service_agent.query_intent_approval_middleware import QueryIntentApprovalMiddleware
 from deerflow.agents.service_agent.binding import resolve_data_source_binding
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig, parse_service_ability
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility, resolve_service_ability, resolve_service_ability_safely
