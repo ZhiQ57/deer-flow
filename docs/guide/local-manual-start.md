@@ -121,6 +121,12 @@ Password: root@123456
 数据库名：text2sql
 ```
 
+DeerFlow Postgresql数据库容器:
+```docker
+docker run -d --name deerflow-postgres -e POSTGRES_USER=myuser -e POSTGRES_PASS
+WORD=123456 -e POSTGRES_DB=deerflow -p 55432:5432 -v postgres_data:/var/lib/postgresql postgres:15
+```
+
 > 修改 `config.yaml` 的模型配置后，需要重启后端 Gateway。
 
 ### 3.1 使用 VS Code 调试 Gateway

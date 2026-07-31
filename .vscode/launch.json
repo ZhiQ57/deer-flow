@@ -27,7 +27,9 @@
         "--host",
         "0.0.0.0",
         "--port",
-        "8001"
+        "8001",
+        "--loop",
+        "asyncio:SelectorEventLoop"
       ],
       "cwd": "${workspaceFolder}/backend",
       "envFile": "${workspaceFolder}/.env",
@@ -43,7 +45,8 @@
         "GATEWAY_CORS_ORIGINS": "http://localhost:3000,http://127.0.0.1:3000",
         "TABLERAG_CONFIG": "D:\\A-PythonWork\\AOpenGithub\\deer-flow\\tablerag.yaml",
         "TABLERAG_MCP_INDEX_DSN": "postgresql://postgres:postgres@127.0.0.1:55433/text2sql",
-        "DATA_AGENT_MYSQL_DSN": "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql"
+        "DATA_AGENT_MYSQL_DSN": "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql",
+        "DATABASE_URL": "postgresql://myuser:123456@127.0.0.1:55432/deerflow",
       },
       "console": "integratedTerminal",
       "justMyCode": false,
