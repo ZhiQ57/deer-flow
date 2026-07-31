@@ -101,6 +101,12 @@ make format             # Format code with ruff
 make migrate-rev MSG="..."  # Autogenerate a new alembic revision (see Schema Migrations section)
 ```
 
+The tracked VS Code `DeerFlow: 调试 Gateway` configuration launches Uvicorn with
+`backend/.venv` and leaves `--loop` at Uvicorn's supported default. On Windows,
+`backend/sitecustomize.py` installs `WindowsSelectorEventLoopPolicy`; do not pass
+an event-loop class path such as `asyncio:SelectorEventLoop` through Uvicorn's
+`--loop` CLI option, whose supported names are `auto`, `asyncio`, and `uvloop`.
+
 The `detect-blocking-io` target parses `app/`, `packages/harness/deerflow/`,
 and `scripts/` with AST. By default it reports only blocking IO candidates that
 are inside async code, reachable from async code in the same file, or reachable

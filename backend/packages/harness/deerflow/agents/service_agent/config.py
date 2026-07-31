@@ -9,6 +9,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+_DATABASE_TYPE_ALIASES = {
+    "mysql": "mysql",
+    "mysql_pymysql": "mysql",
+    "pg": "postgresql",
+    "postgres": "postgresql",
+    "postgresql": "postgresql",
+    "postgresqls": "postgresql",
+}
+_SECRET_REF_PATTERN = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*|secret://[^\s]+)$")
 logger = logging.getLogger(__name__)
 
 
@@ -29,7 +38,55 @@ class SqlExecutionConfig(BaseModel):
     max_result_chars: int = Field(default=100_000, ge=1_000, le=1_000_000)
     allowed_schemas: list[str] = Field(default_factory=list)
 
-    # TODO: 归一化数据库类型, 避免出现 "postgresql" vs "postgres" vs "pg" 等别名.(当前不需要实现)
+    # ADD: 阻止 Pydantic 把 Python bool 静默转换成 SQL 数值预算 1/0。
+    @field_validator(
+        "statement_timeout_seconds",
+        "max_execution_attempts",
+        "max_rows",
+        "max_cell_chars",
+        "max_result_chars",
+        mode="before",
+    )
+    @classmethod
+    def _reject_boolean_budget(cls, value: object) -> object:
+        """拒绝布尔类型的 SQL 数值预算。"""
+        if isinstance(value, bool):
+            raise ValueError("SQL 数值预算不能使用布尔值。")
+        return value
+
+    @field_validator("database_type", mode="before")
+    @classmethod
+    def _normalize_database_type(cls, value: object) -> str:
+        """归一化数据库类型并拒绝未支持方言。"""
+        if not isinstance(value, str):
+            raise ValueError("sql_execution.database_type 必须是字符串。")
+        normalized = value.strip().lower().replace("-", "_")
+        if normalized not in _DATABASE_TYPE_ALIASES:
+            raise ValueError("SQL 执行只支持 PostgreSQL 或 MySQL。")
+        return _DATABASE_TYPE_ALIASES[normalized]
+
+    @field_validator("dsn_env")
+    @classmethod
+    def _validate_dsn_reference(cls, value: str) -> str:
+        """校验 DSN 只能引用环境变量或登记的 Secret。"""
+        if not isinstance(value, str) or not _SECRET_REF_PATTERN.fullmatch(value.strip()):
+            raise ValueError("sql_execution.dsn_env 必须是环境变量名或 secret:// 引用。")
+        return value.strip()
+
+    @field_validator("allowed_schemas")
+    @classmethod
+    def _validate_allowed_schemas(cls, values: list[str]) -> list[str]:
+        """校验允许访问的 Schema 配置格式。"""
+        if any(not isinstance(item, str) or not item.strip() for item in values):
+            raise ValueError("sql_execution.allowed_schemas 不能包含空值。")
+        return [item.strip() for item in values]
+
+    @model_validator(mode="after")
+    def _require_readonly(self) -> SqlExecutionConfig:
+        """强制 SQL 执行使用只读开关。"""
+        if self.readonly is not True:
+            raise ValueError("sql_execution.readonly 必须为 true。")
+        return self
 
 
 class DataQueryServiceAbilityConfig(BaseModel):
@@ -43,16 +100,25 @@ class DataQueryServiceAbilityConfig(BaseModel):
     enable_subagent_sql_execution: bool = True
     # TODO 其他参数需要增加
 
-    type: Literal["data_query"]         # TODO 删除
-    version: Literal[1]                 # TODO 删除
-    enable_sql_rag: Literal[True] = True        # TODO 删除
-    table_rag_config: str = Field(min_length=1, max_length=500)     # TODO 删除
-    data_source_id: str = Field(min_length=1, max_length=128)       # TODO 删除
+    type: Literal["data_query"]  # TODO 删除
+    version: Literal[1]  # TODO 删除
+    enable_sql_rag: Literal[True] = True  # TODO 删除
+    table_rag_config: str = Field(min_length=1, max_length=500)  # TODO 删除
+    data_source_id: str = Field(min_length=1, max_length=128)  # TODO 删除
     source_binding_mode: Literal["same_physical_target", "logical_data_source"] = "same_physical_target"  # TODO 删除
-    
-    min_auto_confidence: float = Field(default=0.85, ge=0.0, le=1.0)        # TODO 删除
+
+    min_auto_confidence: float = Field(default=0.85, ge=0.0, le=1.0)  # TODO 删除
     sql_subagent_name: str = Field(default="sql-subagent", min_length=1, max_length=100)
     sql_execution: SqlExecutionConfig
+
+    # ADD: 自动确认阈值必须是数值，不能把 true/false 解释成 1/0。
+    @field_validator("min_auto_confidence", mode="before")
+    @classmethod
+    def _reject_boolean_confidence(cls, value: object) -> object:
+        """拒绝布尔类型的自动确认阈值。"""
+        if isinstance(value, bool):
+            raise ValueError("min_auto_confidence 不能使用布尔值。")
+        return value
 
     @field_validator("table_rag_config", "data_source_id", "sql_subagent_name")
     @classmethod

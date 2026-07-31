@@ -8,7 +8,9 @@ same shape — see PR #2767 / Issue #2754.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -16,6 +18,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = REPO_ROOT / "docker" / "dev-entrypoint.sh"
+VSCODE_LAUNCH = REPO_ROOT / ".vscode" / "launch.json"
 
 
 def _run(uv_extras: str | None) -> subprocess.CompletedProcess[str]:
@@ -52,6 +55,18 @@ def test_entrypoint_excludes_runtime_state_from_uvicorn_reload():
     assert "--reload-exclude=/app/backend/sandbox" in content
     assert '--reload-exclude="$DEER_FLOW_HOME"' in content
     assert "--reload-exclude=/app/backend/.deer-flow" in content
+
+
+def test_gateway_vscode_launch_uses_supported_uvicorn_loop():
+    """Gateway 调试配置只能使用 Uvicorn CLI 支持的事件循环名称。"""
+    content = VSCODE_LAUNCH.read_text(encoding="utf-8")
+    launch_config = json.loads(re.sub(r",(\s*[}\]])", r"\1", content))
+    gateway_config = next(config for config in launch_config["configurations"] if config["name"] == "DeerFlow: 调试 Gateway")
+    args = gateway_config["args"]
+
+    if "--loop" in args:
+        loop_index = args.index("--loop")
+        assert args[loop_index + 1] in {"auto", "asyncio", "uvloop"}
 
 
 def test_no_uv_extras_yields_empty_flags():

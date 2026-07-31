@@ -27,9 +27,7 @@
         "--host",
         "0.0.0.0",
         "--port",
-        "8001",
-        "--loop",
-        "asyncio:SelectorEventLoop"
+        "8001"
       ],
       "cwd": "${workspaceFolder}/backend",
       "envFile": "${workspaceFolder}/.env",

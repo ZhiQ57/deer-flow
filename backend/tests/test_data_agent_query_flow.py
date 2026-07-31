@@ -19,8 +19,8 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from app.gateway.modules.sql_execution.binding import resolve_data_source_binding
 from app.gateway.modules.sql_execution.service import execute_sql, validate_sql
 from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
-from deerflow.agents.service_agent.query_intent_approval_middleware import QueryIntentApprovalMiddleware
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
+from deerflow.agents.service_agent.query_intent_approval_middleware import QueryIntentApprovalMiddleware
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility
 from deerflow.agents.service_agent.sql_stage_middleware import SqlStageMiddleware
 from deerflow.agents.service_agent.sqlrag_contract import is_sqlrag_retrieval_tool_name
@@ -509,13 +509,13 @@ def test_current_visible_turn_id_ignores_hidden_intent_approval_response() -> No
                 content="已确认",
                 additional_kwargs={
                     "hide_from_ui": True,
-                        "human_input_response": {
-                            "version": 1,
-                            "kind": "human_input_response",
-                            "source": "ask_intent_approval",
-                            "request_id": "data-query:req-1",
-                            "response_kind": "text",
-                            "value": "确认执行",
+                    "human_input_response": {
+                        "version": 1,
+                        "kind": "human_input_response",
+                        "source": "ask_intent_approval",
+                        "request_id": "data-query:req-1",
+                        "response_kind": "text",
+                        "value": "确认执行",
                     },
                 },
             ),
@@ -956,18 +956,17 @@ def test_sql_stage_allows_historical_approved_snapshot_for_regeneration_request(
         envelope = json.loads(next_request.tool_call["args"]["prompt"])
         assert envelope["snapshot_id"] == "sha256:approved"
         assert envelope["action"] == "sql_only"
+        artifact = {
+            "version": 1,
+            "kind": "data_query_sql_result",
+            "snapshot_id": "sha256:approved",
+            "data_source_id": "sales-pg",
+            "validation": validation,
+            "execution": None,
+        }
         return ToolMessage(
-            content=json.dumps(
-                {
-                    "version": 1,
-                    "kind": "data_query_sql_result",
-                    "snapshot_id": "sha256:approved",
-                    "data_source_id": "sales-pg",
-                    "validation": validation,
-                    "execution": None,
-                },
-                ensure_ascii=False,
-            ),
+            content="[Gateway validation]",
+            artifact=artifact,
             tool_call_id="task-stale-snapshot",
             name="task",
         )
@@ -1106,29 +1105,28 @@ def test_sql_stage_allows_policy_based_execution_from_labels_published_snapshot(
         envelope = json.loads(next_request.tool_call["args"]["prompt"])
         assert envelope["action"] == "execute"
         assert envelope["snapshot_id"] == snapshot["snapshot_id"]
+        artifact = {
+            "version": 1,
+            "kind": "data_query_sql_result",
+            "snapshot_id": snapshot["snapshot_id"],
+            "data_source_id": "sales-pg",
+            "validation": validation,
+            "execution": {
+                "version": 1,
+                "ok": True,
+                "snapshot_id": snapshot["snapshot_id"],
+                "validation_digest": validation["validation_digest"],
+                "columns": ["region"],
+                "rows": [],
+                "row_count": 0,
+                "returned_row_count": 0,
+                "truncated": False,
+                "empty": True,
+            },
+        }
         return ToolMessage(
-            content=json.dumps(
-                {
-                    "version": 1,
-                    "kind": "data_query_sql_result",
-                    "snapshot_id": snapshot["snapshot_id"],
-                    "data_source_id": "sales-pg",
-                    "validation": validation,
-                    "execution": {
-                        "version": 1,
-                        "ok": True,
-                        "snapshot_id": snapshot["snapshot_id"],
-                        "validation_digest": validation["validation_digest"],
-                        "columns": ["region"],
-                        "rows": [],
-                        "row_count": 0,
-                        "returned_row_count": 0,
-                        "truncated": False,
-                        "empty": True,
-                    },
-                },
-                ensure_ascii=False,
-            ),
+            content="[Gateway execution]",
+            artifact=artifact,
             tool_call_id="task-policy",
             name="task",
         )
@@ -1260,13 +1258,13 @@ def test_query_intent_approval_text_revision_invalidates_old_query_snapshot() ->
             HumanMessage(
                 content="改查去年并排除退款",
                 additional_kwargs={
-                        "human_input_response": {
-                            "version": 1,
-                            "kind": "human_input_response",
-                            "source": "ask_intent_approval",
-                            "request_id": "data-query:req-revision",
-                            "response_kind": "text",
-                            "value": "改查去年并排除退款",
+                    "human_input_response": {
+                        "version": 1,
+                        "kind": "human_input_response",
+                        "source": "ask_intent_approval",
+                        "request_id": "data-query:req-revision",
+                        "response_kind": "text",
+                        "value": "改查去年并排除退款",
                     }
                 },
             ),
@@ -1931,18 +1929,19 @@ def test_sql_stage_middleware_prefers_task_artifact_over_budgeted_content() -> N
         state=state,
         runtime=MagicMock(),
     )
+    gateway_artifact = {
+        "version": 1,
+        "kind": "data_query_sql_result",
+        "snapshot_id": "sha256:snapshot",
+        "data_source_id": "sales-pg",
+        "validation": validation,
+        "execution": execution,
+    }
 
     def handler(_request: ToolCallRequest) -> ToolMessage:
         return ToolMessage(
             content="Task Succeeded. Result: [budgeted content preview]",
-            artifact={
-                "version": 1,
-                "kind": "data_query_sql_result",
-                "snapshot_id": "sha256:snapshot",
-                "data_source_id": "sales-pg",
-                "validation": validation,
-                "execution": execution,
-            },
+            artifact=gateway_artifact,
             tool_call_id="task-artifact",
             name="task",
         )
@@ -1951,6 +1950,16 @@ def test_sql_stage_middleware_prefers_task_artifact_over_budgeted_content() -> N
 
     assert result.update["service_states"][0]["stage"] == "succeeded"
     assert result.update["messages"][0].artifact["execution"] == execution
+
+    def content_only_handler(_request: ToolCallRequest) -> ToolMessage:
+        return ToolMessage(
+            content=f"Task Succeeded. Result: {json.dumps(gateway_artifact, ensure_ascii=False)}",
+            tool_call_id="task-artifact",
+            name="task",
+        )
+
+    rejected = SqlStageMiddleware(_config()).wrap_tool_call(request, content_only_handler)
+    assert json.loads(rejected.update["messages"][0].content)["error_code"] == "SQL_SUBAGENT_CONTRACT_INVALID"
 
 
 def test_sql_stage_middleware_surfaces_task_failure_code_instead_of_contract_error() -> None:
@@ -2181,8 +2190,17 @@ def test_sql_stage_middleware_replaces_free_text_prompt_with_json_envelope() -> 
             retrieval=retrieval,
             snapshot_id="sha256:snapshot",
         )
+        artifact = {
+            "version": 1,
+            "kind": "data_query_sql_result",
+            "snapshot_id": "sha256:snapshot",
+            "data_source_id": "sales-pg",
+            "validation": validation,
+            "execution": None,
+        }
         return ToolMessage(
-            content=(f'Task Succeeded. Result: {{"version":1,"kind":"data_query_sql_result","snapshot_id":"sha256:snapshot","data_source_id":"sales-pg","validation":{json.dumps(validation, ensure_ascii=False)},"execution":null}}'),
+            content="[Gateway validation]",
+            artifact=artifact,
             tool_call_id="task-1",
             name="task",
         )
@@ -2374,8 +2392,8 @@ def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch:
         """返回固定 TableRAG 检索结果。"""
         return json.dumps(_retrieval_payload(), ensure_ascii=False)
 
-    @tool("task")
-    def fake_task(description: str, prompt: str, subagent_type: str) -> str:
+    @tool("task", response_format="content_and_artifact")
+    def fake_task(description: str, prompt: str, subagent_type: str) -> tuple[str, dict[str, Any]]:
         """按父级 JSON envelope 返回固定 SQL 子代理结果。"""
         envelope = json.loads(prompt)
         validation = validate_sql(
@@ -2404,7 +2422,7 @@ def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch:
             "validation": validation,
             "execution": execution,
         }
-        return f"Task Succeeded. Result: {json.dumps(result, ensure_ascii=False)}"
+        return "[Gateway execution]", result
 
     model = _DataQueryFlowModel(
         responses=[
@@ -2553,8 +2571,8 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
         """返回固定 TableRAG 检索结果。"""
         return json.dumps(_retrieval_payload(), ensure_ascii=False)
 
-    @tool("task")
-    def fake_task(description: str, prompt: str, subagent_type: str) -> str:
+    @tool("task", response_format="content_and_artifact")
+    def fake_task(description: str, prompt: str, subagent_type: str) -> tuple[str, dict[str, Any]]:
         """返回固定 SQL 子代理结构化结果。"""
         envelope = json.loads(prompt)
         validation = validate_sql(
@@ -2582,7 +2600,7 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
                 "empty": True,
             },
         }
-        return f"Task Succeeded. Result: {json.dumps(result, ensure_ascii=False)}"
+        return "[Gateway execution]", result
 
     model = _DataQueryFlowModel(
         responses=[

@@ -328,6 +328,8 @@ On Windows, run the local development flow from Git Bash. Native `cmd.exe` and P
 
 6. **Access**: http://localhost:2026
 
+For VS Code backend debugging, use the tracked `DeerFlow: 调试 Gateway` launch configuration. It runs the Gateway with `backend/.venv`; Uvicorn keeps its supported default event-loop selection, while `backend/sitecustomize.py` applies the Windows selector policy required by the project. Do not pass Python class paths such as `asyncio:SelectorEventLoop` to Uvicorn's `--loop` option.
+
 #### Startup Modes
 
 DeerFlow runs the agent runtime inside the Gateway API. Development mode enables hot-reload; production mode uses a pre-built frontend.

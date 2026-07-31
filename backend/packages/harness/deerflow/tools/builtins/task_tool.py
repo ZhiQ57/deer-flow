@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
@@ -39,7 +38,6 @@ from deerflow.subagents.tool_provider import (
 from deerflow.tools.types import Runtime
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, get_current_trace_id, normalize_trace_id
 from deerflow.utils.custom_events import aemit_custom_event
-from deerflow.utils.messages import message_content_to_text
 
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig
@@ -237,37 +235,11 @@ def _build_data_query_sql_result_from_steps(
     if action not in {"execute", "sql_only"}:
         return None
 
-    def _step_artifact(step: Mapping[str, Any]) -> Mapping[str, Any] | None:
-        """读取 ToolMessage dump 中保留的结构化 artifact。"""
-        artifact = step.get("artifact")
-        if isinstance(artifact, Mapping):
-            return artifact
-        additional_kwargs = step.get("additional_kwargs")
-        if isinstance(additional_kwargs, Mapping) and isinstance(additional_kwargs.get("artifact"), Mapping):
-            return additional_kwargs["artifact"]
-        return None
-
-    def _step_payload(step: Mapping[str, Any]) -> dict[str, Any] | None:
-        """优先从 artifact 读取 SQL 工具结果，兼容旧 content JSON。"""
-        artifact = _step_artifact(step)
-        if artifact is not None:
-            return dict(artifact)
-        content = step.get("content")
-        text = message_content_to_text(content)
-        if not text:
-            return None
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            return None
-        return parsed if isinstance(parsed, dict) else None
-
     parsed_tools: list[tuple[str, dict[str, Any]]] = []
     for step in steps:
-        if not isinstance(step, Mapping) or step.get("type") != "tool":
+        if not isinstance(step, dict) or step.get("type") != "tool":
             continue
         name = step.get("name")
-        if not isinstance(name, str):
         if not isinstance(name, str):
             continue
         artifact = step.get("artifact")

@@ -15,7 +15,6 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deerflow.subagents.status_contract import make_subagent_additional_kwargs, read_subagent_result_metadata
-from deerflow.utils.messages import message_content_to_text
 
 from .config import DataQueryServiceAbilityConfig
 from .state import get_active_service_state, make_service_state
@@ -67,20 +66,11 @@ class SqlStageMiddleware(AgentMiddleware):
             可以进入 SQL 阶段的审批对象；不满足门禁时返回 None。
         """
         approval = payload.get("approval")
-        if (
-            active.get("stage") in {"approved", "sql_ready", "succeeded"}
-            and isinstance(approval, Mapping)
-            and approval.get("status") == "approved"
-            and approval.get("action") in {"execute", "sql_only"}
-        ):
+        if active.get("stage") in {"approved", "sql_ready", "succeeded"} and isinstance(approval, Mapping) and approval.get("status") == "approved" and approval.get("action") in {"execute", "sql_only"}:
             return dict(approval)
 
         policy = payload.get("approval_policy")
-        if (
-            active.get("stage") == "labels_published"
-            and isinstance(policy, Mapping)
-            and policy.get("required") is False
-        ):
+        if active.get("stage") == "labels_published" and isinstance(policy, Mapping) and policy.get("required") is False:
             return {
                 "version": 1,
                 "snapshot_id": active.get("snapshot_id"),
@@ -188,22 +178,6 @@ class SqlStageMiddleware(AgentMiddleware):
             return dict(additional_kwargs["artifact"])
         return None
 
-    @staticmethod
-    def _content_payload(message: ToolMessage) -> dict[str, Any] | None:
-        """兼容旧 task 文本结果中的 JSON 合同。"""
-        raw = message_content_to_text(message.content)
-        if "Result:" in raw:
-            raw = raw.split("Result:", 1)[1].strip()
-        try:
-            parsed = json.loads(raw)
-        except (TypeError, json.JSONDecodeError):
-            return None
-        return dict(parsed) if isinstance(parsed, Mapping) else None
-
-    def _payload_from_message(self, message: ToolMessage) -> dict[str, Any] | None:
-        """从 task 结果读取 SQL 合同，artifact 优先，content 仅作兼容。"""
-        return self._artifact_payload(message) or self._content_payload(message)
-
     def _merge_result(
         self,
         request: ToolCallRequest,
@@ -221,7 +195,7 @@ class SqlStageMiddleware(AgentMiddleware):
             # 避免把上游工具结果无效、超时或执行失败二次误报为合同解析失败。
             return self._error(request, self._sql_error_code(subagent_result.get("error")))
 
-        parsed = self._payload_from_message(message)
+        parsed = self._artifact_payload(message)
         if (
             not isinstance(parsed, Mapping)
             or parsed.get("version") != 1
@@ -240,18 +214,9 @@ class SqlStageMiddleware(AgentMiddleware):
             or validation.get("snapshot_id") != active.get("snapshot_id")
             or not isinstance(validation.get("validation_digest"), str)
             or not isinstance(validation.get("executable_sql"), str)
+            or validation.get("database_type") != binding.get("database_type")
+            or validation.get("binding_fingerprint") != binding.get("binding_fingerprint")
         ):
-            return self._error(request, "SQL_VALIDATION_FAILED")
-        active_payload = active.get("payload") if isinstance(active.get("payload"), Mapping) else {}
-        retrieval = active_payload.get("retrieval") if isinstance(active_payload.get("retrieval"), Mapping) else {}
-        server_validation = self._sql_executor.validate(
-            SqlValidationRequest(
-                sql=validation["executable_sql"],
-                retrieval=retrieval,
-                snapshot_id=str(active.get("snapshot_id") or ""),
-            )
-        )
-        if server_validation.get("valid") is not True or validation.get("sql_sha256") != server_validation.get("sql_sha256") or validation.get("validation_digest") != server_validation.get("validation_digest"):
             return self._error(request, "SQL_VALIDATION_FAILED")
         action = approval.get("action")
         execution = parsed.get("execution")
