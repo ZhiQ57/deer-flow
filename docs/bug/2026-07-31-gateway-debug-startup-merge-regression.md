@@ -37,4 +37,4 @@
 
 - [X] 6.1 更新 README、`backend/AGENTS.md` 和 Review 记录。
 - [X] 6.2 完成 `git diff --check`、变更范围 Ruff 检查和扩大定向回归。
-- [ ] 6.3 提交修复分支并合并回本地 `dev`。
+- [X] 6.3 提交修复分支并通过 fast-forward 合并回本地 `dev`。
