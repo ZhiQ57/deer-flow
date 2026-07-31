@@ -181,28 +181,25 @@ DataAgent Lead Middleware
 ├─ 31. Custom / Configured Middleware（可选）
 │      └─ 配置文件中的扩展 Middleware
 │
-├─ 32. DataAgentTurnResetMiddleware
-│      └─ 新的可见用户消息建立 stage=idle，旧查询授权立即失效
-│
-├─ 33. TableRagStageMiddleware
+├─ 32. TableRagStageMiddleware
 │      └─ 控制 sqlrag_retrieve 阶段、预算和 Retrieval Snapshot
 │
-├─ 34. QueryLabelsMiddleware
-│      └─ 构造查询标签、Evidence 引用、Snapshot 和审核请求
+├─ 33. QueryLabelsMiddleware
+│      └─ 构造查询标签、Evidence 引用、Snapshot 和审批策略
 │
-├─ 35. QueryApprovalMiddleware
-│      └─ 消费前端审核回复；未审核时阻止模型继续运行
+├─ 34. QueryIntentApprovalMiddleware
+│      └─ 拦截 ask_intent_approval；生成审批卡并把人类结果写回工具历史
 │
-├─ 36. SqlStageMiddleware
-│      └─ 只允许 approved Snapshot 委派 SQL SubAgent
+├─ 35. SqlStageMiddleware
+│      └─ 只允许 approved 或策略自动放行的 Snapshot 委派 SQL SubAgent
 │
-├─ 37. TerminalResponseMiddleware
+├─ 36. TerminalResponseMiddleware
 │      └─ 避免模型在工具结束后返回空消息
 │
-├─ 38. SafetyFinishReasonMiddleware（可选）
+├─ 37. SafetyFinishReasonMiddleware（可选）
 │      └─ 模型被安全策略终止时禁止继续执行残缺工具调用
 │
-└─ 39. ClarificationMiddleware
+└─ 38. ClarificationMiddleware
        └─ 处理普通 Agent 澄清请求
 ```
 
@@ -212,16 +209,12 @@ DataAgent Lead Middleware
 
 ```text
 DataAgent Graph 开始
-├─ DataAgentTurnResetMiddleware.before_agent()
-│  ├─ 查找最新可见 HumanMessage
-│  ├─ 排除审核回复使用的隐藏 HumanMessage
-│  └─ service_states[data_query] = stage: idle
-│
-├─ QueryApprovalMiddleware.before_agent()
+├─ QueryIntentApprovalMiddleware.before_agent()
 │  └─ 如果这是审核后的第二个 Run
 │     ├─ 校验 request_id
-│     ├─ 校验 snapshot_id
+│     ├─ 校验 snapshot / 审核项
 │     ├─ 校验审核项目完整性
+│     ├─ 用同一 tool_call_id 写回 ask_intent_approval ToolMessage 结果
 │     └─ 写入 approved / cancelled / retrieving
 │
 └─ DataAgent Lead 模型调用
@@ -250,38 +243,41 @@ DataAgent Graph 开始
    ├─ 工具：publish_query_labels
    │  └─ QueryLabelsMiddleware 实际接管执行
    │     ├─ 验证 Evidence refs 属于当前 Retrieval
-   │     ├─ 构造 intent / labels / confidence / ambiguities
+   │     ├─ 构造 intent / labels / ambiguities（不再接收模型自报 confidence）
    │     ├─ 服务端生成 snapshot_id
    │     ├─ 生成 data_query_labels Artifact
-   │     └─ 执行确认策略
-   │        │
-   │        ├─ 自动通过
-   │        │  └─ stage = approved
-   │        │
-   │        ├─ 需要用户确认
-   │        │  ├─ stage = awaiting_confirmation
-   │        │  ├─ 生成 human_input request
-   │        │  └─ Command(goto=END)
-   │        │     └─ 当前 Run 正常结束，等待用户审核
-   │        │
-   │        └─ 非交互环境无法确认
-   │           └─ stage = cancelled
+   │     ├─ 写入 approval_policy
+   │     └─ stage = labels_published
    │
-   └─ approved 后继续进入 SQL 委派
+   ├─ 若 approval_policy.required = true
+   │  └─ 工具：ask_intent_approval
+   │     └─ QueryIntentApprovalMiddleware 实际接管执行
+   │        ├─ 生成 human_input request
+   │        ├─ ToolMessage.name = ask_intent_approval
+   │        ├─ stage = awaiting_confirmation
+   │        └─ Command(goto=END)，等待用户审核
+   │
+   └─ approved 或 approval_policy.required=false 后继续进入 SQL 委派
 ```
 
 需要审核时，实际上是两个 Run：
 
 ```text
 Run A：用户问题
-└─ TableRAG → 标签 → awaiting_confirmation → END
-   └─ 前端显示标签审核卡
+└─ TableRAG → publish_query_labels → ask_intent_approval → awaiting_confirmation → END
+   └─ 前端将同一 snapshot 的标签与审批请求合并为一张查询意图卡
 
 Run B：用户提交审核结果
 └─ 隐藏 HumanMessage(human_input_response)
-   └─ QueryApprovalMiddleware.before_agent()
-      └─ stage = approved
-         └─ DataAgent Lead 才能继续委派 SQL SubAgent
+   └─ QueryIntentApprovalMiddleware.before_agent()
+       └─ ask_intent_approval ToolMessage 结果写回历史，stage = approved
+          └─ DataAgent Lead 才能继续委派 SQL SubAgent
+
+后续可见用户消息不会被机械视为“必须重新确认的新轮次”。模型可以阅读历史 ToolMessage，
+自行判断“重新生成 SQL / 继续执行 / 重新执行”是否仍指向同一查询意图；如果当前持久化快照
+已 approved，可直接委派 SQL。如果历史结果是 cancelled、未确认或本轮语义变化，模型可以
+重新检索，也可以基于历史检索快照再次调用 `publish_query_labels`，重新展示标签/审批组件。
+系统不会根据“重新执行”等关键词写死流程，只在工具调用时校验安全合同。
 ```
 
 ## 五、SQL SubAgent 执行链路
@@ -294,8 +290,7 @@ DataAgent Lead
    )
    │
    ├─ SqlStageMiddleware.wrap_tool_call()
-   │  ├─ 检查 stage == approved
-   │  ├─ 检查当前 visible turn
+   │  ├─ 检查当前持久化快照已 approved / approval_policy.required=false
    │  ├─ 检查 action == execute / sql_only
    │  ├─ 检查 allowable_subagents
    │  ├─ 禁止同一个响应重复委派 SQL SubAgent
@@ -315,8 +310,8 @@ DataAgent Lead
       ├─ 禁止递归 task
       ├─ 继承用户身份、Thread、Run 和授权上下文
       ├─ 动态装配 SQL 工具
-      │  ├─ data_validate_sql
-      │  └─ data_execute_sql（仅 action=execute）
+      │  ├─ data_validate_sql（content + artifact）
+      │  └─ data_execute_sql（仅 action=execute，content + artifact）
       │
       ├─ SubagentExecutor.execute_async()
       └─ 发送 task_* Custom Event
@@ -397,7 +392,7 @@ SQL SubAgent 模型
                      ├─ 设置执行超时
                      ├─ 执行 SQL
                      ├─ rollback + close
-                     └─ 返回 JSON 安全结果
+      └─ 返回 JSON 安全结果，并同时写入 artifact
                         │
                         ├─ 成功
                         │  ├─ columns
@@ -444,10 +439,13 @@ SubagentExecutor 捕获真实 ToolMessage
    │
    └─ task_tool 重建 data_query_sql_result
       ├─ 不信任 SQL 模型最终自由文本
-      ├─ 只信任真实 SQL 工具输出
+      ├─ 优先读取 SQL 工具 artifact
+      ├─ 兼容旧 content JSON
       └─ 返回 task ToolMessage
          │
          └─ SqlStageMiddleware._merge_result()
+            ├─ 优先读取 task artifact
+            ├─ 若 task 已失败且携带 SQL_* 错误码则直接透传
             ├─ 校验 snapshot_id
             ├─ 校验 data_source_id
             ├─ 校验 validation_digest
@@ -541,6 +539,6 @@ DataAgent → task → SQL SubAgent → data_execute_sql → Executor
 
 - Gateway Run：[thread_runs.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/app/gateway/routers/thread_runs.py:548)、[services.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/app/gateway/services.py:886)、[worker.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/runtime/runs/worker.py:375)
 - Lead 装配：[agent.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/lead_agent/agent.py:523)、[registry.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/registry.py:31)
-- DataAgent Middleware：[turn_reset_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/turn_reset_middleware.py:39)、[table_rag_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/table_rag_middleware.py:28)、[query_labels_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/middlewares/query_labels_middleware.py:46)、[approval_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/approval_middleware.py:23)、[sql_stage_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/sql_stage_middleware.py:26)
+- DataAgent Middleware：[turn_context.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/turn_context.py:14)、[table_rag_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/table_rag_middleware.py:28)、[query_labels_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/middlewares/query_labels_middleware.py:46)、[approval_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/approval_middleware.py:34)、[sql_stage_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/sql_stage_middleware.py:26)
 - SQL 执行：[task_tool.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/tools/builtins/task_tool.py:323)、[sql_tools.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/sql_tools.py:33)、[sql_executor.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/sql_executor.py:658)
 - 手动执行支线：[sql_execution.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/app/gateway/routers/sql_execution.py:150)、[sql-code-block.tsx](D:/A-PythonWork/AOpenGithub/deer-flow/frontend/src/components/workspace/sql-execution/sql-code-block.tsx:16)、[sql-result-panel.tsx](D:/A-PythonWork/AOpenGithub/deer-flow/frontend/src/components/workspace/sql-execution/sql-result-panel.tsx:72)

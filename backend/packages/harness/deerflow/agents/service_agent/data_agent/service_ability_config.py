@@ -1,16 +1,7 @@
-"""DataAgent service ability 配置合同。"""
 
-from __future__ import annotations
-
-import logging
-import re
-from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-logger = logging.getLogger(__name__)
-
 
 class SqlExecutionConfig(BaseModel):
     """SQL 只读执行配置。"""
@@ -60,12 +51,6 @@ class DataQueryServiceAbilityConfig(BaseModel):
         """去除配置字符串首尾空白。"""
         return value.strip()
 
-    @model_validator(mode="after")
-    def _validate_sql_requirement(self) -> DataQueryServiceAbilityConfig:
-        """启用 SQL-RAG 时确保 允许开启 SQL 执行"""
-        if self.enable_sql_rag and not self.sql_execution.enabled:
-            raise ValueError("enable_sql_rag=true 时 sql_execution.enabled 必须为 true。")
-        return self
 
     def public_metadata(self) -> dict[str, Any]:
         """返回可以暴露给 Agents API 和运行 metadata 的脱敏摘要。"""
@@ -82,31 +67,3 @@ class DataQueryServiceAbilityConfig(BaseModel):
             "database_type": self.sql_execution.database_type,
             "sql_execution_enabled": self.sql_execution.enabled,
         }
-
-
-def parse_service_ability(raw: Mapping[str, Any] | None) -> DataQueryServiceAbilityConfig | None:
-    """解析 DataAgent service ability 配置。
-
-    Args:
-        raw: AgentConfig 中的 service_ability 原始字典。
-
-    Returns:
-        解析后的 DataQueryServiceAbilityConfig；未配置时返回 None。
-
-    Raises:
-        TypeError: 配置不是映射对象。
-        pydantic.ValidationError: 配置合同不合法。
-    """
-    if raw is None:
-        return None
-    if not isinstance(raw, Mapping):
-        raise TypeError("service_ability 必须是对象。")
-
-    # ADD: 解析 DataAgent service ability 参数
-    parsed = DataQueryServiceAbilityConfig.model_validate(dict(raw))
-    extra_fields = sorted((parsed.model_extra or {}).keys())
-    sql_extra_fields = sorted((parsed.sql_execution.model_extra or {}).keys())
-    if extra_fields or sql_extra_fields:
-        # ADD: 出现未知扩展字段, 打印提示
-        logger.debug("DataAgent service_ability 包含未识别扩展字段：top=%s sql_execution=%s", extra_fields, sql_extra_fields)
-    return parsed

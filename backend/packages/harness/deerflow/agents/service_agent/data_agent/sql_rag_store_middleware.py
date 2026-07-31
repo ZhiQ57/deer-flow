@@ -1,6 +1,8 @@
-"""DataAgent TableRAG 检索结果登记 middleware。"""
+"""DataAgent SQL TableRAG 检索结果存储中间件
+作用: 将模型获取的 SQL RAG 检索结果保存至 service_states 活动快照，避免多次检索重复写入.
 
-# ADD: DataAgent 正式查询闭环新增，复用现有工具调用链登记只读 TableRAG 结果。
+"""
+
 from __future__ import annotations
 
 import json
@@ -16,17 +18,17 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deerflow.agents.human_input import read_human_input_response
+from deerflow.runtime.secret_context import extract_request_secrets
 
-from .config import DataQueryServiceAbilityConfig
+from .binding import resolve_data_source_binding
+from .service_ability_config import DataQueryServiceAbilityConfig
 from .sqlrag_contract import SQLRAG_RETRIEVE_TOOL_NAME, is_sqlrag_retrieval_tool_name
-from .state import build_retrieval_context, get_active_service_state, make_service_state, merge_retrieval_contexts
-from .tool_call_limits import keep_first_matching_tool_call
+from .thread_state import build_retrieval_context, get_active_service_state, make_service_state, merge_retrieval_contexts
 
 
-class TableRagStageMiddleware(AgentMiddleware):
-    """把 TableRAG ToolMessage 投影到唯一的 service_states 活动快照。"""
+class SqlRagStoreMiddleware(AgentMiddleware):
+    """SQL RAG 检索结果存储中间件"""
 
-    # ADD: 注入 DataAgent 数据源配置，模型和前端不能覆盖该绑定。
     def __init__(self, config: DataQueryServiceAbilityConfig) -> None:
         """初始化检索登记 middleware。
 
@@ -36,6 +38,75 @@ class TableRagStageMiddleware(AgentMiddleware):
         super().__init__()
         self._config = config
 
+    @override
+    def after_agent(self, state, runtime):
+        """同步 - Agent执行后处理"""
+        return super().after_agent(state, runtime)
+
+    @override
+    async def aafter_agent(self, state, runtime):
+        """异步 - Agent执行后处理"""
+        return await super().aafter_agent(state, runtime)
+
+    @override
+    def after_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
+        """同步模型返回后只保留一个 TableRAG 检索调用。"""
+        return keep_first_matching_tool_call(state, lambda tool_call: is_sqlrag_retrieval_tool_name(tool_call.get("name")))
+
+    @override
+    async def aafter_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
+        """异步模型返回后复用 TableRAG 串行化规则。"""
+        return keep_first_matching_tool_call(state, lambda tool_call: is_sqlrag_retrieval_tool_name(tool_call.get("name")))
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        """同步登记
+        检索结果及时保存至内存 service_states 避免多次检索重复写入
+        """
+
+        # 拦截工具名称
+        if not is_sqlrag_retrieval_tool_name(request.tool_call.get("name")):
+            # 其他工具保持原流程
+            return handler(request)
+
+        # TODO active 是什么作用?
+        active = get_active_service_state(request.state if isinstance(request.state, Mapping) else None)
+
+        # TODO 准备删除
+        tool_call_id = str(request.tool_call.get("id") or "")
+
+        if isinstance(active, Mapping) and active.get("tool_call_id") == tool_call_id and active.get("stage") not in {"idle", "retrieving", "needs_refinement", "labels_published"}:
+            return self._stage_error(request, "TABLERAG_STAGE_NOT_ALLOWED")
+
+        active_payload = active.get("payload") if isinstance(active, Mapping) else None
+
+        if isinstance(active_payload, Mapping) and active.get("tool_call_id") == tool_call_id and active_payload.get("retrieval_calls", 0) >= 3:
+            return self._stage_error(request, "TABLERAG_RETRIEVAL_BUDGET")
+
+        return self._project_result(request, handler(request))
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """异步登记 TableRAG 结果，其他工具保持原流程。"""
+        if not is_sqlrag_retrieval_tool_name(request.tool_call.get("name")):
+            return await handler(request)
+        active = get_active_service_state(request.state if isinstance(request.state, Mapping) else None)
+        turn_id = self._turn_id(request.state, fallback=str(request.tool_call.get("id") or ""))
+        if isinstance(active, Mapping) and active.get("turn_id") == turn_id and active.get("stage") not in {"idle", "retrieving", "needs_refinement", "labels_published"}:
+            return self._stage_error(request, "TABLERAG_STAGE_NOT_ALLOWED")
+        active_payload = active.get("payload") if isinstance(active, Mapping) else None
+        if isinstance(active_payload, Mapping) and active.get("turn_id") == turn_id and active_payload.get("retrieval_calls", 0) >= 3:
+            return self._stage_error(request, "TABLERAG_RETRIEVAL_BUDGET")
+        return self._project_result(request, await handler(request))
+    
     @staticmethod
     def _turn_id(state: Mapping[str, Any] | None, *, fallback: str) -> str:
         """读取当前可见用户消息 ID，隐藏确认回复不创建新业务轮次。"""
@@ -124,7 +195,6 @@ class TableRagStageMiddleware(AgentMiddleware):
         """将一次 TableRAG 结果转换为服务状态更新。"""
         tool_name = str(request.tool_call.get("name") or "")
         tool_call_id = str(request.tool_call.get("id") or "")
-        turn_id = self._turn_id(request.state if isinstance(request.state, Mapping) else None, fallback=tool_call_id)
         message = self._tool_message(result)
         payload = self._json_payload(message) if message is not None else None
         active = get_active_service_state(request.state if isinstance(request.state, Mapping) else None)
@@ -165,7 +235,7 @@ class TableRagStageMiddleware(AgentMiddleware):
             return self._merge_update(
                 result,
                 make_service_state(
-                    turn_id=turn_id,
+                    tool_call_id=tool_call_id,
                     stage=str(active.get("stage") or "retrieving"),
                     snapshot_id=str(active.get("snapshot_id") or existing_retrieval.get("retrieval_digest") or ""),
                     data_source_id=self._config.data_source_id,
@@ -177,27 +247,11 @@ class TableRagStageMiddleware(AgentMiddleware):
         try:
             if payload is None:
                 raise ValueError("TableRAG 未返回结构化 JSON。")
-            try:
-                runtime_context = getattr(request.runtime, "context", None)
-                # ADD: Harness 只消费 Gateway 注入的无密钥绑定，不解析执行 DSN 或请求级 Secret。
-                binding_value = runtime_context.get("data_query_binding") if isinstance(runtime_context, Mapping) else None
-                if (
-                    not isinstance(binding_value, Mapping)
-                    or binding_value.get("data_source_id") != self._config.data_source_id
-                    or binding_value.get("database_type") != self._config.sql_execution.database_type
-                    or not isinstance(binding_value.get("binding_fingerprint"), str)
-                ):
-                    raise ValueError("Gateway 未注入有效数据源绑定。")
-                binding = dict(binding_value)
-            except ValueError:
-                error_code = "DATA_SOURCE_BINDING_INVALID"
-                raise
             retrieval = build_retrieval_context(
                 payload,
                 tool_name=tool_name,
-                turn_id=turn_id,
+                tool_call_id=tool_call_id,
                 data_source_id=self._config.data_source_id,
-                binding=binding,
                 request_args=request.tool_call.get("args"),
             )
         except ValueError:
@@ -208,14 +262,14 @@ class TableRagStageMiddleware(AgentMiddleware):
             retrieval = {
                 "version": 1,
                 "ok": False,
-                "turn_id": turn_id,
+                "tool_call_id": tool_call_id,
                 "data_source_id": self._config.data_source_id,
                 "tool_name": tool_name,
                 "error_code": error_code,
             }
-            refinement_digest = sha256(f"{turn_id}\n{tool_name}".encode()).hexdigest()
+            refinement_digest = sha256(f"{tool_call_id}\n{tool_name}".encode()).hexdigest()
             service_state = make_service_state(
-                turn_id=turn_id,
+                tool_call_id=tool_call_id,
                 stage="needs_refinement",
                 snapshot_id=f"needs-refinement:sha256:{refinement_digest}",
                 data_source_id=self._config.data_source_id,
@@ -228,7 +282,7 @@ class TableRagStageMiddleware(AgentMiddleware):
             return self._merge_update(result, service_state)
 
         # ADD: 补充检索合并当前轮次的 Evidence，同时清除旧 approval/SQL 授权，避免复用旧快照。
-        if active and active.get("turn_id") == turn_id:
+        if active and active.get("tool_call_id") == tool_call_id:
             existing_retrieval = existing_payload.get("retrieval")
             if isinstance(existing_retrieval, Mapping) and existing_retrieval.get("ok") is True:
                 try:
@@ -260,7 +314,7 @@ class TableRagStageMiddleware(AgentMiddleware):
         ):
             next_payload.pop(stale_key, None)
         service_state = make_service_state(
-            turn_id=turn_id,
+            tool_call_id=tool_call_id,
             stage="retrieving",
             snapshot_id=str(retrieval["retrieval_digest"]),
             data_source_id=self._config.data_source_id,
@@ -268,48 +322,4 @@ class TableRagStageMiddleware(AgentMiddleware):
         )
         return self._merge_update(result, service_state)
 
-    @override
-    def after_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
-        """同步模型返回后只保留一个 TableRAG 检索调用。"""
-        return keep_first_matching_tool_call(state, lambda tool_call: is_sqlrag_retrieval_tool_name(tool_call.get("name")))
-
-    @override
-    async def aafter_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
-        """异步模型返回后复用 TableRAG 串行化规则。"""
-        return keep_first_matching_tool_call(state, lambda tool_call: is_sqlrag_retrieval_tool_name(tool_call.get("name")))
-
-    @override
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command],
-    ) -> ToolMessage | Command:
-        """同步登记 TableRAG 结果，其他工具保持原流程。"""
-        if not is_sqlrag_retrieval_tool_name(request.tool_call.get("name")):
-            return handler(request)
-        active = get_active_service_state(request.state if isinstance(request.state, Mapping) else None)
-        turn_id = self._turn_id(request.state, fallback=str(request.tool_call.get("id") or ""))
-        if isinstance(active, Mapping) and active.get("turn_id") == turn_id and active.get("stage") not in {"idle", "retrieving", "needs_refinement", "labels_published"}:
-            return self._stage_error(request, "TABLERAG_STAGE_NOT_ALLOWED")
-        active_payload = active.get("payload") if isinstance(active, Mapping) else None
-        if isinstance(active_payload, Mapping) and active.get("turn_id") == turn_id and active_payload.get("retrieval_calls", 0) >= 3:
-            return self._stage_error(request, "TABLERAG_RETRIEVAL_BUDGET")
-        return self._project_result(request, handler(request))
-
-    @override
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
-    ) -> ToolMessage | Command:
-        """异步登记 TableRAG 结果，其他工具保持原流程。"""
-        if not is_sqlrag_retrieval_tool_name(request.tool_call.get("name")):
-            return await handler(request)
-        active = get_active_service_state(request.state if isinstance(request.state, Mapping) else None)
-        turn_id = self._turn_id(request.state, fallback=str(request.tool_call.get("id") or ""))
-        if isinstance(active, Mapping) and active.get("turn_id") == turn_id and active.get("stage") not in {"idle", "retrieving", "needs_refinement", "labels_published"}:
-            return self._stage_error(request, "TABLERAG_STAGE_NOT_ALLOWED")
-        active_payload = active.get("payload") if isinstance(active, Mapping) else None
-        if isinstance(active_payload, Mapping) and active.get("turn_id") == turn_id and active_payload.get("retrieval_calls", 0) >= 3:
-            return self._stage_error(request, "TABLERAG_RETRIEVAL_BUDGET")
-        return self._project_result(request, await handler(request))
+    

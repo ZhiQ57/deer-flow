@@ -18,6 +18,7 @@ from deerflow.subagents.status_contract import make_subagent_additional_kwargs, 
 from deerflow.utils.messages import message_content_to_text
 
 from .config import DataQueryServiceAbilityConfig
+from .sql_executor import SqlExecutionService, SqlValidationRequest
 from .state import get_active_service_state, make_service_state
 from .tool_call_limits import keep_first_matching_tool_call
 
@@ -30,6 +31,7 @@ class SqlStageMiddleware(AgentMiddleware):
         """初始化 SQL 阶段门禁。"""
         super().__init__()
         self._config = config
+        self._sql_executor = SqlExecutionService(config)
 
     @staticmethod
     def _error(request: ToolCallRequest, code: str) -> Command:
@@ -230,9 +232,6 @@ class SqlStageMiddleware(AgentMiddleware):
             or parsed.get("data_source_id") != self._config.data_source_id
         ):
             return self._error(request, "SQL_SUBAGENT_CONTRACT_INVALID")
-        active_payload = active.get("payload") if isinstance(active.get("payload"), Mapping) else {}
-        retrieval = active_payload.get("retrieval") if isinstance(active_payload.get("retrieval"), Mapping) else {}
-        binding = retrieval.get("binding") if isinstance(retrieval.get("binding"), Mapping) else {}
         validation = parsed.get("validation")
         if (
             not isinstance(validation, Mapping)

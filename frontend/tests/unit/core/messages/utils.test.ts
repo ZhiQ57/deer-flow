@@ -14,6 +14,7 @@ import {
   hasContent,
   hasReasoning,
   isAssistantMessageGroupStreaming,
+  isHiddenFromUIMessage,
   parseUploadedFiles,
   stripInternalMarkers,
   stripUploadedFilesTag,
@@ -154,6 +155,47 @@ test("renders DataAgent intent and SQL artifacts as dedicated groups", () => {
     "assistant:query-intent",
     "assistant:query-result",
   ]);
+});
+
+test("hides raw entity extraction payloads and other internal DataAgent JSON tool outputs", () => {
+  const messages = [
+    { id: "human-1", type: "human", content: "查询销售额" },
+    {
+      id: "ai-1",
+      type: "ai",
+      content: "",
+      tool_calls: [{ id: "entity-1", name: "entity_extract_tool", args: {} }],
+    },
+    {
+      id: "entity-1-result",
+      type: "tool",
+      name: "entity_extract_tool",
+      tool_call_id: "entity-1",
+      content: JSON.stringify({
+        original_query: "查询销售额",
+        normalized_query: "查询销售额",
+        intent: "aggregation",
+        entities: [],
+        labels: [],
+        warnings: [],
+      }),
+    },
+    {
+      id: "tool-1",
+      type: "tool",
+      name: "publish_query_labels",
+      tool_call_id: "labels-1",
+      content: '{"version":1,"kind":"data_query_sql_response","validation":{"status":"pending"}}',
+    },
+  ] as Message[];
+
+  expect(isHiddenFromUIMessage(messages[1]!)).toBe(false);
+  expect(isHiddenFromUIMessage(messages[2]!)).toBe(true);
+  expect(isHiddenFromUIMessage(messages[3]!)).toBe(true);
+
+  const groups = getMessageGroups(messages);
+  expect(groups.map((group) => group.type)).toEqual(["human", "assistant:processing"]);
+  expect(groups[1]?.messages.some((message) => message.type === "tool")).toBe(false);
 });
 
 describe("branchable assistant groups", () => {

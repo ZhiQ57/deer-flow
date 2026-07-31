@@ -1,8 +1,11 @@
 import type { AIMessage, Message } from "@langchain/langgraph-sdk";
 
 import {
+  isDataQueryInternalPayloadText,
+  isDataQueryIntentApprovalToolMessage,
   isDataQueryLabelsToolMessage,
   isDataQuerySqlResultToolMessage,
+  extractDataQueryLabelsArtifact,
 } from "./data-query";
 
 interface GenericMessageGroup<T = string> {
@@ -43,6 +46,8 @@ const HIDDEN_CONTROL_MESSAGE_NAMES = new Set([
   "todo_reminder",
   "todo_completion_reminder",
 ]);
+
+const HIDDEN_INTERNAL_TOOL_MESSAGE_NAMES = new Set(["entity_extract_tool"]);
 
 export function getMessageGroups(messages: Message[]): MessageGroup[] {
   if (messages.length === 0) {
@@ -88,9 +93,31 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
           type: "assistant:clarification",
           messages: [message],
         });
-      } else if (isDataQueryLabelsToolMessage(message)) {
+      } else if (isDataQueryLabelsToolMessage(message) || isDataQueryIntentApprovalToolMessage(message)) {
+        const artifact = extractDataQueryLabelsArtifact(message);
         // ADD: DataAgent 标签 artifact 独立成卡片，同时保留前置工具轨迹。
         lastOpenGroup()?.messages.push(message);
+        if (
+          isDataQueryIntentApprovalToolMessage(message) &&
+          artifact?.snapshot_id
+        ) {
+          const matchingGroup = [...groups]
+            .reverse()
+            .find((group) => {
+              if (group.type !== "assistant:query-intent") {
+                return false;
+              }
+              const latestArtifact = [...group.messages]
+                .reverse()
+                .map((item) => extractDataQueryLabelsArtifact(item))
+                .find((item): item is NonNullable<ReturnType<typeof extractDataQueryLabelsArtifact>> => item !== null);
+              return latestArtifact?.snapshot_id === artifact.snapshot_id;
+            });
+          if (matchingGroup) {
+            matchingGroup.messages.push(message);
+            continue;
+          }
+        }
         groups.push({
           id: message.id,
           type: "assistant:query-intent",
@@ -597,6 +624,23 @@ export function findToolCallResult(toolCallId: string, messages: Message[]) {
 
 export function isHiddenFromUIMessage(message: Message) {
   const content = extractTextFromMessage(message);
+  if (message.type === "tool") {
+    if (
+      isDataQueryLabelsToolMessage(message) ||
+      isDataQuerySqlResultToolMessage(message)
+    ) {
+      return false;
+    }
+    if (
+      typeof message.name === "string" &&
+      HIDDEN_INTERNAL_TOOL_MESSAGE_NAMES.has(message.name)
+    ) {
+      return true;
+    }
+    if (message.name !== "task" && isDataQueryInternalPayloadText(content)) {
+      return true;
+    }
+  }
   return (
     message.additional_kwargs?.hide_from_ui === true ||
     (typeof message.name === "string" &&

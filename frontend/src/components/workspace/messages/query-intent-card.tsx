@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createDataQueryReviewResponse,
+  formatQueryIntentLabel,
   parseDataQueryReviewDecisions,
   parseDataQueryReviewFinalAction,
   type QueryIntentArtifact,
@@ -16,6 +17,39 @@ import {
 import { parseHumanInputRequest, type HumanInputRequest, type HumanInputResponse } from "@/core/messages/human-input";
 
 import { HumanInputCard, type HumanInputSubmitResult } from "./human-input-card";
+
+/**
+ * 构造查询意图逐项审批提交内容。
+ *
+ * 描述：未被用户手动处理的审批项默认按当前理解接受；只有用户明确选择修改但未填写修改内容时阻止提交。
+ *
+ * Args:
+ *   reviewItems: 当前查询意图卡片中的待确认项列表。
+ *   decisions: 用户已经手动选择的逐项审批结果。
+ *   drafts: 用户填写的逐项修改草稿。
+ *
+ * Return:
+ *   可提交的审批项列表；如果存在不可提交状态，则返回错误文案。
+ */
+export function buildQueryIntentReviewSubmission(
+  reviewItems: QueryIntentArtifact["ambiguity_items"],
+  decisions: Record<string, QueryIntentReviewDecision>,
+  drafts: Record<string, string>,
+): { decisions: QueryIntentReviewDecision[]; error: string | null } {
+  const normalized: QueryIntentReviewDecision[] = [];
+  for (const item of reviewItems) {
+    const decision = decisions[item.id] ?? { id: item.id, decision: "accept" as const };
+    if (decision.decision === "modify" && !drafts[item.id]?.trim()) {
+      return { decisions: [], error: "请填写需要修改的查询条件。" };
+    }
+    const modifiedValue = drafts[item.id]?.trim();
+    normalized.push({
+      ...decision,
+      ...(decision.decision === "modify" && modifiedValue ? { value: modifiedValue } : {}),
+    });
+  }
+  return { decisions: normalized, error: null };
+}
 
 export function QueryIntentCard({
   artifact,
@@ -33,7 +67,7 @@ export function QueryIntentCard({
   onSubmit?: (response: HumanInputResponse) => HumanInputSubmitResult | Promise<HumanInputSubmitResult>;
 }) {
   const parsedRequest = request ?? parseHumanInputRequest(artifact.human_input);
-  const status = artifact.approval.status;
+  const approval = artifact.approval ?? artifact.approval_result;
   const answeredAction = parseDataQueryReviewFinalAction(answeredResponse);
   const answeredDecisions = parseDataQueryReviewDecisions(answeredResponse);
   const reviewItems = artifact.ambiguity_items;
@@ -41,36 +75,32 @@ export function QueryIntentCard({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const statusLabel =
-    answeredAction === "cancel" || status === "cancelled"
+    answeredAction === "cancel" || approval?.status === "cancelled"
       ? "已取消"
-      : answeredAction === "modify"
+      : answeredAction === "modify" || approval?.status === "revision_requested"
         ? "已修改"
-        : answeredAction === "execute" || answeredAction === "sql_only" || status === "approved"
+        : answeredAction === "execute" ||
+            answeredAction === "sql_only" ||
+            approval?.status === "approved"
           ? "已确认"
-          : "待确认";
+          : parsedRequest
+            ? approval?.status === "awaiting_confirmation"
+              ? "待确认"
+              : "待审批"
+            : artifact.approval_required === false
+              ? "可继续"
+              : "待审批";
 
   const submitReview = async (finalAction: "execute" | "sql_only" | "cancel") => {
     if (!parsedRequest || !onSubmit || disabled || pending || answeredResponse) return;
     if (finalAction !== "cancel") {
-      const normalized: QueryIntentReviewDecision[] = [];
-      for (const item of reviewItems) {
-        const decision = decisions[item.id];
-        if (!decision) {
-          setError("请逐项确认所有不清晰点后再继续。");
-          return;
-        }
-        if (decision.decision === "modify" && !drafts[item.id]?.trim()) {
-          setError("请填写需要修改的查询条件。");
-          return;
-        }
-        const modifiedValue = drafts[item.id]?.trim();
-        normalized.push({
-          ...decision,
-          ...(decision.decision === "modify" && modifiedValue ? { value: modifiedValue } : {}),
-        });
+      const submission = buildQueryIntentReviewSubmission(reviewItems, decisions, drafts);
+      if (submission.error) {
+        setError(submission.error);
+        return;
       }
       setError(null);
-      await onSubmit(createDataQueryReviewResponse(parsedRequest, artifact, normalized, finalAction));
+      await onSubmit(createDataQueryReviewResponse(parsedRequest, artifact, submission.decisions, finalAction));
       return;
     }
     setError(null);
@@ -96,7 +126,7 @@ export function QueryIntentCard({
         </Badge>
       </div>
       <div className="space-y-2 text-sm">
-        <div className="font-medium">{artifact.intent}</div>
+        <div className="font-medium">{formatQueryIntentLabel(artifact.intent)}</div>
         {artifact.summary ? <p className="text-muted-foreground">{artifact.summary}</p> : null}
         <div className="flex flex-wrap gap-2">
         {artifact.labels.map((label) => (
@@ -107,19 +137,13 @@ export function QueryIntentCard({
           ))}
         </div>
         {artifact.evidence.length > 0 ? (
-          <div className="space-y-1">
-            <div className="text-muted-foreground text-xs">TableRAG 依据</div>
-            {artifact.evidence.slice(0, 8).map((item) => (
-              <div key={item.ref} className="text-muted-foreground truncate text-xs" title={item.summary}>
-                [{item.kind}] {item.summary}
-              </div>
-            ))}
-          </div>
+          <p className="text-muted-foreground text-xs">
+            已绑定 {artifact.evidence.length} 条 TableRAG 依据
+          </p>
         ) : null}
         {artifact.ambiguities.length > 0 ? <p className="text-amber-600">待确认：{artifact.ambiguities.join("；")}</p> : null}
-        {artifact.confidence !== null && artifact.confidence !== undefined ? <p className="text-muted-foreground">置信度：{Math.round(artifact.confidence * 100)}%</p> : null}
       </div>
-      {reviewItems.length > 0 ? (
+      {parsedRequest && reviewItems.length > 0 ? (
         <div className="space-y-3 rounded-md border border-amber-200 bg-amber-50/60 p-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">AI 需要你确认的理解</h3>

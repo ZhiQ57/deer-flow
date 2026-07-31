@@ -298,3 +298,42 @@ def test_table_rag_middleware_projects_sqlrag_result(monkeypatch: pytest.MonkeyP
     assert retrieval["tool_name"] == "sqlrag_retrieve"
     assert retrieval["operation"] == "hybrid-search"
     assert retrieval["query"] == "查询销售额"
+
+
+@pytest.mark.parametrize("as_text_blocks", [False, True])
+def test_table_rag_middleware_projects_sqlrag_result_from_text_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+    as_text_blocks: bool,
+) -> None:
+    """SQLRAG 成功结果无论是字符串还是 text-block 列表都必须写入正式 service_states 快照。"""
+    monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    payload = {
+        "ok": True,
+        "operation": "hybrid-search",
+        "result": {
+            "query": "查询销售额",
+            "tables": [{"table_name": "orders"}],
+            "columns": [{"table_name": "orders", "column_name": "amount"}],
+        },
+    }
+    content: object = json.dumps(payload, ensure_ascii=False)
+    if as_text_blocks:
+        content = [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]
+    message = ToolMessage(
+        content=content,
+        tool_call_id="sqlrag-call-1",
+        name="sqlrag_retrieve",
+    )
+
+    result = TableRagStageMiddleware(_config()).wrap_tool_call(
+        _request(),
+        lambda _request: message,
+    )
+
+    service_state = result.update["service_states"][0]
+    retrieval = service_state["payload"]["retrieval"]
+    assert service_state["stage"] == "retrieving"
+    assert retrieval["tool_name"] == "sqlrag_retrieve"
+    assert retrieval["operation"] == "hybrid-search"
+    assert retrieval["query"] == "查询销售额"

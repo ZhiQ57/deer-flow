@@ -38,6 +38,9 @@ import {
 import { extractCitationSources } from "@/core/citations/sources";
 import { useI18n } from "@/core/i18n/hooks";
 import {
+  summarizeDataQueryInternalPayloadText,
+} from "@/core/messages/data-query";
+import {
   extractContentFromMessage,
   extractReasoningContentFromMessage,
   getMessageCopyData,
@@ -345,7 +348,11 @@ function MessageContent_({
     if (isHuman) {
       return rawContent ? stripUploadedFilesTag(rawContent) : "";
     }
-    return rawContent ?? "";
+    return (
+      summarizeDataQueryInternalPayloadText(rawContent) ??
+      rawContent ??
+      ""
+    );
   }, [rawContent, isHuman]);
   const citationSources = useMemo(
     () => (isHuman ? [] : extractCitationSources(contentToDisplay)),

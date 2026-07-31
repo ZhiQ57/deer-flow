@@ -26,7 +26,6 @@ def publish_query_labels_tool(
     intent: str,
     labels: list[QueryLabelInput],
     summary: str | None = None,
-    confidence: float | None = None,
     ambiguities: list[str] | None = None,
 ) -> str:
     """发布当前数据问题的用户意图标签。
@@ -44,7 +43,6 @@ def publish_query_labels_tool(
         intent: lead-agent 当前确认的用户意图，例如 ranking、trend、aggregation 或 detail。
         labels: 当前完整标签数组，包含标签类型、展示值、来源及可选标准化值和 Evidence refs。
         summary: 可选的中文意图摘要，用于向用户解释系统当前如何理解问题。
-        confidence: 当前意图解析置信度，范围为 0 到 1；无法判断时省略并转人工确认。
         ambiguities: 尚未解决且可能改变 SQL 的歧义列表；无歧义时传空数组。
 
     Returns:

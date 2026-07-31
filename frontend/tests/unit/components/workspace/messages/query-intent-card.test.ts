@@ -2,7 +2,10 @@ import { describe, expect, it } from "@rstest/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { QueryIntentCard } from "@/components/workspace/messages/query-intent-card";
+import {
+  buildQueryIntentReviewSubmission,
+  QueryIntentCard,
+} from "@/components/workspace/messages/query-intent-card";
 import { I18nContext } from "@/core/i18n/context";
 import type { QueryIntentArtifact } from "@/core/messages/data-query";
 
@@ -17,7 +20,6 @@ const artifact: QueryIntentArtifact = {
   binding_fingerprint: "sha256:target",
   intent: "ranking",
   summary: "查询华东销售额最高的商品",
-  confidence: 0.92,
   ambiguities: ["是否排除退款"],
   ambiguity_items: [
     {
@@ -45,7 +47,7 @@ const artifact: QueryIntentArtifact = {
 };
 
 describe("QueryIntentCard", () => {
-  it("renders labels, sources, ambiguity, confidence, and pending status", () => {
+  it("renders friendly intent, labels, sources, ambiguity, evidence count, and pending status", () => {
     const html = renderToStaticMarkup(
       createElement(
         I18nContext.Provider,
@@ -55,7 +57,7 @@ describe("QueryIntentCard", () => {
           request: {
             version: 1,
             kind: "human_input_request",
-            source: "ask_clarification",
+            source: "ask_intent_approval",
             request_id: "data-query:req",
             question: "确认查询意图",
             input_mode: "choice_with_other",
@@ -71,10 +73,13 @@ describe("QueryIntentCard", () => {
     );
 
     expect(html).toContain("查询意图");
+    expect(html).toContain("排序查询");
+    expect(html).not.toContain("ranking");
     expect(html).toContain("地区: 华东");
     expect(html).toContain("(database)");
     expect(html).toContain("是否排除退款");
-    expect(html).toContain("92%");
+    expect(html).toContain("已绑定 1 条 TableRAG 依据");
+    expect(html).not.toContain("[evidence]");
     expect(html).toContain("待确认");
     expect(html).toContain("AI 需要你确认的理解");
     expect(html).toContain("按当前理解继续");
@@ -91,9 +96,33 @@ describe("QueryIntentCard", () => {
         ),
       );
 
-    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_clarification", request_id: "req", response_kind: "option", option_id: "execute", value: "execute" })).toContain("已确认");
-    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_clarification", request_id: "req", response_kind: "option", option_id: "sql_only", value: "sql_only" })).toContain("已确认");
-    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_clarification", request_id: "req", response_kind: "text", value: "改查去年" })).toContain("已修改");
-    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_clarification", request_id: "req", response_kind: "option", option_id: "cancel", value: "cancel" })).toContain("已取消");
+    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "option", option_id: "execute", value: "execute" })).toContain("已确认");
+    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "option", option_id: "sql_only", value: "sql_only" })).toContain("已确认");
+    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "text", value: "改查去年" })).toContain("已修改");
+    expect(renderStatus({ version: 1, kind: "human_input_response", source: "ask_intent_approval", request_id: "req", response_kind: "option", option_id: "cancel", value: "cancel" })).toContain("已取消");
+  });
+
+  it("defaults untouched review items to accept when submitting final approval", () => {
+    const firstItem = artifact.ambiguity_items[0];
+    if (!firstItem) {
+      throw new Error("test artifact is missing the first review item");
+    }
+    const items = [
+      ...artifact.ambiguity_items,
+      {
+        id: "ambiguity:sha256:count-path",
+        question: "病例数统计口径：使用 COUNT(DISTINCT CycleId) 还是 COUNT(*)?",
+        status: "pending" as const,
+        options: firstItem.options,
+      },
+    ];
+
+    const submission = buildQueryIntentReviewSubmission(items, {}, {});
+
+    expect(submission.error).toBeNull();
+    expect(submission.decisions).toEqual([
+      { id: "ambiguity:sha256:refund", decision: "accept" },
+      { id: "ambiguity:sha256:count-path", decision: "accept" },
+    ]);
   });
 });

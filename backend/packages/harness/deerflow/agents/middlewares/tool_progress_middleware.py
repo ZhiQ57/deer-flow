@@ -210,7 +210,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         self._inject_assessment = inject_assessment
         self._jaccard_threshold = jaccard_threshold
         self._min_words = min_words
-        self._exempt_tools: set[str] = exempt_tools if exempt_tools is not None else {"ask_clarification", "write_todos", "present_files", "task"}
+        self._exempt_tools: set[str] = exempt_tools if exempt_tools is not None else {"ask_clarification", "ask_intent_approval", "write_todos", "present_files", "task"}
         self._max_tracked_threads = max_tracked_threads
 
         # threading.Lock (not asyncio.Lock): critical sections are short in-memory dict

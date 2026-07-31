@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
@@ -38,6 +39,7 @@ from deerflow.subagents.tool_provider import (
 from deerflow.tools.types import Runtime
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, get_current_trace_id, normalize_trace_id
 from deerflow.utils.custom_events import aemit_custom_event
+from deerflow.utils.messages import message_content_to_text
 
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig
@@ -235,11 +237,37 @@ def _build_data_query_sql_result_from_steps(
     if action not in {"execute", "sql_only"}:
         return None
 
+    def _step_artifact(step: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """读取 ToolMessage dump 中保留的结构化 artifact。"""
+        artifact = step.get("artifact")
+        if isinstance(artifact, Mapping):
+            return artifact
+        additional_kwargs = step.get("additional_kwargs")
+        if isinstance(additional_kwargs, Mapping) and isinstance(additional_kwargs.get("artifact"), Mapping):
+            return additional_kwargs["artifact"]
+        return None
+
+    def _step_payload(step: Mapping[str, Any]) -> dict[str, Any] | None:
+        """优先从 artifact 读取 SQL 工具结果，兼容旧 content JSON。"""
+        artifact = _step_artifact(step)
+        if artifact is not None:
+            return dict(artifact)
+        content = step.get("content")
+        text = message_content_to_text(content)
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
     parsed_tools: list[tuple[str, dict[str, Any]]] = []
     for step in steps:
-        if not isinstance(step, dict) or step.get("type") != "tool":
+        if not isinstance(step, Mapping) or step.get("type") != "tool":
             continue
         name = step.get("name")
+        if not isinstance(name, str):
         if not isinstance(name, str):
             continue
         artifact = step.get("artifact")
@@ -307,6 +335,7 @@ def _task_result_command(
     stop_reason: SubagentStopReasonValue | None = None,
     model_name: str | None = None,
     usage: dict[str, int] | None = None,
+    artifact: Any | None = None,
 ) -> Command:
     content, metadata_error = format_subagent_result_message(status, result=result, error=error, stop_reason=stop_reason)
     return Command(
@@ -316,6 +345,7 @@ def _task_result_command(
                     content=content,
                     tool_call_id=tool_call_id,
                     name="task",
+                    artifact=artifact,
                     additional_kwargs=make_subagent_additional_kwargs(
                         status,
                         result=result,
@@ -627,6 +657,7 @@ async def task_tool(
                 _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
                 _report_subagent_usage(runtime, result)
                 task_result = result.result
+                task_result_artifact: dict[str, Any] | None = None
                 if data_query_active_state is not None and data_query_runtime_ability is not None:
                     # ADD: DataAgent SQL 结果只从捕获的工具输出重建，子代理最终自由文本不具备数据库事实权限。
                     authoritative_result = _build_data_query_sql_result_from_steps(
@@ -654,6 +685,7 @@ async def task_tool(
                             usage=usage,
                         )
                     task_result = json.dumps(authoritative_result, ensure_ascii=False, separators=(",", ":"))
+                    task_result_artifact = authoritative_result
                 await aemit_custom_event(
                     {
                         "type": "task_completed",
@@ -676,6 +708,7 @@ async def task_tool(
                     stop_reason=result.stop_reason,
                     model_name=effective_model,
                     usage=usage,
+                    artifact=task_result_artifact,
                 )
             elif result.status == SubagentStatus.FAILED:
                 _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)

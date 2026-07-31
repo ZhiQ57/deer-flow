@@ -56,7 +56,7 @@ def test_publish_query_labels_tool_exposes_structured_schema() -> None:
     assert publish_query_labels_tool.name == "publish_query_labels"
     assert publish_query_labels_tool.return_direct is False
     assert schema["required"] == ["intent", "labels"]
-    assert set(schema["properties"]) == {"intent", "labels", "summary", "confidence", "ambiguities"}
+    assert set(schema["properties"]) == {"intent", "labels", "summary", "ambiguities"}
     label_schema = schema["$defs"]["QueryLabelInput"]
     assert label_schema["required"] == ["label", "value", "source"]
     assert label_schema["properties"]["source"]["enum"] == ["user", "database", "derived"]

@@ -13,12 +13,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from app.gateway.modules.sql_execution.binding import resolve_data_source_binding
 from app.gateway.modules.sql_execution.service import execute_sql, validate_sql
 from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
-from deerflow.agents.service_agent.approval_middleware import QueryApprovalMiddleware
+from deerflow.agents.service_agent.query_intent_approval_middleware import QueryIntentApprovalMiddleware
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility
 from deerflow.agents.service_agent.sql_stage_middleware import SqlStageMiddleware
@@ -29,12 +30,14 @@ from deerflow.agents.service_agent.state import (
     build_query_review_items,
     build_retrieval_context,
     decide_query_approval,
+    get_active_service_state,
     merge_retrieval_contexts,
 )
 from deerflow.agents.service_agent.table_rag_middleware import TableRagStageMiddleware
-from deerflow.agents.service_agent.turn_reset_middleware import DataAgentTurnResetMiddleware
+from deerflow.agents.service_agent.turn_context import current_visible_turn_id
 from deerflow.agents.thread_state import ThreadState, merge_service_states
-from deerflow.subagents.status_contract import read_subagent_result_metadata
+from deerflow.subagents.status_contract import make_subagent_additional_kwargs, read_subagent_result_metadata
+from deerflow.tools.builtins.ask_intent_approval_tool import ask_intent_approval_tool
 from deerflow.tools.builtins.query_labels_tool import publish_query_labels_tool
 from deerflow.tools.builtins.task_tool import _build_data_query_sql_result_from_steps
 
@@ -316,23 +319,23 @@ def test_query_label_snapshot_binds_database_labels_to_registry() -> None:
 
 
 @pytest.mark.parametrize(
-    ("mode", "confidence", "ambiguities", "expected"),
+    ("mode", "confidence", "ambiguities", "expected_required"),
     [
-        ("auto", 0.95, [], "approved"),
-        ("auto", None, [], "awaiting_confirmation"),
-        ("on_ambiguity", 0.95, [], "approved"),
-        ("on_ambiguity", 0.80, [], "awaiting_confirmation"),
-        ("on_ambiguity", 0.95, ["时间范围不明确"], "awaiting_confirmation"),
-        ("always", 0.99, [], "awaiting_confirmation"),
+        ("auto", 0.95, [], False),
+        ("auto", None, [], False),
+        ("on_ambiguity", 0.95, [], False),
+        ("on_ambiguity", 0.80, [], True),
+        ("on_ambiguity", 0.95, ["时间范围不明确"], True),
+        ("always", 0.99, [], True),
     ],
 )
 def test_confirmation_policy_is_fail_closed(
     mode: str,
     confidence: float | None,
     ambiguities: list[str],
-    expected: str,
+    expected_required: bool,
 ) -> None:
-    """自动策略缺少任一必要条件时都必须转人工确认。"""
+    """确认策略只表达是否需要调用意图审批工具，不再直接伪造人工审批结果。"""
     decision = decide_query_approval(
         _config(mode),
         {
@@ -347,12 +350,13 @@ def test_confirmation_policy_is_fail_closed(
         },
     )
 
-    assert decision["status"] == expected
-    assert decision["action"] == ("execute" if expected == "approved" else None)
+    assert decision["required"] is expected_required
+    assert decision["mode"] == mode
+    assert decision["snapshot_id"] == "sha256:snapshot"
 
 
-def test_approval_request_reuses_human_input_v1_without_response_snapshot_field() -> None:
-    """确认请求携带 snapshot，回复仍复用现有 request_id 映射。"""
+def test_approval_request_uses_data_agent_intent_approval_source() -> None:
+    """确认请求携带 snapshot，并用 DataAgent 专属 source 区分通用 clarification。"""
     request = build_query_approval_request(
         {
             "snapshot_id": "sha256:snapshot",
@@ -362,7 +366,7 @@ def test_approval_request_reuses_human_input_v1_without_response_snapshot_field(
         tool_call_id="labels-call-1",
     )
 
-    assert request["source"] == "ask_clarification"
+    assert request["source"] == "ask_intent_approval"
     assert request["request_id"].startswith("data-query:")
     assert request["snapshot_id"] == "sha256:snapshot"
     assert [item["id"] for item in request["options"]] == ["execute", "sql_only", "cancel"]
@@ -385,6 +389,74 @@ def test_query_review_items_have_stable_ids_and_are_bound_to_request() -> None:
     assert all(item["status"] == "pending" for item in first)
 
 
+def test_ask_intent_approval_tool_creates_visible_approval_card() -> None:
+    """模型调用意图审批工具时，必须生成 ToolMessage 审批卡并暂停图执行。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-approval-card",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    snapshot = build_query_label_snapshot(
+        turn_id="turn-approval-card",
+        data_source_id="sales-pg",
+        ability_version=1,
+        retrieval=retrieval,
+        intent="ranking",
+        summary="查询华东销售额最高的商品",
+        ambiguities=["是否排除退款"],
+        labels=[
+            {
+                "label": "指标",
+                "value": "销售额",
+                "source": "database",
+                "evidence_refs": [retrieval["evidences"][0]["ref"]],
+            }
+        ],
+    )
+    state = {
+        "messages": [HumanMessage(id="turn-approval-card", content="查询华东销售额")],
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-approval-card",
+                "snapshot_id": snapshot["snapshot_id"],
+                "stage": "labels_published",
+                "data_source_id": "sales-pg",
+                "payload": {
+                    "retrieval": retrieval,
+                    "labels": snapshot,
+                    "approval_policy": decide_query_approval(_config(), snapshot),
+                    "review_items": build_query_review_items(snapshot),
+                },
+            }
+        ],
+    }
+    request = ToolCallRequest(
+        tool_call={"name": "ask_intent_approval", "id": "approval-call-1", "args": {}},
+        tool=None,
+        state=state,
+        runtime=MagicMock(context={"thread_id": "thread-1"}),
+    )
+
+    result = QueryIntentApprovalMiddleware(_config()).wrap_tool_call(
+        request,
+        lambda _request: pytest.fail("审批工具必须由 middleware 拦截"),
+    )
+
+    assert result.goto == END
+    message = result.update["messages"][0]
+    service_state = result.update["service_states"][0]
+    assert message.name == "ask_intent_approval"
+    assert message.artifact["kind"] == "data_query_labels"
+    assert message.artifact["human_input"]["source"] == "ask_intent_approval"
+    assert message.artifact["approval"]["status"] == "awaiting_confirmation"
+    assert service_state["stage"] == "awaiting_confirmation"
+    assert service_state["payload"]["approval_request"]["request_id"].startswith("data-query:")
+
+
 def _tool_request(name: str, *, state: dict | None = None) -> ToolCallRequest:
     """构造 DataAgent 业务 middleware 工具请求。"""
     runtime = MagicMock()
@@ -400,30 +472,17 @@ def _tool_request(name: str, *, state: dict | None = None) -> ToolCallRequest:
     )
 
 
-def test_turn_reset_middleware_replaces_stale_query_state_before_retrieval() -> None:
-    """新可见用户轮次必须先建立 idle 状态，使本轮检索可以替换旧轮快照。"""
-    stale_state = {
-        "messages": [
-            HumanMessage(id="turn-1", content="上一轮查询"),
-            HumanMessage(id="turn-2", content="重新执行查询"),
-        ],
-        "service_states": [
-            {
-                "service_name": "data_query",
-                "version": 1,
-                "turn_id": "turn-1",
-                "stage": "needs_refinement",
-                "payload": {"retrieval": {"ok": False}},
-            }
-        ],
-    }
-
-    reset = DataAgentTurnResetMiddleware(_config()).before_agent(stale_state, MagicMock())
-
-    assert reset is not None
-    assert reset["service_states"][0]["turn_id"] == "turn-2"
-    assert reset["service_states"][0]["stage"] == "idle"
-    current = merge_service_states(stale_state["service_states"], reset["service_states"])
+def test_service_state_reducer_allows_new_turn_retrieval_without_forced_reset() -> None:
+    """新可见用户问题可以由 TableRAG 检索直接创建新快照，不需要先写 idle 重置。"""
+    stale_state = [
+        {
+            "service_name": "data_query",
+            "version": 1,
+            "turn_id": "turn-1",
+            "stage": "needs_refinement",
+            "payload": {"retrieval": {"ok": False}},
+        }
+    ]
     retrieving = [
         {
             "service_name": "data_query",
@@ -433,11 +492,15 @@ def test_turn_reset_middleware_replaces_stale_query_state_before_retrieval() -> 
             "payload": {"retrieval": {"ok": True}},
         }
     ]
-    assert merge_service_states(current, retrieving)[0]["stage"] == "retrieving"
+
+    merged = merge_service_states(stale_state, retrieving)
+
+    assert merged[0]["turn_id"] == "turn-2"
+    assert merged[0]["stage"] == "retrieving"
 
 
-def test_turn_reset_middleware_does_not_reset_hidden_confirmation_resume() -> None:
-    """human-input 隐藏确认属于原轮次恢复，不得清空 awaiting_confirmation 快照。"""
+def test_current_visible_turn_id_ignores_hidden_intent_approval_response() -> None:
+    """human-input 隐藏确认属于工具回复，不得被识别为新的业务用户问题。"""
     state = {
         "messages": [
             HumanMessage(id="turn-1", content="查询销售额"),
@@ -446,30 +509,226 @@ def test_turn_reset_middleware_does_not_reset_hidden_confirmation_resume() -> No
                 content="已确认",
                 additional_kwargs={
                     "hide_from_ui": True,
-                    "human_input_response": {
-                        "version": 1,
-                        "kind": "human_input_response",
-                        "source": "ask_clarification",
-                        "request_id": "data-query:req-1",
-                        "response_kind": "text",
-                        "value": "确认执行",
+                        "human_input_response": {
+                            "version": 1,
+                            "kind": "human_input_response",
+                            "source": "ask_intent_approval",
+                            "request_id": "data-query:req-1",
+                            "response_kind": "text",
+                            "value": "确认执行",
                     },
                 },
             ),
+        ],
+    }
+
+    assert current_visible_turn_id(state) == "turn-1"
+
+
+def test_get_active_service_state_keeps_historical_snapshot_after_new_visible_turn() -> None:
+    """新可见用户消息出现后，历史快照仍可作为模型重入判断的执行锚点。"""
+    state = {
+        "messages": [
+            HumanMessage(id="turn-1", content="上一轮查询"),
+            HumanMessage(id="turn-2", content="重新执行"),
         ],
         "service_states": [
             {
                 "service_name": "data_query",
                 "version": 1,
                 "turn_id": "turn-1",
-                "snapshot_id": "snapshot-1",
-                "stage": "awaiting_confirmation",
-                "payload": {},
+                "snapshot_id": "snapshot-cancelled",
+                "stage": "cancelled",
+                "payload": {
+                    "retrieval": {"ok": True},
+                    "approval": {"version": 1, "status": "cancelled", "action": "cancel", "source": "human"},
+                },
             }
         ],
     }
 
-    assert DataAgentTurnResetMiddleware(_config()).before_agent(state, MagicMock()) is None
+    active = get_active_service_state(state)
+    assert active is not None
+    assert active["stage"] == "cancelled"
+    assert active["turn_id"] == "turn-1"
+
+
+def test_query_labels_middleware_allows_republishing_after_cancelled_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    """旧轮取消后，模型可基于历史检索快照重新发布标签并再次展示审批入口。"""
+    monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    evidence_ref = retrieval["evidences"][0]["ref"]
+    cancelled_state = {
+        "service_name": "data_query",
+        "version": 1,
+        "turn_id": "turn-1",
+        "snapshot_id": "snapshot-cancelled",
+        "stage": "cancelled",
+        "payload": {
+            "retrieval": retrieval,
+            "labels": {
+                "snapshot_id": "snapshot-cancelled",
+                "intent": "ranking",
+                "labels": [],
+                "ambiguities": ["是否排除退款"],
+            },
+            "approval": {"version": 1, "status": "cancelled", "action": "cancel", "source": "human"},
+            "approval_request": {"source": "ask_intent_approval", "request_id": "data-query:req-old"},
+        },
+    }
+    state = {
+        "messages": [
+            HumanMessage(id="turn-1", content="上一轮查询"),
+            HumanMessage(id="turn-2", content="继续执行上一次查询"),
+        ],
+        "service_states": [cancelled_state],
+    }
+    request = ToolCallRequest(
+        tool_call={
+            "name": "publish_query_labels",
+            "id": "labels-after-cancel",
+            "args": {
+                "intent": "ranking",
+                "labels": [
+                    {
+                        "label": "指标",
+                        "value": "销售额",
+                        "source": "database",
+                        "evidence_refs": [evidence_ref],
+                    }
+                ],
+                "ambiguities": ["是否按上一次取消前的理解重新执行？"],
+            },
+        },
+        tool=None,
+        state=state,
+        runtime=MagicMock(context={"thread_id": "thread-1"}),
+    )
+
+    result = QueryLabelsMiddleware(require_retrieval=True, service_ability=_config()).wrap_tool_call(
+        request,
+        lambda _request: pytest.fail("placeholder tool must not run"),
+    )
+
+    service_state = result.update["service_states"][0]
+    artifact = result.update["messages"][0].artifact
+    merged = merge_service_states([cancelled_state], [service_state])
+    assert service_state["stage"] == "labels_published"
+    assert service_state["turn_id"] == "turn-2"
+    assert service_state["payload"]["resumed_from"] == {
+        "turn_id": "turn-1",
+        "snapshot_id": "snapshot-cancelled",
+        "stage": "cancelled",
+    }
+    assert artifact["approval_required"] is True
+    assert artifact["resumed_from"]["stage"] == "cancelled"
+    assert merged[0]["turn_id"] == "turn-2"
+    assert merged[0]["stage"] == "labels_published"
+
+
+def test_data_agent_reentry_preserves_history_messages_when_republishing_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """重新执行并重发标签时，历史标签/审批 ToolMessage 仍保留在模型和前端历史中。"""
+    monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
+    monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    evidence_ref = retrieval["evidences"][0]["ref"]
+    cancelled_state = {
+        "service_name": "data_query",
+        "version": 1,
+        "turn_id": "turn-1",
+        "snapshot_id": "snapshot-cancelled",
+        "stage": "cancelled",
+        "payload": {
+            "retrieval": retrieval,
+            "labels": {
+                "snapshot_id": "snapshot-cancelled",
+                "intent": "ranking",
+                "labels": [],
+                "ambiguities": ["是否排除退款"],
+            },
+            "approval": {"version": 1, "status": "cancelled", "action": "cancel", "source": "human"},
+        },
+    }
+    model = _DataQueryFlowModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "publish_query_labels",
+                        "id": "labels-reentry",
+                        "args": {
+                            "intent": "ranking",
+                            "summary": "延续上一次取消前的销售额查询意图",
+                            "ambiguities": ["是否按上一次取消前的理解重新执行？"],
+                            "labels": [
+                                {
+                                    "label": "指标",
+                                    "value": "销售额",
+                                    "source": "database",
+                                    "evidence_refs": [evidence_ref],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            ),
+            AIMessage(content="已重新提交查询意图，请确认。"),
+        ]
+    )
+    ability = DataAgentServiceAbility(_config())
+    graph = create_agent(
+        model=model,
+        tools=[publish_query_labels_tool],
+        middleware=ability.build_middlewares(),
+        state_schema=ThreadState,
+    )
+    old_label_artifact = {
+        "version": 1,
+        "kind": "data_query_labels",
+        "snapshot_id": "snapshot-cancelled",
+        "data_source_id": "sales-pg",
+        "intent": "ranking",
+        "labels": [],
+        "approval": {"status": "cancelled", "action": "cancel", "source": "human"},
+    }
+
+    final_state = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(id="turn-1", content="查询华东销售额最高的商品"),
+                AIMessage(id="ai-old-label", content="", tool_calls=[{"name": "publish_query_labels", "id": "old-label-call", "args": {}}]),
+                ToolMessage(id="old-label-message", content='{"ok":true}', tool_call_id="old-label-call", name="publish_query_labels", artifact=old_label_artifact),
+                AIMessage(id="ai-old-approval", content="", tool_calls=[{"name": "ask_intent_approval", "id": "old-approval-call", "args": {}}]),
+                ToolMessage(id="old-approval-message", content="人类已取消当前查询意图审批。", tool_call_id="old-approval-call", name="ask_intent_approval", artifact=old_label_artifact),
+                HumanMessage(id="turn-2", content="重新执行"),
+            ],
+            "service_states": [cancelled_state],
+        }
+    )
+
+    message_ids = [message.id for message in final_state["messages"]]
+    artifacts = [message.artifact for message in final_state["messages"] if isinstance(message, ToolMessage) and message.artifact]
+    active = final_state["service_states"][0]
+    assert "old-label-message" in message_ids
+    assert "old-approval-message" in message_ids
+    assert any(artifact.get("snapshot_id") == "snapshot-cancelled" for artifact in artifacts)
+    assert any(artifact.get("resumed_from", {}).get("snapshot_id") == "snapshot-cancelled" for artifact in artifacts)
+    assert active["turn_id"] == "turn-2"
+    assert active["stage"] == "labels_published"
 
 
 def test_data_agent_starts_retrieval_from_new_visible_turn_after_stale_state(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -516,8 +775,12 @@ def test_data_agent_starts_retrieval_from_new_visible_turn_after_stale_state(mon
                     "service_name": "data_query",
                     "version": 1,
                     "turn_id": "turn-old",
-                    "stage": "needs_refinement",
-                    "payload": {"retrieval": {"ok": False}},
+                    "snapshot_id": "snapshot-cancelled",
+                    "stage": "cancelled",
+                    "payload": {
+                        "retrieval": {"ok": True},
+                        "approval": {"version": 1, "status": "cancelled", "action": "cancel", "source": "human"},
+                    },
                 }
             ],
         },
@@ -634,12 +897,25 @@ def test_table_rag_middleware_preserves_prior_success_when_supplement_is_empty(m
     assert service_state["payload"]["last_retrieval_error"]["error_code"] == "TABLERAG_EMPTY_OR_FAILED"
 
 
-def test_new_visible_turn_cannot_execute_old_approval_snapshot() -> None:
-    """新用户问题不能复用上一轮已批准的 SQL Snapshot 启动子代理。"""
+def test_sql_stage_allows_historical_approved_snapshot_for_regeneration_request() -> None:
+    """用户追问重新生成 SQL 时，模型可基于历史已批准快照继续进入 SQL 阶段。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    validation = validate_sql(
+        "SELECT orders.region FROM public.orders LIMIT 500",
+        config=_config(),
+        retrieval=retrieval,
+        snapshot_id="sha256:approved",
+    )
     state = {
         "messages": [
             HumanMessage(id="turn-1", content="上一轮查询"),
-            HumanMessage(id="turn-2", content="新的查询"),
+            HumanMessage(id="turn-2", content="重新生成 SQL 并执行结果"),
         ],
         "service_states": [
             {
@@ -649,9 +925,9 @@ def test_new_visible_turn_cannot_execute_old_approval_snapshot() -> None:
                 "snapshot_id": "sha256:approved",
                 "stage": "approved",
                 "payload": {
-                    "approval": {"status": "approved", "action": "execute"},
-                    "retrieval": {},
-                    "labels": {},
+                    "approval": {"status": "approved", "action": "sql_only", "source": "human"},
+                    "retrieval": retrieval,
+                    "labels": {"intent": "detail", "labels": []},
                 },
             }
         ],
@@ -676,27 +952,225 @@ def test_new_visible_turn_cannot_execute_old_approval_snapshot() -> None:
         runtime=runtime,
     )
 
-    result = SqlStageMiddleware(_config()).wrap_tool_call(
-        request,
-        lambda _request: pytest.fail("旧 Snapshot 不得进入 SQL SubAgent"),
+    def handler(next_request: ToolCallRequest) -> ToolMessage:
+        envelope = json.loads(next_request.tool_call["args"]["prompt"])
+        assert envelope["snapshot_id"] == "sha256:approved"
+        assert envelope["action"] == "sql_only"
+        return ToolMessage(
+            content=json.dumps(
+                {
+                    "version": 1,
+                    "kind": "data_query_sql_result",
+                    "snapshot_id": "sha256:approved",
+                    "data_source_id": "sales-pg",
+                    "validation": validation,
+                    "execution": None,
+                },
+                ensure_ascii=False,
+            ),
+            tool_call_id="task-stale-snapshot",
+            name="task",
+        )
+
+    result = SqlStageMiddleware(_config()).wrap_tool_call(request, handler)
+
+    assert result.update["service_states"][0]["stage"] == "succeeded"
+    assert result.update["service_states"][0]["payload"]["approval"]["source"] == "human"
+
+
+def test_sql_stage_rejects_historical_snapshot_after_user_cancelled_it() -> None:
+    """同一历史快照被用户取消后，不得再用更早的 approved 状态绕过审批。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    state = {
+        "messages": [
+            HumanMessage(id="turn-1", content="上一轮查询"),
+            HumanMessage(id="turn-2", content="重新执行"),
+        ],
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-1",
+                "snapshot_id": "sha256:cancelled",
+                "stage": "approved",
+                "payload": {
+                    "approval": {"status": "approved", "action": "execute", "source": "human"},
+                    "retrieval": retrieval,
+                    "labels": {"intent": "detail", "labels": []},
+                },
+            },
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-1",
+                "snapshot_id": "sha256:cancelled",
+                "stage": "cancelled",
+                "payload": {
+                    "approval": {"status": "cancelled", "action": "cancel", "source": "human"},
+                    "retrieval": retrieval,
+                    "labels": {"intent": "detail", "labels": []},
+                },
+            },
+        ],
+    }
+    request = ToolCallRequest(
+        tool_call={
+            "name": "task",
+            "id": "task-cancelled-snapshot",
+            "args": {
+                "description": "SQL",
+                "prompt": "ignored",
+                "subagent_type": "sql-subagent",
+            },
+        },
+        tool=None,
+        state=state,
+        runtime=MagicMock(context={"thread_id": "thread-1", "data_query_service_ability": _config().model_dump(mode="json"), "data_query_sql_subagent_allowed": True}),
     )
 
-    assert not isinstance(result, ToolMessage)
+    result = SqlStageMiddleware(_config()).wrap_tool_call(
+        request,
+        lambda _request: pytest.fail("cancelled historical snapshot must not enter sql-subagent"),
+    )
+
     message = result.update["messages"][0]
     assert json.loads(message.content)["error_code"] == "SQL_STAGE_NOT_APPROVED"
-    assert read_subagent_result_metadata(message.additional_kwargs) == {
-        "status": "failed",
-        "error": "SQL_STAGE_NOT_APPROVED",
+
+
+def test_sql_stage_allows_policy_based_execution_from_labels_published_snapshot() -> None:
+    """确认策略不要求人工时，labels_published 快照也可以直接进入 SQL 阶段。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-policy",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    snapshot = build_query_label_snapshot(
+        turn_id="turn-policy",
+        data_source_id="sales-pg",
+        ability_version=1,
+        retrieval=retrieval,
+        intent="ranking",
+        summary="查询华东销售额最高的商品",
+        ambiguities=[],
+        labels=[
+            {
+                "label": "指标",
+                "value": "销售额",
+                "source": "database",
+                "evidence_refs": [retrieval["evidences"][0]["ref"]],
+            }
+        ],
+    )
+    state = {
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-policy",
+                "snapshot_id": snapshot["snapshot_id"],
+                "stage": "labels_published",
+                "payload": {
+                    "retrieval": retrieval,
+                    "labels": snapshot,
+                    "approval_policy": {"version": 1, "snapshot_id": snapshot["snapshot_id"], "required": False, "mode": "auto", "reason": "auto"},
+                },
+            }
+        ]
     }
+    request = ToolCallRequest(
+        tool_call={
+            "name": "task",
+            "id": "task-policy",
+            "args": {"description": "SQL", "prompt": "ignored", "subagent_type": "sql-subagent"},
+        },
+        tool=None,
+        state=state,
+        runtime=MagicMock(context={"thread_id": "thread-1", "data_query_service_ability": _config().model_dump(mode="json"), "data_query_sql_subagent_allowed": True}),
+    )
+    validation = validate_sql(
+        "SELECT orders.region FROM public.orders LIMIT 500",
+        config=_config(),
+        retrieval=retrieval,
+        snapshot_id=snapshot["snapshot_id"],
+    )
+
+    def handler(next_request: ToolCallRequest) -> ToolMessage:
+        envelope = json.loads(next_request.tool_call["args"]["prompt"])
+        assert envelope["action"] == "execute"
+        assert envelope["snapshot_id"] == snapshot["snapshot_id"]
+        return ToolMessage(
+            content=json.dumps(
+                {
+                    "version": 1,
+                    "kind": "data_query_sql_result",
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "data_source_id": "sales-pg",
+                    "validation": validation,
+                    "execution": {
+                        "version": 1,
+                        "ok": True,
+                        "snapshot_id": snapshot["snapshot_id"],
+                        "validation_digest": validation["validation_digest"],
+                        "columns": ["region"],
+                        "rows": [],
+                        "row_count": 0,
+                        "returned_row_count": 0,
+                        "truncated": False,
+                        "empty": True,
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            tool_call_id="task-policy",
+            name="task",
+        )
+
+    result = SqlStageMiddleware(_config()).wrap_tool_call(request, handler)
+
+    assert result.update["service_states"][0]["stage"] == "succeeded"
+    assert result.update["service_states"][0]["payload"]["approval"]["source"] == "policy"
 
 
-def test_query_approval_middleware_accepts_only_matching_hidden_response() -> None:
-    """确认 middleware 必须校验 source/request_id，且只推进一次授权。"""
-    snapshot = {
-        "snapshot_id": "sha256:snapshot",
-        "approval": {"version": 1, "status": "awaiting_confirmation", "action": None},
+def test_query_intent_approval_middleware_accepts_only_matching_hidden_response() -> None:
+    """意图审批 middleware 必须校验 source/request_id，且只推进一次授权。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    snapshot = build_query_label_snapshot(
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        ability_version=1,
+        retrieval=retrieval,
+        intent="ranking",
+        summary="查询华东销售额",
+        ambiguities=[],
+        labels=[
+            {
+                "label": "指标",
+                "value": "销售额",
+                "source": "database",
+                "evidence_refs": [retrieval["evidences"][0]["ref"]],
+            }
+        ],
+    )
+    payload = {
+        "retrieval": retrieval,
+        "labels": snapshot,
+        "approval": {"version": 1, "status": "awaiting_confirmation", "action": None, "source": None},
         "approval_request": {
-            "source": "ask_clarification",
+            "source": "ask_intent_approval",
             "request_id": "data-query:req-1",
         },
     }
@@ -706,9 +1180,9 @@ def test_query_approval_middleware_accepts_only_matching_hidden_response() -> No
                 "service_name": "data_query",
                 "version": 1,
                 "turn_id": "turn-1",
-                "snapshot_id": "sha256:snapshot",
+                "snapshot_id": snapshot["snapshot_id"],
                 "stage": "awaiting_confirmation",
-                "payload": snapshot,
+                "payload": payload,
             }
         ],
         "messages": [
@@ -718,7 +1192,7 @@ def test_query_approval_middleware_accepts_only_matching_hidden_response() -> No
                     "human_input_response": {
                         "version": 1,
                         "kind": "human_input_response",
-                        "source": "ask_clarification",
+                        "source": "ask_intent_approval",
                         "request_id": "data-query:req-1",
                         "response_kind": "option",
                         "option_id": "sql_only",
@@ -729,17 +1203,20 @@ def test_query_approval_middleware_accepts_only_matching_hidden_response() -> No
         ],
     }
 
-    result = QueryApprovalMiddleware(_config()).before_agent(state, MagicMock())
+    result = QueryIntentApprovalMiddleware(_config()).before_agent(state, MagicMock())
 
     assert result["service_states"][0]["stage"] == "approved"
     assert result["service_states"][0]["payload"]["approval"]["action"] == "sql_only"
+    assert result["messages"][0].name == "ask_intent_approval"
+    assert result["messages"][0].artifact["approval"]["status"] == "approved"
+    assert result["messages"][0].artifact["approval_result"]["action"] == "sql_only"
 
     state["messages"][0].additional_kwargs["human_input_response"]["request_id"] = "data-query:stale"
-    assert QueryApprovalMiddleware(_config()).before_agent(state, MagicMock()) is None
+    assert QueryIntentApprovalMiddleware(_config()).before_agent(state, MagicMock()) is None
 
 
-def test_query_approval_text_revision_invalidates_old_query_snapshot() -> None:
-    """用户修改条件后只保留新检索条件，旧 Evidence、标签、授权和 SQL 结果全部失效。"""
+def test_query_intent_approval_text_revision_invalidates_old_query_snapshot() -> None:
+    """用户修改条件后生成新的检索快照，旧 Evidence、标签、授权和 SQL 结果全部失效。"""
     state = {
         "service_states": [
             {
@@ -749,10 +1226,31 @@ def test_query_approval_text_revision_invalidates_old_query_snapshot() -> None:
                 "snapshot_id": "sha256:old-snapshot",
                 "stage": "awaiting_confirmation",
                 "payload": {
-                    "retrieval": {"ok": True, "retrieval_digest": "sha256:old-retrieval"},
-                    "labels": {"intent": "ranking"},
-                    "approval": {"status": "awaiting_confirmation", "action": None},
-                    "approval_request": {"source": "ask_clarification", "request_id": "data-query:req-revision"},
+                    "retrieval": build_retrieval_context(
+                        _retrieval_payload(),
+                        tool_name="sqlrag_retrieve",
+                        turn_id="turn-1",
+                        data_source_id="sales-pg",
+                        binding=_binding(),
+                    ),
+                    "labels": {
+                        "snapshot_id": "sha256:old-snapshot",
+                        "turn_id": "turn-1",
+                        "retrieval_digest": "sha256:old-retrieval",
+                        "binding_fingerprint": "sha256:target",
+                        "intent": "ranking",
+                        "labels": [
+                            {
+                                "label": "指标",
+                                "value": "销售额",
+                                "source": "user",
+                                "evidence_refs": [],
+                            }
+                        ],
+                        "ambiguities": ["是否排除退款"],
+                    },
+                    "approval": {"version": 1, "status": "awaiting_confirmation", "action": None, "source": None},
+                    "approval_request": {"source": "ask_intent_approval", "request_id": "data-query:req-revision"},
                     "sql_result": {"execution": {"ok": True}},
                 },
             }
@@ -762,20 +1260,20 @@ def test_query_approval_text_revision_invalidates_old_query_snapshot() -> None:
             HumanMessage(
                 content="改查去年并排除退款",
                 additional_kwargs={
-                    "human_input_response": {
-                        "version": 1,
-                        "kind": "human_input_response",
-                        "source": "ask_clarification",
-                        "request_id": "data-query:req-revision",
-                        "response_kind": "text",
-                        "value": "改查去年并排除退款",
+                        "human_input_response": {
+                            "version": 1,
+                            "kind": "human_input_response",
+                            "source": "ask_intent_approval",
+                            "request_id": "data-query:req-revision",
+                            "response_kind": "text",
+                            "value": "改查去年并排除退款",
                     }
                 },
             ),
         ],
     }
 
-    result = QueryApprovalMiddleware(_config()).before_agent(state, MagicMock())
+    result = QueryIntentApprovalMiddleware(_config()).before_agent(state, MagicMock())
 
     service_state = result["service_states"][0]
     assert service_state["stage"] == "retrieving"
@@ -783,30 +1281,58 @@ def test_query_approval_text_revision_invalidates_old_query_snapshot() -> None:
     assert service_state["payload"] == {
         "revision_query": "改查去年并排除退款",
         "retrieval_calls": 0,
+        "previous_snapshot_id": "sha256:old-snapshot",
+        "approval_result": result["messages"][0].artifact["approval_result"],
     }
 
 
-def test_query_approval_accepts_all_structured_review_items_before_sql() -> None:
+def test_query_intent_approval_accepts_all_structured_review_items_before_sql() -> None:
     """逐项审核全部接受后才推进 approved，修改项则重新检索。"""
     review_items = [
         {"id": "ambiguity:time", "question": "时间范围不明确", "status": "pending"},
         {"id": "ambiguity:refund", "question": "是否排除退款", "status": "pending"},
     ]
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    snapshot = build_query_label_snapshot(
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        ability_version=1,
+        retrieval=retrieval,
+        intent="ranking",
+        summary="查询华东销售额",
+        ambiguities=["时间范围不明确", "是否排除退款"],
+        labels=[
+            {
+                "label": "指标",
+                "value": "销售额",
+                "source": "database",
+                "evidence_refs": [retrieval["evidences"][0]["ref"]],
+            }
+        ],
+    )
     payload = {
-        "approval": {"version": 1, "status": "awaiting_confirmation", "action": None},
-        "approval_request": {"source": "ask_clarification", "request_id": "data-query:review"},
+        "retrieval": retrieval,
+        "labels": snapshot,
+        "approval": {"version": 1, "status": "awaiting_confirmation", "action": None, "source": None},
+        "approval_request": {"source": "ask_intent_approval", "request_id": "data-query:review"},
         "review_items": review_items,
     }
     response = {
         "version": 1,
         "kind": "human_input_response",
-        "source": "ask_clarification",
+        "source": "ask_intent_approval",
         "request_id": "data-query:review",
         "response_kind": "text",
         "value": json.dumps(
             {
                 "kind": "data_query_review_response",
-                "snapshot_id": "sha256:snapshot",
+                "snapshot_id": snapshot["snapshot_id"],
                 "final_action": "execute",
                 "items": [
                     {"id": "ambiguity:time", "decision": "accept"},
@@ -822,7 +1348,7 @@ def test_query_approval_accepts_all_structured_review_items_before_sql() -> None
                 "service_name": "data_query",
                 "version": 1,
                 "turn_id": "turn-1",
-                "snapshot_id": "sha256:snapshot",
+                "snapshot_id": snapshot["snapshot_id"],
                 "stage": "awaiting_confirmation",
                 "data_source_id": "sales-pg",
                 "payload": payload,
@@ -831,11 +1357,13 @@ def test_query_approval_accepts_all_structured_review_items_before_sql() -> None
         "messages": [HumanMessage(content="确认", additional_kwargs={"human_input_response": response})],
     }
 
-    result = QueryApprovalMiddleware(_config()).before_agent(state, MagicMock())
+    result = QueryIntentApprovalMiddleware(_config()).before_agent(state, MagicMock())
 
     assert result["service_states"][0]["stage"] == "approved"
     assert result["service_states"][0]["payload"]["approval"]["action"] == "execute"
     assert all(item["status"] == "accepted" for item in result["service_states"][0]["payload"]["review_items"])
+    assert result["messages"][0].artifact["approval"]["status"] == "approved"
+    assert result["messages"][0].artifact["approval_result"]["review"]["final_action"] == "execute"
 
 
 def test_query_labels_service_mode_publishes_versioned_artifact_without_legacy_state() -> None:
@@ -868,7 +1396,6 @@ def test_query_labels_service_mode_publishes_versioned_artifact_without_legacy_s
             "args": {
                 "intent": "ranking",
                 "summary": "查询华东销售额最高的商品",
-                "confidence": 0.92,
                 "ambiguities": [],
                 "labels": [
                     {
@@ -891,11 +1418,13 @@ def test_query_labels_service_mode_publishes_versioned_artifact_without_legacy_s
     assert artifact["kind"] == "data_query_labels"
     assert artifact["snapshot_id"].startswith("sha256:")
     assert "data_query_labels" not in result.update
-    assert result.update["service_states"][0]["stage"] == "approved"
+    assert result.update["service_states"][0]["stage"] == "labels_published"
+    assert artifact["approval_required"] is False
+    assert artifact["approval_policy"]["required"] is False
 
 
 def test_query_labels_missing_ambiguities_field_requires_confirmation() -> None:
-    """模型省略 ambiguities 时必须进入确认，不能用高置信度绕过。"""
+    """模型省略 ambiguities 时必须写入明确的歧义占位，避免 UI 没有审核入口。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
         tool_name="sqlrag_retrieve",
@@ -910,7 +1439,6 @@ def test_query_labels_missing_ambiguities_field_requires_confirmation() -> None:
             "args": {
                 "intent": "aggregation",
                 "summary": "查询销售额",
-                "confidence": 0.99,
                 "labels": [
                     {
                         "label": "指标",
@@ -943,7 +1471,9 @@ def test_query_labels_missing_ambiguities_field_requires_confirmation() -> None:
         lambda _request: pytest.fail("placeholder tool must not run"),
     )
 
-    assert result.update["messages"][0].artifact["approval"]["status"] == "awaiting_confirmation"
+    assert result.update["messages"][0].artifact["approval_required"] is True
+    assert result.update["messages"][0].artifact["approval_policy"]["required"] is True
+    assert result.update["messages"][0].artifact["ambiguity_items"][0]["question"]
     assert result.update["service_states"][0]["payload"]["labels"]["ambiguities_declared"] is False
 
 
@@ -968,8 +1498,32 @@ def test_query_labels_middleware_keeps_one_label_snapshot_per_model_response() -
     assert [item["id"] for item in update["messages"][0].tool_calls] == ["labels-1", "task-1"]
 
 
-def test_non_interactive_ambiguous_query_stops_without_human_input() -> None:
-    """非交互运行遇到需确认快照时必须安全停止，不能等待或继续执行 SQL。"""
+def test_query_labels_middleware_keeps_followup_approval_call_in_same_model_response() -> None:
+    """同一 AIMessage 中的后续意图审批调用必须保留，不能被标签去重逻辑误剪。"""
+    state = {
+        "messages": [
+            AIMessage(
+                id="ai-label-approval",
+                content="",
+                tool_calls=[
+                    {"name": "publish_query_labels", "id": "labels-1", "args": {"intent": "ranking", "labels": []}},
+                    {"name": "ask_intent_approval", "id": "approval-1", "args": {}},
+                    {"name": "publish_query_labels", "id": "labels-2", "args": {"intent": "detail", "labels": []}},
+                ],
+            )
+        ]
+    }
+
+    update = QueryLabelsMiddleware(require_retrieval=True, service_ability=_config()).after_model(state, MagicMock())
+
+    assert [item["id"] for item in update["messages"][0].tool_calls] == [
+        "labels-1",
+        "approval-1",
+    ]
+
+
+def test_query_labels_non_interactive_run_still_publishes_snapshot() -> None:
+    """非交互运行也要先稳定发布标签快照，审批策略由后续工具决定。"""
     retrieval = build_retrieval_context(
         _retrieval_payload(),
         tool_name="sqlrag_retrieve",
@@ -999,7 +1553,6 @@ def test_non_interactive_ambiguous_query_stops_without_human_input() -> None:
             "args": {
                 "intent": "aggregation",
                 "summary": "查询销售额",
-                "confidence": 0.6,
                 "ambiguities": ["未明确时间范围"],
                 "labels": [
                     {
@@ -1023,16 +1576,10 @@ def test_non_interactive_ambiguous_query_stops_without_human_input() -> None:
 
     artifact = result.update["messages"][0].artifact
     service_state = result.update["service_states"][0]
-    assert artifact["approval"] == {
-        "version": 1,
-        "snapshot_id": artifact["snapshot_id"],
-        "status": "cancelled",
-        "action": "cancel",
-        "source": "model",
-    }
+    assert artifact["approval_required"] is True
+    assert artifact["approval_policy"]["required"] is True
     assert "human_input" not in artifact
-    assert service_state["stage"] == "cancelled"
-    assert service_state["payload"]["approval_error_code"] == "DATA_QUERY_CONFIRMATION_UNAVAILABLE"
+    assert service_state["stage"] == "labels_published"
 
 
 def test_postgres_sql_validation_is_ast_based_and_bound_to_retrieval() -> None:
@@ -1329,6 +1876,137 @@ def test_task_result_uses_authoritative_sql_tool_steps_not_subagent_free_text() 
         )
         is None
     )
+
+
+def test_sql_stage_middleware_prefers_task_artifact_over_budgeted_content() -> None:
+    """父 SQL 阶段必须优先读取 task artifact，不能被预算后的 content 截断误伤。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    validation = validate_sql(
+        "SELECT orders.region FROM public.orders",
+        config=_config(),
+        retrieval=retrieval,
+        snapshot_id="sha256:snapshot",
+    )
+    execution = {
+        "version": 1,
+        "ok": True,
+        "snapshot_id": "sha256:snapshot",
+        "validation_digest": validation["validation_digest"],
+        "columns": ["region"],
+        "rows": [{"region": "华东"}],
+        "row_count": 1,
+        "returned_row_count": 1,
+        "truncated": False,
+        "empty": False,
+    }
+    state = {
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-1",
+                "snapshot_id": "sha256:snapshot",
+                "stage": "approved",
+                "payload": {
+                    "retrieval": retrieval,
+                    "labels": {"intent": "detail", "labels": []},
+                    "approval": {"status": "approved", "action": "execute"},
+                },
+            }
+        ]
+    }
+    request = ToolCallRequest(
+        tool_call={
+            "name": "task",
+            "id": "task-artifact",
+            "args": {"description": "SQL", "prompt": "ignored", "subagent_type": "sql-subagent"},
+        },
+        tool=None,
+        state=state,
+        runtime=MagicMock(),
+    )
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        return ToolMessage(
+            content="Task Succeeded. Result: [budgeted content preview]",
+            artifact={
+                "version": 1,
+                "kind": "data_query_sql_result",
+                "snapshot_id": "sha256:snapshot",
+                "data_source_id": "sales-pg",
+                "validation": validation,
+                "execution": execution,
+            },
+            tool_call_id="task-artifact",
+            name="task",
+        )
+
+    result = SqlStageMiddleware(_config()).wrap_tool_call(request, handler)
+
+    assert result.update["service_states"][0]["stage"] == "succeeded"
+    assert result.update["messages"][0].artifact["execution"] == execution
+
+
+def test_sql_stage_middleware_surfaces_task_failure_code_instead_of_contract_error() -> None:
+    """task 已经给出 SQL_* 失败码时，父阶段应透传真实失败原因。"""
+    retrieval = build_retrieval_context(
+        _retrieval_payload(),
+        tool_name="sqlrag_retrieve",
+        turn_id="turn-1",
+        data_source_id="sales-pg",
+        binding=_binding(),
+    )
+    state = {
+        "service_states": [
+            {
+                "service_name": "data_query",
+                "version": 1,
+                "turn_id": "turn-1",
+                "snapshot_id": "sha256:snapshot",
+                "stage": "approved",
+                "payload": {
+                    "retrieval": retrieval,
+                    "labels": {"intent": "detail", "labels": []},
+                    "approval": {"status": "approved", "action": "execute"},
+                },
+            }
+        ]
+    }
+    request = ToolCallRequest(
+        tool_call={
+            "name": "task",
+            "id": "task-failed",
+            "args": {"description": "SQL", "prompt": "ignored", "subagent_type": "sql-subagent"},
+        },
+        tool=None,
+        state=state,
+        runtime=MagicMock(),
+    )
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        return ToolMessage(
+            content="Task failed. Error: SQL_SUBAGENT_TOOL_RESULT_INVALID",
+            tool_call_id="task-failed",
+            name="task",
+            additional_kwargs=make_subagent_additional_kwargs(
+                "failed",
+                error="SQL_SUBAGENT_TOOL_RESULT_INVALID",
+            ),
+        )
+
+    result = SqlStageMiddleware(_config()).wrap_tool_call(request, handler)
+
+    assert json.loads(result.update["messages"][0].content)["error_code"] == "SQL_SUBAGENT_TOOL_RESULT_INVALID"
+    assert read_subagent_result_metadata(result.update["messages"][0].additional_kwargs) == {
+        "status": "failed",
+        "error": "SQL_SUBAGENT_TOOL_RESULT_INVALID",
+    }
 
 
 def test_sql_only_authoritative_result_rejects_any_execution_step() -> None:
@@ -1740,7 +2418,6 @@ def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch:
                         "args": {
                             "intent": "ranking",
                             "summary": "查询华东销售额",
-                            "confidence": 0.95,
                             "ambiguities": [],
                             "labels": [
                                 {
@@ -1778,8 +2455,8 @@ def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch:
     assert final_state["messages"][-1].content == "查询成功，结果为空。"
 
 
-def test_fake_agent_stops_with_review_card_before_sql_when_ambiguity_exists(monkeypatch: pytest.MonkeyPatch) -> None:
-    """存在结构化 ambiguity 时图必须停在确认卡，不能直接生成最终回答。"""
+def test_fake_agent_publishes_labels_and_waits_for_intent_approval_when_ambiguity_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """存在结构化 ambiguity 时图必须停在标签快照，等待模型调用意图审批工具。"""
     monkeypatch.setenv("DATA_AGENT_SQL_DSN", "postgresql://readonly:secret@db.local:5432/sales")
     monkeypatch.setenv("TABLERAG_MCP_INDEX_DSN", "postgresql://indexer:secret@db.local:5432/sales")
     config = _config("on_ambiguity")
@@ -1810,7 +2487,6 @@ def test_fake_agent_stops_with_review_card_before_sql_when_ambiguity_exists(monk
                         "args": {
                             "intent": "ranking",
                             "summary": "查询华东销售额",
-                            "confidence": 0.95,
                             "ambiguities": ["是否排除退款"],
                             "labels": [
                                 {
@@ -1824,12 +2500,16 @@ def test_fake_agent_stops_with_review_card_before_sql_when_ambiguity_exists(monk
                     }
                 ],
             ),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "ask_intent_approval", "id": "approval-review-1", "args": {}}],
+            ),
         ]
     )
     ability = DataAgentServiceAbility(config)
     graph = create_agent(
         model=model,
-        tools=[fake_tablerag, publish_query_labels_tool],
+        tools=[fake_tablerag, publish_query_labels_tool, ask_intent_approval_tool],
         middleware=ability.build_middlewares(),
         state_schema=ThreadState,
     )
@@ -1841,9 +2521,14 @@ def test_fake_agent_stops_with_review_card_before_sql_when_ambiguity_exists(monk
 
     active = final_state["service_states"][0]
     label_message = next(message for message in final_state["messages"] if isinstance(message, ToolMessage) and message.name == "publish_query_labels")
+    approval_message = next(message for message in final_state["messages"] if isinstance(message, ToolMessage) and message.name == "ask_intent_approval")
     assert active["stage"] == "awaiting_confirmation"
-    assert label_message.artifact["human_input"]["source"] == "ask_clarification"
+    assert label_message.artifact["approval_required"] is True
+    assert label_message.artifact["approval_policy"]["required"] is True
+    assert "human_input" not in label_message.artifact
     assert label_message.artifact["ambiguity_items"][0]["question"] == "是否排除退款"
+    assert approval_message.artifact["human_input"]["source"] == "ask_intent_approval"
+    assert approval_message.artifact["approval"]["status"] == "awaiting_confirmation"
     assert not any(getattr(message, "type", None) == "ai" and getattr(message, "content", "") == "查询成功，结果为空。" for message in final_state["messages"])
 
 
@@ -1911,7 +2596,6 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
                         "args": {
                             "intent": "ranking",
                             "summary": "查询华东销售额",
-                            "confidence": 0.95,
                             "ambiguities": ["是否排除退款"],
                             "labels": [
                                 {
@@ -1925,6 +2609,16 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
                     }
                 ],
             ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ask_intent_approval",
+                        "id": "approval-resume-1",
+                        "args": {},
+                    }
+                ],
+            ),
             AIMessage(content="", tool_calls=[{"name": "task", "id": "task-resume-1", "args": {"description": "SQL", "prompt": "ignored", "subagent_type": "sql-subagent"}}]),
             AIMessage(content="查询成功，结果为空。"),
         ]
@@ -1932,7 +2626,7 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
     ability = DataAgentServiceAbility(config)
     graph = create_agent(
         model=model,
-        tools=[fake_tablerag, publish_query_labels_tool, fake_task],
+        tools=[fake_tablerag, publish_query_labels_tool, ask_intent_approval_tool, fake_task],
         middleware=ability.build_middlewares(),
         state_schema=ThreadState,
         checkpointer=InMemorySaver(),
@@ -1949,7 +2643,7 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
     response = {
         "version": 1,
         "kind": "human_input_response",
-        "source": "ask_clarification",
+        "source": "ask_intent_approval",
         "request_id": paused_service["payload"]["approval_request"]["request_id"],
         "response_kind": "text",
         "value": json.dumps(
@@ -1981,5 +2675,5 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
     artifacts = [message.artifact for message in resumed_state["messages"] if isinstance(message, ToolMessage) and message.artifact]
     assert paused_service["stage"] == "awaiting_confirmation"
     assert active["stage"] == "succeeded"
-    assert [artifact["kind"] for artifact in artifacts] == ["data_query_labels", "data_query_sql_result"]
+    assert [artifact["kind"] for artifact in artifacts] == ["data_query_labels", "data_query_labels", "data_query_sql_result"]
     assert resumed_state["messages"][-1].content == "查询成功，结果为空。"

@@ -28,9 +28,17 @@ export type QueryIntentReviewItem = {
 export type QueryIntentApproval = {
   version: 1;
   snapshot_id: string;
-  status: "approved" | "awaiting_confirmation" | "cancelled";
-  action: "execute" | "sql_only" | "cancel" | null;
-  source: "model" | "human" | null;
+  status: "approved" | "awaiting_confirmation" | "revision_requested" | "cancelled";
+  action: "execute" | "sql_only" | "modify" | "cancel" | null;
+  source: "model" | "human" | "policy" | null;
+};
+
+export type QueryIntentApprovalPolicy = {
+  version: 1;
+  snapshot_id: string;
+  required: boolean;
+  mode: "auto" | "on_ambiguity" | "always";
+  reason: string;
 };
 
 export type QueryIntentArtifact = {
@@ -44,12 +52,14 @@ export type QueryIntentArtifact = {
   binding_fingerprint: string;
   intent: string;
   summary?: string | null;
-  confidence?: number | null;
   ambiguities: string[];
   ambiguity_items: QueryIntentReviewItem[];
   labels: QueryIntentLabel[];
   evidence: QueryIntentEvidence[];
-  approval: QueryIntentApproval;
+  approval_required?: boolean;
+  approval_policy?: QueryIntentApprovalPolicy;
+  approval?: QueryIntentApproval;
+  approval_result?: QueryIntentApproval;
   human_input?: unknown;
 };
 
@@ -122,6 +132,139 @@ const SQL_EXECUTION_ERROR_CODES = new Set([
   "SQL_CANCELLED",
   "SQL_EXECUTION_ALREADY_ATTEMPTED",
 ]);
+
+const DATA_QUERY_INTERNAL_KINDS = new Set([
+  "data_query_labels",
+  "data_query_review_response",
+  "data_query_sql_request",
+  "data_query_sql_response",
+  "data_query_sql_result",
+]);
+
+const DATA_QUERY_INTERNAL_ERROR_LABELS: Record<string, string> = {
+  SQL_STAGE_NOT_APPROVED: "SQL 阶段尚未获得查询意图确认",
+  SQL_SUBAGENT_FAILED: "SQL 子任务执行失败",
+  SQL_SUBAGENT_CONTRACT_INVALID: "SQL 子任务返回格式不符合 DataAgent 合同",
+  SQL_SUBAGENT_TOOL_RESULT_INVALID: "SQL 子任务未产生有效的校验/执行结果",
+  SQL_BINDING_MISMATCH: "SQL 绑定与当前查询快照不一致",
+  SQL_DSN_MISSING: "数据库连接配置缺失",
+  SQL_EXECUTION_FAILED: "SQL 执行失败",
+  SQL_TIMEOUT: "SQL 执行超时",
+  SQL_CANCELLED: "SQL 执行已取消",
+  SQL_EXECUTION_ALREADY_ATTEMPTED: "SQL 已执行过，拒绝重复执行",
+};
+
+const QUERY_INTENT_LABELS: Record<string, string> = {
+  aggregation: "聚合统计",
+  ranking: "排序查询",
+  trend: "趋势分析",
+  detail: "明细查询",
+  comparison: "对比分析",
+  drilldown: "下钻分析",
+};
+
+function parseJsonRecordText(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeEntityExtractPayload(value: Record<string, unknown>): boolean {
+  const queryContext = isRecord(value.query_context)
+    ? value.query_context
+    : value;
+  return (
+    typeof queryContext.original_query === "string" &&
+    typeof queryContext.intent === "string" &&
+    (Array.isArray(queryContext.entities) || Array.isArray(queryContext.labels))
+  );
+}
+
+export function formatDataQueryInternalErrorCode(
+  errorCode: string,
+): string | null {
+  if (!errorCode.startsWith("SQL_")) return null;
+  const label = DATA_QUERY_INTERNAL_ERROR_LABELS[errorCode] ?? "SQL 子任务失败";
+  return `${label}（${errorCode}）`;
+}
+
+export function summarizeDataQueryInternalPayloadText(
+  text: string,
+): string | null {
+  const payload = parseJsonRecordText(text);
+  if (!payload) return null;
+
+  const errorCode = payload.error_code;
+  if (
+    payload.version === 1 &&
+    payload.ok === false &&
+    typeof errorCode === "string" &&
+    errorCode.startsWith("SQL_")
+  ) {
+    return formatDataQueryInternalErrorCode(errorCode);
+  }
+
+  if (looksLikeEntityExtractPayload(payload)) {
+    return "实体抽取结果已进入查询标签流程。";
+  }
+
+  if (
+    typeof payload.ok === "boolean" &&
+    ("error" in payload ||
+      "intent" in payload ||
+      "labels" in payload ||
+      "query_context" in payload)
+  ) {
+    if (payload.ok === false) {
+      const rawError = payload.error;
+      if (typeof rawError === "string" && rawError.trim()) {
+        const summary =
+          formatDataQueryInternalErrorCode(rawError.trim()) ??
+          rawError.trim();
+        return `内部工具执行失败，已隐藏协议内容。${summary ? `(${summary})` : ""}`;
+      }
+      return "内部工具执行失败，已隐藏协议内容。";
+    }
+    return "内部工具结果已转为结构化展示。";
+  }
+
+  const kind = payload.kind;
+  if (
+    payload.version !== 1 ||
+    typeof kind !== "string" ||
+    !DATA_QUERY_INTERNAL_KINDS.has(kind)
+  ) {
+    return null;
+  }
+
+  switch (kind) {
+    case "data_query_labels":
+      return "查询意图已转为标签卡片展示。";
+    case "data_query_review_response":
+      return "查询意图确认已记录。";
+    case "data_query_sql_result":
+      return "SQL 查询结果已转为结构化卡片展示。";
+    case "data_query_sql_response":
+      return "SQL 子任务返回了未完成的内部响应，已隐藏协议内容。";
+    case "data_query_sql_request":
+      return "SQL 子任务请求已提交，已隐藏内部协议内容。";
+    default:
+      return "DataAgent 内部协议内容已隐藏。";
+  }
+}
+
+export function isDataQueryInternalPayloadText(text: string): boolean {
+  return summarizeDataQueryInternalPayloadText(text) !== null;
+}
+
+export function formatQueryIntentLabel(intent: string): string {
+  return QUERY_INTENT_LABELS[intent] ?? "查询意图";
+}
 
 function parseLabel(value: unknown): QueryIntentLabel | null {
   if (!isRecord(value)) return null;
@@ -222,6 +365,93 @@ function parseReviewItems(
   return items;
 }
 
+function parseApprovalPolicy(
+  value: unknown,
+  snapshotId: string,
+): QueryIntentApprovalPolicy | null {
+  if (!isRecord(value)) return null;
+  if (
+    value.version !== 1 ||
+    value.snapshot_id !== snapshotId ||
+    typeof value.required !== "boolean" ||
+    (value.mode !== "auto" &&
+      value.mode !== "on_ambiguity" &&
+      value.mode !== "always") ||
+    !isBoundedString(value.reason, 500)
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    snapshot_id: value.snapshot_id,
+    required: value.required,
+    mode: value.mode,
+    reason: value.reason,
+  };
+}
+
+function parseApproval(
+  value: unknown,
+  snapshotId: string,
+): QueryIntentApproval | null {
+  if (!isRecord(value)) return null;
+  if (value.version !== 1 || value.snapshot_id !== snapshotId) return null;
+  if (
+    value.status !== "approved" &&
+    value.status !== "awaiting_confirmation" &&
+    value.status !== "revision_requested" &&
+    value.status !== "cancelled"
+  ) {
+    return null;
+  }
+  if (
+    value.action !== null &&
+    value.action !== "execute" &&
+    value.action !== "sql_only" &&
+    value.action !== "modify" &&
+    value.action !== "cancel"
+  ) {
+    return null;
+  }
+  if (
+    value.source !== null &&
+    value.source !== "model" &&
+    value.source !== "human" &&
+    value.source !== "policy"
+  ) {
+    return null;
+  }
+  if (
+    value.status === "approved" &&
+    value.action !== "execute" &&
+    value.action !== "sql_only"
+  ) {
+    return null;
+  }
+  if (
+    value.status === "awaiting_confirmation" &&
+    (value.action !== null || value.source !== null)
+  ) {
+    return null;
+  }
+  if (
+    value.status === "revision_requested" &&
+    (value.action !== "modify" || value.source !== "human")
+  ) {
+    return null;
+  }
+  if (value.status === "cancelled" && value.action !== "cancel") {
+    return null;
+  }
+  return {
+    version: 1,
+    snapshot_id: value.snapshot_id,
+    status: value.status,
+    action: value.action,
+    source: value.source,
+  };
+}
+
 export function parseDataQueryLabelsArtifact(
   value: unknown,
 ): QueryIntentArtifact | null {
@@ -243,15 +473,6 @@ export function parseDataQueryLabelsArtifact(
     value.summary !== undefined &&
     value.summary !== null &&
     !isBoundedString(value.summary, 500)
-  )
-    return null;
-  if (
-    value.confidence !== undefined &&
-    value.confidence !== null &&
-    (typeof value.confidence !== "number" ||
-      !Number.isFinite(value.confidence) ||
-      value.confidence < 0 ||
-      value.confidence > 1)
   )
     return null;
   if (
@@ -279,47 +500,25 @@ export function parseDataQueryLabelsArtifact(
     evidence.some((item) => item === null)
   )
     return null;
+  const approvalPolicy =
+    value.approval_policy === undefined
+      ? undefined
+      : parseApprovalPolicy(value.approval_policy, value.snapshot_id);
+  if (value.approval_policy !== undefined && approvalPolicy === null) return null;
+  const approval =
+    value.approval === undefined ? undefined : parseApproval(value.approval, value.snapshot_id);
+  if (value.approval !== undefined && approval === null) return null;
+  const approvalResult =
+    value.approval_result === undefined
+      ? undefined
+      : parseApproval(value.approval_result, value.snapshot_id);
+  if (value.approval_result !== undefined && approvalResult === null) return null;
   if (
-    !isRecord(value.approval) ||
-    value.approval.version !== 1 ||
-    value.approval.snapshot_id !== value.snapshot_id
-  )
+    value.approval_required !== undefined &&
+    typeof value.approval_required !== "boolean"
+  ) {
     return null;
-  if (
-    value.approval.status !== "approved" &&
-    value.approval.status !== "awaiting_confirmation" &&
-    value.approval.status !== "cancelled"
-  )
-    return null;
-  if (
-    value.approval.action !== null &&
-    value.approval.action !== "execute" &&
-    value.approval.action !== "sql_only" &&
-    value.approval.action !== "cancel"
-  )
-    return null;
-  if (
-    value.approval.source !== null &&
-    value.approval.source !== "model" &&
-    value.approval.source !== "human"
-  )
-    return null;
-  if (
-    value.approval.status === "approved" &&
-    value.approval.action !== "execute" &&
-    value.approval.action !== "sql_only"
-  )
-    return null;
-  if (
-    value.approval.status === "awaiting_confirmation" &&
-    (value.approval.action !== null || value.approval.source !== null)
-  )
-    return null;
-  if (
-    value.approval.status === "cancelled" &&
-    value.approval.action !== "cancel"
-  )
-    return null;
+  }
   return {
     version: 1,
     kind: "data_query_labels",
@@ -331,18 +530,16 @@ export function parseDataQueryLabelsArtifact(
     binding_fingerprint: value.binding_fingerprint,
     intent: value.intent,
     summary: value.summary === undefined ? undefined : value.summary,
-    confidence: value.confidence === undefined ? undefined : value.confidence,
     ambiguities: value.ambiguities,
     ambiguity_items: ambiguityItems,
     labels: labels as QueryIntentLabel[],
     evidence: evidence as QueryIntentEvidence[],
-    approval: {
-      version: 1,
-      snapshot_id: value.approval.snapshot_id,
-      status: value.approval.status,
-      action: value.approval.action,
-      source: value.approval.source,
-    },
+    ...(typeof value.approval_required === "boolean"
+      ? { approval_required: value.approval_required }
+      : {}),
+    ...(approvalPolicy ? { approval_policy: approvalPolicy } : {}),
+    ...(approval ? { approval } : {}),
+    ...(approvalResult ? { approval_result: approvalResult } : {}),
     ...(value.human_input !== undefined
       ? { human_input: value.human_input }
       : {}),
@@ -352,13 +549,24 @@ export function parseDataQueryLabelsArtifact(
 export function extractDataQueryLabelsArtifact(
   message: Message,
 ): QueryIntentArtifact | null {
-  if (message.type !== "tool" || message.name !== "publish_query_labels")
+  if (
+    message.type !== "tool" ||
+    (message.name !== "publish_query_labels" && message.name !== "ask_intent_approval")
+  )
     return null;
   return parseDataQueryLabelsArtifact(readMessageArtifact(message));
 }
 
 export function isDataQueryLabelsToolMessage(message: Message): boolean {
   return extractDataQueryLabelsArtifact(message) !== null;
+}
+
+export function isDataQueryIntentApprovalToolMessage(message: Message): boolean {
+  return message.type === "tool" && message.name === "ask_intent_approval" && extractDataQueryLabelsArtifact(message) !== null;
+}
+
+export function findLatestDataQueryIntentMessage(messages: Message[]) {
+  return [...messages].reverse().find((message) => extractDataQueryLabelsArtifact(message) !== null) ?? null;
 }
 
 export function parseDataQuerySqlResultArtifact(

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from _router_auth_helpers import make_authed_test_app
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.gateway.routers import thread_runs
 from deerflow.runtime import RunRecord
@@ -311,6 +313,43 @@ def test_thread_page_empty_and_exact_limit_cursor_contract():
     assert [row["seq"] for row in exact.json()["data"]] == [1, 2]
     assert exact.json()["has_more"] is False
     assert exact.json()["next_before_seq"] is None
+
+
+def test_thread_page_seeds_empty_history_from_checkpoint(monkeypatch):
+    store = MemoryRunEventStore()
+    short_snapshot = SimpleNamespace(
+        values={
+            "messages": [
+                HumanMessage(id="h1", content="old question"),
+            ],
+        }
+    )
+    full_snapshot = SimpleNamespace(
+        values={
+            "messages": [
+                HumanMessage(id="h1", content="old question"),
+                AIMessage(id="a1", content="old answer"),
+                HumanMessage(id="h2", content="latest question"),
+            ],
+        }
+    )
+
+    async def fake_checkpoint_history(thread_id, _request):
+        assert thread_id == "thread-1"
+        return [short_snapshot, full_snapshot]
+
+    monkeypatch.setattr(thread_runs, "_checkpoint_history_for_seed", fake_checkpoint_history)
+
+    app = _make_app(store)
+    with TestClient(app) as client:
+        response = client.get("/api/threads/thread-1/messages/page?limit=10")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert [row["content"]["id"] for row in body["data"]] == ["h1", "a1", "h2"]
+    assert {row["run_id"] for row in body["data"]} == {"history-seed-thread-1"}
+    assert all(row["metadata"]["history_seed"] is True for row in body["data"])
+    assert body["has_more"] is False
 
 
 def test_thread_page_rejects_forward_cursor_and_invalid_bounds():
