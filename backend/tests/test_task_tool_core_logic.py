@@ -495,7 +495,7 @@ def test_task_tool_threads_runtime_app_config_to_subagent_dependencies(monkeypat
 
 
 def test_task_tool_injects_sql_tools_only_for_server_allowlisted_data_subagent(monkeypatch):
-    """DataAgent SQL 工具必须同时满足服务端 allowlist 和 approved 快照。"""
+    """应用层工具提供器必须收到服务端 allowlist 和 approved Snapshot 上下文。"""
     runtime = _make_runtime()
     runtime.context.update(
         {
@@ -504,19 +504,13 @@ def test_task_tool_injects_sql_tools_only_for_server_allowlisted_data_subagent(m
                 "type": "data_query",
                 "version": 1,
                 "enable_sql_rag": True,
-                "table_rag_config": "tablerag.yaml",
                 "data_source_id": "sales-pg",
                 "source_binding_mode": "same_physical_target",
                 "confirmation_mode": "auto",
                 "min_auto_confidence": 0.85,
                 "sql_subagent_name": "sql-subagent",
-                "sql_execution": {
-                    "enabled": True,
-                    "database_type": "postgresql",
-                    "dsn_env": "DATA_AGENT_SQL_DSN",
-                    "readonly": True,
-                    "allowed_schemas": ["public"],
-                },
+                "database_type": "postgresql",
+                "sql_execution_enabled": True,
             },
             "data_query_sql_subagent_allowed": True,
         }
@@ -563,6 +557,19 @@ def test_task_tool_injects_sql_tools_only_for_server_allowlisted_data_subagent(m
     monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
     monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: [])
 
+    def build_application_tools(context):
+        """模拟 Gateway 根据可信上下文注入 SQL 工具。"""
+        captured["provider_context"] = context
+        if context.parent_context.get("data_query_sql_subagent_allowed") is True:
+            return [SimpleNamespace(name="data_validate_sql")]
+        return []
+
+    monkeypatch.setattr(
+        task_tool_module,
+        "build_registered_subagent_tools",
+        build_application_tools,
+    )
+
     output = _run_task_tool(
         runtime=runtime,
         description="执行 SQL 子任务",
@@ -574,6 +581,8 @@ def test_task_tool_injects_sql_tools_only_for_server_allowlisted_data_subagent(m
     message = _task_tool_message(output)
     assert message.additional_kwargs[SUBAGENT_STATUS_KEY] == "failed"
     assert [tool.name for tool in captured["executor_kwargs"]["tools"]] == ["data_validate_sql"]
+    assert captured["provider_context"].thread_id == "thread-1"
+    assert captured["provider_context"].subagent_type == "sql-subagent"
 
     runtime.context["data_query_sql_subagent_allowed"] = False
     captured.clear()

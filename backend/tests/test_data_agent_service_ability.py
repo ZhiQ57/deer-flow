@@ -7,7 +7,7 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from deerflow.agents.service_agent.binding import resolve_data_source_binding
+from app.gateway.modules.sql_execution.binding import resolve_data_source_binding
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig, parse_service_ability
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility, resolve_service_ability, resolve_service_ability_safely
 from deerflow.agents.service_agent.turn_reset_middleware import DataAgentTurnResetMiddleware
@@ -185,7 +185,7 @@ def test_public_service_ability_metadata_is_sanitized() -> None:
 
 
 def test_data_source_binding_compares_targets_without_exposing_dsn() -> None:
-    """检索与执行目标必须同源，binding 只能保留 fingerprint 和 Secret ref。"""
+    """检索与执行目标必须同源，注入 Harness 的 binding 只能保留无密钥信息。"""
     config = parse_service_ability(_ability_config())
     assert config is not None
     binding = resolve_data_source_binding(
@@ -197,7 +197,8 @@ def test_data_source_binding_compares_targets_without_exposing_dsn() -> None:
     )
 
     assert binding["execution_target_fingerprint"] == binding["retrieval_target_fingerprint"]
-    assert binding["execution_secret_ref"] == "DATA_AGENT_SQL_DSN"
+    assert "execution_secret_ref" not in binding
+    assert "dsn_env" not in binding
     assert "readonly:" not in str(binding)
 
 
@@ -226,7 +227,7 @@ def test_logical_data_source_binding_allows_postgres_index_and_mysql_execution()
 
 
 def test_data_source_binding_resolves_request_scoped_secret_reference() -> None:
-    """secret:// 引用只能从请求级 Secret 载体解析，状态和返回值不得出现真实 DSN。"""
+    """请求级 Secret 只在 Gateway 解析，注入 Harness 的 binding 不得保留引用和值。"""
     raw = _ability_config(source_binding_mode="logical_data_source")
     raw["sql_execution"] = {
         **raw["sql_execution"],  # type: ignore[arg-type]
@@ -242,8 +243,9 @@ def test_data_source_binding_resolves_request_scoped_secret_reference() -> None:
         secrets={"data-agent-mysql": "mysql+pymysql://readonly:super-secret@db.local:3308/text2sql"},
     )
 
-    assert binding["execution_secret_ref"] == "secret://data-agent-mysql"
     assert binding["database_type"] == "mysql"
+    assert "execution_secret_ref" not in binding
+    assert "secret://data-agent-mysql" not in str(binding)
     assert "super-secret" not in str(binding)
 
 

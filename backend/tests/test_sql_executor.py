@@ -7,17 +7,15 @@ from typing import Any
 
 import pytest
 
-from deerflow.agents.service_agent.binding import resolve_data_source_binding
-from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
-from deerflow.agents.service_agent.sql_executor import (
+from app.gateway.modules.sql_execution.binding import resolve_data_source_binding
+from app.gateway.modules.sql_execution.contracts import (
     SqlExecutionRequest,
-    SqlExecutionService,
     SqlValidationRequest,
-    _classify_execution_error,
 )
-from deerflow.agents.service_agent.sql_tools import build_sql_tools
+from app.gateway.modules.sql_execution.error_classifier import classify_execution_error
+from app.gateway.modules.sql_execution.service import SqlExecutionService
+from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
 from deerflow.agents.service_agent.state import build_retrieval_context
-from deerflow.tools.builtins.task_tool import _build_data_query_sql_result_from_steps
 
 
 def _config(*, max_execution_attempts: int = 3) -> DataQueryServiceAbilityConfig:
@@ -103,7 +101,7 @@ def test_sql_execution_service_validates_and_returns_json_safe_rows(monkeypatch:
         )
     )
     monkeypatch.setattr(
-        "deerflow.agents.service_agent.sql_executor._execute_postgres",
+        "app.gateway.modules.sql_execution.drivers.execute_postgres",
         lambda sql, dsn, ability: (["region"], [("华东",)]),
     )
 
@@ -135,7 +133,7 @@ def test_sql_execution_service_supports_manual_ui_without_retrieval_registry(mon
         )
     )
     monkeypatch.setattr(
-        "deerflow.agents.service_agent.sql_executor._execute_postgres",
+        "app.gateway.modules.sql_execution.drivers.execute_postgres",
         lambda sql, dsn, ability: (["region"], [("华东",)]),
     )
 
@@ -256,7 +254,7 @@ def test_sql_execution_service_returns_repairable_database_error(monkeypatch: py
         )
     )
     monkeypatch.setattr(
-        "deerflow.agents.service_agent.sql_executor._execute_postgres",
+        "app.gateway.modules.sql_execution.drivers.execute_postgres",
         lambda sql, dsn, ability: (_ for _ in ()).throw(UndefinedColumnError()),
     )
 
@@ -309,7 +307,7 @@ def test_sql_execution_service_preserves_mysql_primary_error(
         """模拟 MySQL 1054 未知字段异常。"""
 
     monkeypatch.setattr(
-        "deerflow.agents.service_agent.sql_executor._execute_mysql",
+        "app.gateway.modules.sql_execution.drivers.execute_mysql",
         lambda sql, dsn, ability: (_ for _ in ()).throw(UnknownColumnError(1054, "Unknown column 'orders.missing_region' in 'field list'")),
     )
 
@@ -352,7 +350,7 @@ def test_sql_executor_classifies_postgres_and_mysql_errors(
     if sqlstate is not None:
         error.sqlstate = sqlstate  # type: ignore[attr-defined]
 
-    result = _classify_execution_error(
+    result = classify_execution_error(
         error,
         database_type,
         dsn="postgresql://readonly:super-secret@db.local:5432/sales",
@@ -364,153 +362,3 @@ def test_sql_executor_classifies_postgres_and_mysql_errors(
     assert "super-secret" not in str(result)
     if database_type == "mysql" and error_args[0] == 1054:
         assert result.message == "Unknown column 'missing_region' in 'field list'"
-
-
-def test_sql_subagent_can_revalidate_repaired_sql_and_execute_again(monkeypatch: pytest.MonkeyPatch) -> None:
-    """首次执行失败后，SQL SubAgent 必须重新校验修复 SQL 才能再次执行。"""
-    config = _config(max_execution_attempts=2)
-    tools = build_sql_tools(
-        config,
-        {
-            "snapshot_id": "snapshot-1",
-            "payload": {
-                "retrieval": _retrieval(config),
-                "approval": {"status": "approved", "action": "execute"},
-            },
-        },
-    )
-
-    class UndefinedColumnError(Exception):
-        """模拟首次 SQL 的字段错误。"""
-
-        sqlstate = "42703"
-
-        class diag:
-            """模拟 psycopg 诊断字段。"""
-
-            message_primary = 'column "missing_region" does not exist'
-            column_name = "missing_region"
-
-    calls = 0
-
-    def execute_postgres(sql: str, dsn: str, ability: DataQueryServiceAbilityConfig) -> tuple[list[str], list[Any]]:
-        """首次返回字段错误，第二次返回修复后的结果。"""
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise UndefinedColumnError
-        return ["region"], [("华东",)]
-
-    monkeypatch.setattr(
-        "deerflow.agents.service_agent.sql_executor._execute_postgres",
-        execute_postgres,
-    )
-
-    first_validation = json.loads(tools[0].invoke({"sql": "SELECT orders.missing_region FROM public.orders"}))
-    first_execution = json.loads(
-        tools[1].invoke(
-            {
-                "sql": first_validation["executable_sql"],
-                "validation_digest": first_validation["validation_digest"],
-            }
-        )
-    )
-    repeated_without_validation = json.loads(
-        tools[1].invoke(
-            {
-                "sql": first_validation["executable_sql"],
-                "validation_digest": first_validation["validation_digest"],
-            }
-        )
-    )
-    repaired_validation = json.loads(tools[0].invoke({"sql": "SELECT orders.region FROM public.orders"}))
-    repaired_execution = json.loads(
-        tools[1].invoke(
-            {
-                "sql": repaired_validation["executable_sql"],
-                "validation_digest": repaired_validation["validation_digest"],
-            }
-        )
-    )
-
-    assert first_execution["ok"] is False
-    assert first_execution["error_category"] == "unknown_column"
-    assert first_execution["attempt"] == 1
-    assert repeated_without_validation["error_code"] == "SQL_EXECUTION_ALREADY_ATTEMPTED"
-    assert repaired_execution["ok"] is True
-    assert repaired_execution["attempt"] == 2
-    assert repaired_execution["rows"] == [{"region": "华东"}]
-    assert calls == 2
-
-    authoritative = _build_data_query_sql_result_from_steps(
-        [
-            {"type": "tool", "name": "data_validate_sql", "content": json.dumps(first_validation, ensure_ascii=False)},
-            {"type": "tool", "name": "data_execute_sql", "content": json.dumps(first_execution, ensure_ascii=False)},
-            {"type": "tool", "name": "data_validate_sql", "content": json.dumps(repaired_validation, ensure_ascii=False)},
-            {"type": "tool", "name": "data_execute_sql", "content": json.dumps(repaired_execution, ensure_ascii=False)},
-        ],
-        active_state={
-            "snapshot_id": "snapshot-1",
-            "data_source_id": config.data_source_id,
-            "payload": {
-                "retrieval": _retrieval(config),
-                "approval": {"status": "approved", "action": "execute"},
-            },
-        },
-        data_source_id=config.data_source_id,
-    )
-    assert authoritative is not None
-    assert authoritative["execution"]["ok"] is True
-    assert authoritative["execution"]["attempt"] == 2
-
-
-def test_sql_subagent_execution_attempt_budget_is_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
-    """SQL SubAgent 重新校验也不能突破配置的数据库执行次数。"""
-    config = _config(max_execution_attempts=1)
-    tools = build_sql_tools(
-        config,
-        {
-            "snapshot_id": "snapshot-1",
-            "payload": {
-                "retrieval": _retrieval(config),
-                "approval": {"status": "approved", "action": "execute"},
-            },
-        },
-    )
-    driver_calls = 0
-
-    def fail_execution(sql: str, dsn: str, ability: DataQueryServiceAbilityConfig) -> tuple[list[str], list[Any]]:
-        """记录驱动调用并返回通用执行错误。"""
-        nonlocal driver_calls
-        driver_calls += 1
-        raise RuntimeError("database rejected query")
-
-    monkeypatch.setattr(
-        "deerflow.agents.service_agent.sql_executor._execute_postgres",
-        fail_execution,
-    )
-
-    first_validation = json.loads(tools[0].invoke({"sql": "SELECT orders.region FROM public.orders"}))
-    first_execution = json.loads(
-        tools[1].invoke(
-            {
-                "sql": first_validation["executable_sql"],
-                "validation_digest": first_validation["validation_digest"],
-            }
-        )
-    )
-    second_validation = json.loads(tools[0].invoke({"sql": "SELECT orders.region FROM public.orders LIMIT 1"}))
-    second_execution = json.loads(
-        tools[1].invoke(
-            {
-                "sql": second_validation["executable_sql"],
-                "validation_digest": second_validation["validation_digest"],
-            }
-        )
-    )
-
-    assert first_execution["ok"] is False
-    assert second_execution["error_code"] == "SQL_EXECUTION_ALREADY_ATTEMPTED"
-    assert second_execution["attempt"] == 1
-    assert second_execution["max_attempts"] == 1
-    assert driver_calls == 1

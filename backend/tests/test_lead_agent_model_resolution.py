@@ -33,6 +33,7 @@ from deerflow.config.summarization_config import SummarizationConfig
 from deerflow.runtime.checkpoint_mode import INTERNAL_CHECKPOINT_MODE_KEY
 from deerflow.runtime.secret_context import write_slash_skill_source_path
 from deerflow.skills.types import Skill, SkillCategory
+from deerflow.tools.mcp_metadata import tag_mcp_tool
 
 _POLICY_INTEGRATION_TOOL_CALLS: list[str] = []
 
@@ -525,11 +526,16 @@ def test_make_lead_agent_wires_data_query_ability_and_server_allowlist(monkeypat
 
     import deerflow.tools as tools_module
 
-    get_available_tools = MagicMock(return_value=[])
+    @tool("sqlrag_retrieve")
+    def sqlrag_retrieve() -> str:
+        """返回测试用 TableRAG 结果。"""
+        return "{}"
+
+    get_available_tools = MagicMock(return_value=[tag_mcp_tool(sqlrag_retrieve)])
     build_middlewares = MagicMock(return_value=[])
     monkeypatch.setattr(tools_module, "get_available_tools", get_available_tools)
     monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda *args, **kwargs: agent_config)
-    monkeypatch.setattr(lead_agent_module, "_load_enabled_skills_for_tool_policy", lambda *args, **kwargs: [])
+    monkeypatch.setattr(lead_agent_module, "_load_enabled_available_skills", lambda *args, **kwargs: [])
     monkeypatch.setattr(lead_agent_module, "build_middlewares", build_middlewares)
     monkeypatch.setattr(lead_agent_module, "build_tracing_callbacks", lambda: [])
     monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
@@ -553,6 +559,7 @@ def test_make_lead_agent_wires_data_query_ability_and_server_allowlist(monkeypat
     )
     assert build_middlewares.call_args.kwargs["service_ability"].name == "data_query"
     assert config["context"]["data_query_service_ability"]["type"] == "data_query"
+    assert "dsn_env" not in str(config["context"]["data_query_service_ability"])
     assert config["context"]["data_query_sql_subagent_allowed"] is True
     assert config["context"]["subagent_enabled"] is True
 
@@ -1162,7 +1169,7 @@ def test_make_lead_agent_applies_agent_model_settings(monkeypatch):
 
     import deerflow.tools as tools_module
 
-    monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda name: agent_config)
+    monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda *args, **kwargs: agent_config)
     monkeypatch.setattr(tools_module, "get_available_tools", lambda **kwargs: [])
     monkeypatch.setattr(lead_agent_module, "build_middlewares", lambda config, model_name, agent_name=None, **kwargs: [])
 
@@ -1191,7 +1198,7 @@ def test_request_thinking_overrides_agent_default(monkeypatch):
 
     import deerflow.tools as tools_module
 
-    monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda name: agent_config)
+    monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda *args, **kwargs: agent_config)
     monkeypatch.setattr(tools_module, "get_available_tools", lambda **kwargs: [])
     monkeypatch.setattr(lead_agent_module, "build_middlewares", lambda config, model_name, agent_name=None, **kwargs: [])
 

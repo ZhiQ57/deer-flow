@@ -1,4 +1,4 @@
-"""DataAgent TableRAG 与 SQL 执行数据源绑定。"""
+"""Gateway DataAgent TableRAG 与 SQL 执行数据源绑定。"""
 
 # ADD: DataAgent 正式查询闭环新增，服务端解析连接目标并只保存无密钥 fingerprint。
 from __future__ import annotations
@@ -9,7 +9,7 @@ from hashlib import sha256
 from typing import Any
 from urllib.parse import urlsplit
 
-from .config import DataQueryServiceAbilityConfig
+from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
 
 
 def _target_fingerprint(dsn: str) -> str:
@@ -83,7 +83,6 @@ def resolve_data_source_binding(
         "source_binding_mode": config.source_binding_mode,
         "table_rag_config_ref": config.table_rag_config,
         "retrieval_target_fingerprint": retrieval_fingerprint,
-        "execution_secret_ref": config.sql_execution.dsn_env,
         "execution_target_fingerprint": execution_fingerprint,
         "binding_fingerprint": binding_fingerprint,
         "allowed_schemas": list(config.sql_execution.allowed_schemas),

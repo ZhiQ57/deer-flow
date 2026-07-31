@@ -16,9 +16,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deerflow.agents.human_input import read_human_input_response
-from deerflow.runtime.secret_context import extract_request_secrets
 
-from .binding import resolve_data_source_binding
 from .config import DataQueryServiceAbilityConfig
 from .sqlrag_contract import SQLRAG_RETRIEVE_TOOL_NAME, is_sqlrag_retrieval_tool_name
 from .state import build_retrieval_context, get_active_service_state, make_service_state, merge_retrieval_contexts
@@ -161,11 +159,16 @@ class TableRagStageMiddleware(AgentMiddleware):
                 raise ValueError("TableRAG 未返回结构化 JSON。")
             try:
                 runtime_context = getattr(request.runtime, "context", None)
-                # ADD: 请求级 Secret 只用于服务端 fingerprint 解析，不写入 retrieval 或 checkpoint。
-                binding = resolve_data_source_binding(
-                    self._config,
-                    secrets=extract_request_secrets(runtime_context),
-                )
+                # ADD: Harness 只消费 Gateway 注入的无密钥绑定，不解析执行 DSN 或请求级 Secret。
+                binding_value = runtime_context.get("data_query_binding") if isinstance(runtime_context, Mapping) else None
+                if (
+                    not isinstance(binding_value, Mapping)
+                    or binding_value.get("data_source_id") != self._config.data_source_id
+                    or binding_value.get("database_type") != self._config.sql_execution.database_type
+                    or not isinstance(binding_value.get("binding_fingerprint"), str)
+                ):
+                    raise ValueError("Gateway 未注入有效数据源绑定。")
+                binding = dict(binding_value)
             except ValueError:
                 error_code = "DATA_SOURCE_BINDING_INVALID"
                 raise

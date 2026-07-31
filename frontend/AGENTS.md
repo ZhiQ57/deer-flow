@@ -37,10 +37,10 @@ E2E tests live under `tests/e2e/` and use Playwright with Chromium. They mock al
 ## Architecture
 
 ```
-Frontend (Next.js) ──▶ LangGraph SDK ──▶ LangGraph Backend (lead_agent)
-         └───────────▶ Gateway SQL API ──▶ shared SqlExecutionService
-                                              ├── Sub-Agents
-                                              └── Tools & Skills
+Frontend (Next.js) ──▶ LangGraph SDK ──▶ Gateway Agent Runtime ──▶ lead_agent
+         └───────────▶ manual Gateway SQL API ──────────────────▶ SqlExecutionService
+
+SQL SubAgent ──▶ Gateway-injected tools ──▶ internal Gateway SQL API ──▶ SqlExecutionService
 ```
 
 The frontend is a stateful chat application. Users create **threads** (conversations), send messages, set thread-scoped `/goal` completion conditions, and receive streamed AI responses. The backend orchestrates agents that can produce **artifacts** (files/code), **todos**, and goal state updates.
@@ -66,7 +66,7 @@ The frontend is a stateful chat application. Users create **threads** (conversat
 
 DataAgent query labels remain part of the normal thread message stream. Parse `data_query_labels` v1 artifacts in `src/core/messages/data-query.ts`, group them as `assistant:query-intent`, and reuse the existing human-input response path for confirmation; do not create a separate DataAgent chat runtime.
 
-Completed `sql` fenced code blocks use the Streamdown custom renderer in `components/workspace/sql-execution/sql-code-block.tsx`. The execute action is available only when the current custom-agent metadata reports `type=data_query` and `sql_execution_enabled=true`; streaming fences and ordinary agents keep the normal code block. `ChatBox` owns `SqlExecutionProvider` so both message code blocks and the `sql-result` right panel share one request state. `core/sql-execution/api.ts` posts to `POST /api/threads/{thread_id}/sql/execute` through the CSRF-aware fetch wrapper. The SQL Result Panel displays the Gateway's minimally sanitized database primary error without replacing it, and its text selection toolbar can add a selected SQL, error, or row fragment to the next conversation through Sidecar references. Do not put database credentials, SQL validation, or driver logic in the frontend.
+Completed `sql` fenced code blocks use the Streamdown custom renderer in `components/workspace/sql-execution/sql-code-block.tsx`. The execute action is available only when the current custom-agent metadata reports `type=data_query` and `sql_execution_enabled=true`; streaming fences and ordinary agents keep the normal code block. `ChatBox` owns `SqlExecutionProvider` so both message code blocks and the `sql-result` right panel share one request state. `core/sql-execution/api.ts` posts only `{agent_name, sql, source:"manual_ui"}` to `POST /api/threads/{thread_id}/sql/execute` through the CSRF-aware fetch wrapper; it must never send `run_id`, `snapshot_id`, internal-auth headers, SubAgent source values, DSNs, Secrets, Schema, or retrieval data. The SQL Result Panel displays the Gateway's minimally sanitized database primary error without replacing it, and its text selection toolbar can add a selected SQL, error, or row fragment to the next conversation through Sidecar references. SQL SubAgent internal routes are not frontend APIs. Do not put database credentials, SQL validation, or driver logic in the frontend.
 
 1. Optional composer helpers such as `core/input-polish` can rewrite the local draft before submission, and `core/voice-input` can transcribe browser microphone input into that same local draft; confirmed user input then flows to thread hooks (`core/threads/hooks.ts`) → LangGraph SDK streaming
 2. Stream events update thread state (messages, artifacts, todos, goal)

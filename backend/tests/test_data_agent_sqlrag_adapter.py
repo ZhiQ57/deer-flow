@@ -58,7 +58,6 @@ def _binding() -> dict[str, Any]:
         "source_binding_mode": "same_physical_target",
         "table_rag_config_ref": "tablerag.yaml",
         "retrieval_target_fingerprint": "sha256:target",
-        "execution_secret_ref": "DATA_AGENT_SQL_DSN",
         "execution_target_fingerprint": "sha256:target",
         "binding_fingerprint": "sha256:binding",
         "allowed_schemas": ["public"],
@@ -75,7 +74,10 @@ def _request(name: str = "sqlrag_retrieve") -> ToolCallRequest:
         带完整混合检索参数的工具请求。
     """
     runtime = MagicMock()
-    runtime.context = {"thread_id": "thread-1"}
+    runtime.context = {
+        "thread_id": "thread-1",
+        "data_query_binding": _binding(),
+    }
     return ToolCallRequest(
         tool_call={
             "name": name,

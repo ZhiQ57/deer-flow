@@ -7,6 +7,8 @@ DataAgent 当前包含两条用途不同的路径：正式生产闭环与历史�
 
 正式能力需要在根 `config.yaml -> subagents.custom_agents` 显式注册 `sql-subagent`，并只允许
 `data_validate_sql`、`data_execute_sql` 两个工具；SQL 子代理不能加载 `table-rag-agent` Skill。
+这两个工具由 Gateway 按 Run 和 approved Snapshot 动态注入，工具实现调用 Gateway 内部路由；
+SQL SubAgent 和可独立发布的 `deerflow-harness` 都不直接连接业务数据库。
 真实本地拓扑由 PostgreSQL 保存 TableRAG 索引元数据、MySQL 保存业务表，执行库通过
 `DATA_AGENT_MYSQL_DSN` 环境变量提供。SQL Executor 不在 custom-agent 配置中维护静态表/字段列表；表和字段由 Schema-RAG 检索证据约束，未来由 SQL Executor 权限层按当前用户实时判断。
 同库部署仍可使用 PostgreSQL 执行源，但必须选择 `same_physical_target` 并让检索/执行 fingerprint 一致。
@@ -138,10 +140,16 @@ service_ability:
 `data_validate_sql`；只有 `execute` 快照才提供 `data_execute_sql`。父 Agent 不信任 SQL SubAgent
 最终自由文本，而是从真实 SQL 工具 ToolMessage 重建并再次校验结果。
 
-正式执行逻辑集中在 `deerflow.agents.service_agent.sql_executor.SqlExecutionService`。每次执行都会消费
-当前校验轮次；执行失败后，SQL SubAgent 必须根据 `error_category`、可选的安全 `error_message`、
-`retryable` 和 `recommended_action` 修复或简化 SQL，再次调用 `data_validate_sql` 后才能重新执行。
-单个 SQL 子任务最多执行 `max_execution_attempts` 次，默认 3 次，成功后不能继续执行。
+正式执行逻辑集中在 Gateway 的
+`app.gateway.modules.sql_execution.service.SqlExecutionService`，其垂直模块同时包含 contracts、
+binding、validator、drivers、result budget、error classifier、Run capability、Router 和工具提供器。
+`deerflow-harness` 只保留 DataAgent 编排、通用子代理工具提供器扩展点和权威 artifact 重建，不包含
+数据库驱动、sqlglot、执行 DSN 或请求级 Secret。SQL SubAgent 每次调用 `data_validate_sql` /
+`data_execute_sql` 都会经过 Gateway 内部认证路由，Gateway 重新读取当前线程、Agent、approved
+Snapshot、retrieval 和 binding。每次执行都会消费当前校验代次；执行失败后，SQL SubAgent 必须根据
+`error_category`、可选的安全 `error_message`、`retryable` 和 `recommended_action` 修复或简化 SQL，
+再次调用 `data_validate_sql` 后才能重新执行。单个 SQL 子任务最多执行
+`max_execution_attempts` 次，默认 3 次，成功后不能继续执行。
 
 前端手动执行 SQL 使用：
 
@@ -151,6 +159,8 @@ POST /api/threads/{thread_id}/sql/execute
 
 该接口只接受 `source=manual_ui`，要求当前认证用户严格拥有该线程，并按当前用户加载请求中的
 `agent_name`。只有 `service_ability.type=data_query` 且 `sql_execution.enabled=true` 时允许执行。
+前端请求体只包含 `agent_name`、`sql` 和 `source=manual_ui`，不会携带 internal auth、`run_id`、
+`snapshot_id`、SubAgent 来源、DSN、Secret、Schema 或 retrieval。
 手动执行不伪造 Query Snapshot 或 TableRAG registry，而是由服务端解析当前数据源绑定，并继续执行
 SQL AST、只读、数据库方言、Schema、超时和结果预算校验。SQL Execution 配置不维护静态表/字段列表；
 未来按当前登录用户查询权限的检查应接入 SQL Executor 授权层。返回结果不会经过 LLM
@@ -162,9 +172,10 @@ Web UI 仅在上述能力开启的 custom-agent 对话中，给已完成的 `sql
 用户可以选中面板中的 SQL、错误或结果文本，点击“添加到对话”，将选中文本作为引用上下文附加到下一次请求。
 
 `data-agent.allowable_subagents` 必须显式包含 `sql-subagent`。服务端会把该判定写入本次运行上下文并在
-`SqlStageMiddleware` 与 `task` 工具装配处双重校验；客户端手动设置 `subagent_enabled=true`、模型自行填写
-`subagent_type=sql-subagent` 都不能替代此授权。同一模型响应中的多个 TableRAG、标签或 SQL SubAgent 调用
-只保留第一个，补充检索必须串行执行，避免产生冲突快照或重复 SQL 执行。
+`SqlStageMiddleware`、Harness 通用工具提供器扩展点和 Gateway Run 能力注册表中逐层校验；客户端手动设置
+`subagent_enabled=true`、模型自行填写 `subagent_type=sql-subagent` 或普通会话调用 internal route 都不能
+替代此授权。同一模型响应中的多个 TableRAG、标签或 SQL SubAgent 调用只保留第一个，补充检索必须串行执行，
+避免产生冲突快照或重复 SQL 执行。
 
 ## 4. 实验性流程与安全边界
 

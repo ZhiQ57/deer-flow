@@ -9,10 +9,9 @@ import pytest
 from table_rag.mcp.service import TableRAGMCPService
 from table_rag.mcp.settings import TableRAGMCPSettings
 
-from deerflow.agents.service_agent.binding import resolve_data_source_binding
+from app.gateway.modules.sql_execution.binding import resolve_data_source_binding
+from app.gateway.modules.sql_execution.service import execute_sql, validate_sql
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
-from deerflow.agents.service_agent.sql_executor import execute_sql, validate_sql
-from deerflow.agents.service_agent.sql_tools import build_sql_tools
 from deerflow.agents.service_agent.state import build_retrieval_context
 
 
@@ -114,30 +113,3 @@ def test_real_tablerag_retrieval_and_readonly_mysql_execution() -> None:
     assert validate_sql(f"SELECT `{column_name}` FROM `{table_name}`; SELECT 1", config=ability, retrieval=retrieval)["error_code"] == "SQL_MULTIPLE_STATEMENTS"
     assert validate_sql("SELECT table_name FROM information_schema.tables", config=ability, retrieval=retrieval)["error_code"] == "SQL_SYSTEM_DATABASE_FORBIDDEN"
     assert validate_sql(f"SELECT SLEEP(1), `{column_name}` FROM `{table_name}`", config=ability, retrieval=retrieval)["error_code"] == "SQL_DANGEROUS_FUNCTION"
-
-    tools = build_sql_tools(
-        ability,
-        {
-            "snapshot_id": "database-e2e-snapshot",
-            "payload": {"retrieval": retrieval, "approval": {"status": "approved", "action": "execute"}},
-        },
-    )
-    tool_validation = json.loads(tools[0].invoke({"sql": sql}))
-    first = json.loads(
-        tools[1].invoke(
-            {
-                "sql": tool_validation["executable_sql"],
-                "validation_digest": tool_validation["validation_digest"],
-            }
-        )
-    )
-    second = json.loads(
-        tools[1].invoke(
-            {
-                "sql": tool_validation["executable_sql"],
-                "validation_digest": tool_validation["validation_digest"],
-            }
-        )
-    )
-    assert first["ok"] is True, first
-    assert second["error_code"] == "SQL_EXECUTION_ALREADY_ATTEMPTED"

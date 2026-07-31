@@ -17,7 +17,6 @@ from langgraph.types import Command
 from deerflow.subagents.status_contract import make_subagent_additional_kwargs
 
 from .config import DataQueryServiceAbilityConfig
-from .sql_executor import SqlExecutionService, SqlValidationRequest
 from .state import get_active_service_state, make_service_state
 from .tool_call_limits import keep_first_matching_tool_call
 from .turn_reset_middleware import current_visible_turn_id
@@ -31,7 +30,6 @@ class SqlStageMiddleware(AgentMiddleware):
         """初始化 SQL 阶段门禁。"""
         super().__init__()
         self._config = config
-        self._sql_executor = SqlExecutionService(config)
 
     @staticmethod
     def _error(request: ToolCallRequest, code: str) -> Command:
@@ -158,6 +156,9 @@ class SqlStageMiddleware(AgentMiddleware):
             or parsed.get("data_source_id") != self._config.data_source_id
         ):
             return self._error(request, "SQL_SUBAGENT_CONTRACT_INVALID")
+        active_payload = active.get("payload") if isinstance(active.get("payload"), Mapping) else {}
+        retrieval = active_payload.get("retrieval") if isinstance(active_payload.get("retrieval"), Mapping) else {}
+        binding = retrieval.get("binding") if isinstance(retrieval.get("binding"), Mapping) else {}
         validation = parsed.get("validation")
         if (
             not isinstance(validation, Mapping)
@@ -165,18 +166,9 @@ class SqlStageMiddleware(AgentMiddleware):
             or validation.get("snapshot_id") != active.get("snapshot_id")
             or not isinstance(validation.get("validation_digest"), str)
             or not isinstance(validation.get("executable_sql"), str)
+            or validation.get("database_type") != binding.get("database_type")
+            or validation.get("binding_fingerprint") != binding.get("binding_fingerprint")
         ):
-            return self._error(request, "SQL_VALIDATION_FAILED")
-        active_payload = active.get("payload") if isinstance(active.get("payload"), Mapping) else {}
-        retrieval = active_payload.get("retrieval") if isinstance(active_payload.get("retrieval"), Mapping) else {}
-        server_validation = self._sql_executor.validate(
-            SqlValidationRequest(
-                sql=validation["executable_sql"],
-                retrieval=retrieval,
-                snapshot_id=str(active.get("snapshot_id") or ""),
-            )
-        )
-        if server_validation.get("valid") is not True or validation.get("sql_sha256") != server_validation.get("sql_sha256") or validation.get("validation_digest") != server_validation.get("validation_digest"):
             return self._error(request, "SQL_VALIDATION_FAILED")
         action = active.get("payload", {}).get("approval", {}).get("action") if isinstance(active.get("payload"), Mapping) else None
         execution = parsed.get("execution")

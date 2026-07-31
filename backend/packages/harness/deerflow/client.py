@@ -293,12 +293,13 @@ class DeerFlowClient:
         if sql_subagent_allowed:
             subagent_enabled = True
             cfg["subagent_enabled"] = True
-        service_ability_config = service_ability.config.model_dump(mode="json") if service_ability is not None else None
-        if service_ability_config is not None:
+        service_ability_cache_config = service_ability.config.model_dump(mode="json") if service_ability is not None else None
+        service_ability_runtime_metadata = service_ability.public_metadata() if service_ability is not None else None
+        if service_ability_runtime_metadata is not None:
             context = config.setdefault("context", {})
             if isinstance(context, dict):
-                # ADD: 能力合同和服务端 allowlist 判定同时进入本次上下文，task 工具不能只信任客户端 subagent 开关。
-                context["data_query_service_ability"] = service_ability_config
+                # ADD: 仅注入脱敏能力投影和服务端 allowlist 判定，不能把 DSN 配置或 Secret 引用带入工具上下文。
+                context["data_query_service_ability"] = service_ability_runtime_metadata
                 context["data_query_sql_subagent_allowed"] = sql_subagent_allowed
                 context["subagent_enabled"] = subagent_enabled
         key = (
@@ -309,7 +310,7 @@ class DeerFlowClient:
             cfg.get("max_concurrent_subagents"),
             cfg.get("max_total_subagents"),
             self._agent_name,
-            json.dumps(service_ability_config, ensure_ascii=False, sort_keys=True, default=str) if service_ability_config is not None else None,
+            json.dumps(service_ability_cache_config, ensure_ascii=False, sort_keys=True, default=str) if service_ability_cache_config is not None else None,
             frozenset(allowable_subagents) if allowable_subagents is not None else None,
             frozenset(self._available_skills) if self._available_skills is not None else None,
             self._checkpoint_channel_mode,

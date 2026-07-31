@@ -24,13 +24,14 @@ dependencies = [
     "e2b-code-interpreter>=2.8.1",
     "psycopg[binary]>=3.3.3",
     "psycopg-pool>=3.3.0",
+    "pymysql>=1.1.1",
+    "sqlglot>=27.0.0",
 ]
 
 [project.optional-dependencies]
 postgres = ["deerflow-harness[postgres]"]
 redis = ["deerflow-harness[redis]"]
 discord = ["discord.py>=2.7.0"]
-data-agent = ["deerflow-harness[data-agent]"]
 monocle = ["deerflow-harness[monocle]"]
 browser = ["deerflow-harness[browser]"]
 

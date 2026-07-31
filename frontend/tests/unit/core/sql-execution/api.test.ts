@@ -45,7 +45,7 @@ describe("executeSql", () => {
     expect(result.rows).toEqual([{ region: "华东" }]);
     expect(mockedFetch).toHaveBeenCalledWith(
       "/api/threads/thread-1/sql/execute",
-      expect.objectContaining({
+      {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -53,8 +53,57 @@ describe("executeSql", () => {
           sql: "SELECT region FROM orders",
           source: "manual_ui",
         }),
-      }),
+        signal: undefined,
+      },
     );
+  });
+
+  test("never forwards internal execution identity or database secrets", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          version: 1,
+          ok: true,
+          database_type: "postgresql",
+          columns: [],
+          rows: [],
+          truncated: false,
+          empty: true,
+          duration_ms: 1,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await executeSql("thread/internal boundary", {
+      agentName: "data-agent",
+      sql: "SELECT region FROM orders",
+      run_id: "run-forged",
+      snapshot_id: "snapshot-forged",
+      dsn: "postgresql://readonly:secret@db.local/sales",
+      source: "subagent",
+      internal_auth: "forged",
+    } as never);
+
+    const [url, init] = mockedFetch.mock.calls[0]!;
+    const bodyText = init?.body;
+    expect(typeof bodyText).toBe("string");
+    if (typeof bodyText !== "string") {
+      throw new Error("Expected SQL execution request body to be JSON text");
+    }
+    const body = JSON.parse(bodyText) as Record<string, unknown>;
+
+    expect(url).toBe("/api/threads/thread%2Finternal%20boundary/sql/execute");
+    expect(init?.headers).toEqual({ "Content-Type": "application/json" });
+    expect(body).toEqual({
+      agent_name: "data-agent",
+      sql: "SELECT region FROM orders",
+      source: "manual_ui",
+    });
+    expect(body).not.toHaveProperty("run_id");
+    expect(body).not.toHaveProperty("snapshot_id");
+    expect(body).not.toHaveProperty("dsn");
+    expect(body).not.toHaveProperty("internal_auth");
   });
 
   test("preserves safe Gateway failure details", async () => {

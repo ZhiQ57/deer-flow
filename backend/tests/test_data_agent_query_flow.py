@@ -15,14 +15,13 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
+from app.gateway.modules.sql_execution.binding import resolve_data_source_binding
+from app.gateway.modules.sql_execution.service import execute_sql, validate_sql
 from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 from deerflow.agents.service_agent.approval_middleware import QueryApprovalMiddleware
-from deerflow.agents.service_agent.binding import resolve_data_source_binding
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility
-from deerflow.agents.service_agent.sql_executor import execute_sql, validate_sql
 from deerflow.agents.service_agent.sql_stage_middleware import SqlStageMiddleware
-from deerflow.agents.service_agent.sql_tools import build_sql_tools
 from deerflow.agents.service_agent.sqlrag_contract import is_sqlrag_retrieval_tool_name
 from deerflow.agents.service_agent.state import (
     build_query_approval_request,
@@ -86,6 +85,11 @@ def _mysql_config() -> DataQueryServiceAbilityConfig:
     return DataQueryServiceAbilityConfig.model_validate(raw)
 
 
+def _runtime_ability() -> dict[str, Any]:
+    """构造不含 DSN 配置和 Secret 引用的 DataAgent 运行能力投影。"""
+    return _config().public_metadata()
+
+
 def _retrieval_payload() -> dict:
     """构造 TableRAG 成功响应。"""
     return {
@@ -121,7 +125,6 @@ def _binding() -> dict:
         "database_type": "postgresql",
         "table_rag_config_ref": "tabelrag.yaml",
         "retrieval_target_fingerprint": "sha256:target",
-        "execution_secret_ref": "DATA_AGENT_SQL_DSN",
         "execution_target_fingerprint": "sha256:target",
         "binding_fingerprint": "sha256:binding",
         "allowed_schemas": ["public"],
@@ -137,7 +140,6 @@ def _mysql_binding(binding_fingerprint: str = "sha256:mysql-binding") -> dict:
         "source_binding_mode": "logical_data_source",
         "table_rag_config_ref": "tabelrag.yaml",
         "retrieval_target_fingerprint": "sha256:postgres-index",
-        "execution_secret_ref": "DATA_AGENT_MYSQL_DSN",
         "execution_target_fingerprint": "sha256:mysql-source",
         "binding_fingerprint": binding_fingerprint,
         "allowed_schemas": ["text2sql"],
@@ -386,7 +388,10 @@ def test_query_review_items_have_stable_ids_and_are_bound_to_request() -> None:
 def _tool_request(name: str, *, state: dict | None = None) -> ToolCallRequest:
     """构造 DataAgent 业务 middleware 工具请求。"""
     runtime = MagicMock()
-    runtime.context = {"thread_id": "thread-1"}
+    runtime.context = {
+        "thread_id": "thread-1",
+        "data_query_binding": _binding(),
+    }
     return ToolCallRequest(
         tool_call={"name": name, "args": {"query": "查询华东销售额"}, "id": "tool-call-1"},
         tool=None,
@@ -515,7 +520,8 @@ def test_data_agent_starts_retrieval_from_new_visible_turn_after_stale_state(mon
                     "payload": {"retrieval": {"ok": False}},
                 }
             ],
-        }
+        },
+        context={"data_query_binding": _binding()},
     )
 
     active = final_state["service_states"][0]
@@ -652,7 +658,7 @@ def test_new_visible_turn_cannot_execute_old_approval_snapshot() -> None:
     }
     runtime = MagicMock()
     runtime.context = {
-        "data_query_service_ability": _config().model_dump(mode="json"),
+        "data_query_service_ability": _runtime_ability(),
         "data_query_sql_subagent_allowed": True,
     }
     request = ToolCallRequest(
@@ -1150,7 +1156,10 @@ def test_p0_sql_validation_failures_never_reach_database_driver(monkeypatch: pyt
         driver_calls += 1
         raise AssertionError("被拒绝的 SQL 不得进入数据库驱动")
 
-    monkeypatch.setattr("deerflow.agents.service_agent.sql_executor._execute_postgres", fail_if_called)
+    monkeypatch.setattr(
+        "app.gateway.modules.sql_execution.drivers.execute_postgres",
+        fail_if_called,
+    )
     config = _config()
     retrieval = build_retrieval_context(
         _retrieval_payload(),
@@ -1180,71 +1189,6 @@ def test_p0_sql_validation_failures_never_reach_database_driver(monkeypatch: pyt
     assert driver_calls == 0
 
 
-def test_sql_tools_are_factory_scoped_and_keep_unique_names() -> None:
-    """SQL 工具只由 sql-subagent 工厂提供，不进入默认 BUILTIN_TOOLS。"""
-    retrieval = build_retrieval_context(
-        _retrieval_payload(),
-        tool_name="sqlrag_retrieve",
-        turn_id="turn-1",
-        data_source_id="sales-pg",
-        binding=_binding(),
-    )
-    state = {
-        "snapshot_id": "sha256:snapshot",
-        "payload": {"retrieval": retrieval, "approval": {"status": "approved", "action": "execute"}},
-    }
-
-    tools = build_sql_tools(_config(), state)
-    assert [tool.name for tool in tools] == ["data_validate_sql", "data_execute_sql"]
-    assert tools[1].args_schema.model_json_schema()["required"] == ["sql", "validation_digest"]
-
-
-def test_sql_only_snapshot_never_exposes_database_execution_tool() -> None:
-    """sql_only 授权只能生成和校验 SQL，子代理工具面不得包含执行入口。"""
-    retrieval = build_retrieval_context(
-        _retrieval_payload(),
-        tool_name="sqlrag_retrieve",
-        turn_id="turn-1",
-        data_source_id="sales-pg",
-        binding=_binding(),
-    )
-    state = {
-        "snapshot_id": "sha256:snapshot",
-        "payload": {"retrieval": retrieval, "approval": {"status": "approved", "action": "sql_only"}},
-    }
-
-    tools = build_sql_tools(_config(), state)
-
-    assert [tool.name for tool in tools] == ["data_validate_sql"]
-
-
-def test_sql_execution_tool_allows_only_one_authorized_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
-    """同一快照的授权 SQL 即使连接失败也不能自动重复执行。"""
-    monkeypatch.delenv("DATA_AGENT_SQL_DSN", raising=False)
-    retrieval = build_retrieval_context(
-        _retrieval_payload(),
-        tool_name="sqlrag_retrieve",
-        turn_id="turn-1",
-        data_source_id="sales-pg",
-        binding=_binding(),
-    )
-    tools = build_sql_tools(
-        _config(),
-        {
-            "snapshot_id": "sha256:snapshot",
-            "payload": {"retrieval": retrieval, "approval": {"status": "approved", "action": "execute"}},
-        },
-    )
-    validation = json.loads(tools[0].invoke({"sql": "SELECT orders.region FROM public.orders"}))
-
-    first = json.loads(tools[1].invoke({"sql": validation["executable_sql"], "validation_digest": validation["validation_digest"]}))
-    second = json.loads(tools[1].invoke({"sql": validation["executable_sql"], "validation_digest": validation["validation_digest"]}))
-
-    assert first["error_code"] == "SQL_DSN_MISSING"
-    assert first["validation_digest"] == validation["validation_digest"]
-    assert second["error_code"] == "SQL_EXECUTION_ALREADY_ATTEMPTED"
-
-
 def test_execute_sql_uses_request_secret_without_exposing_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """SQL 执行可以使用请求级 secret:// DSN，返回结构中不得出现 Secret 内容。"""
     raw = _mysql_config().model_dump()
@@ -1267,7 +1211,7 @@ def test_execute_sql_uses_request_secret_without_exposing_it(monkeypatch: pytest
         snapshot_id="snapshot-secret",
     )
     monkeypatch.setattr(
-        "deerflow.agents.service_agent.sql_executor._execute_mysql",
+        "app.gateway.modules.sql_execution.drivers.execute_mysql",
         lambda sql, dsn, ability: (["region"], [{"region": "华东"}]),
     )
 
@@ -1319,9 +1263,27 @@ def test_task_result_uses_authoritative_sql_tool_steps_not_subagent_free_text() 
             "approval": {"status": "approved", "action": "execute"},
         },
     }
+    gateway_result = {
+        "version": 1,
+        "kind": "data_query_sql_result",
+        "snapshot_id": "sha256:snapshot",
+        "data_source_id": "sales-pg",
+        "validation": validation,
+        "execution": execution,
+    }
     steps = [
-        {"type": "tool", "name": "data_validate_sql", "content": json.dumps(validation, ensure_ascii=False)},
-        {"type": "tool", "name": "data_execute_sql", "content": json.dumps(execution, ensure_ascii=False)},
+        {
+            "type": "tool",
+            "name": "data_validate_sql",
+            "artifact": {**gateway_result, "execution": None},
+            "content": "[Gateway validation]",
+        },
+        {
+            "type": "tool",
+            "name": "data_execute_sql",
+            "artifact": gateway_result,
+            "content": "[Gateway execution]",
+        },
         {
             "type": "ai",
             "content": json.dumps(
@@ -1354,10 +1316,13 @@ def test_task_result_uses_authoritative_sql_tool_steps_not_subagent_free_text() 
             [
                 {
                     "type": "tool",
-                    "name": "data_validate_sql",
-                    "content": json.dumps(forged_validation, ensure_ascii=False),
+                    "name": "data_execute_sql",
+                    "artifact": {
+                        **gateway_result,
+                        "validation": forged_validation,
+                    },
+                    "content": "[forged artifact]",
                 },
-                steps[1],
             ],
             active_state=state,
             data_source_id="sales-pg",
@@ -1368,34 +1333,117 @@ def test_task_result_uses_authoritative_sql_tool_steps_not_subagent_free_text() 
 
 def test_sql_only_authoritative_result_rejects_any_execution_step() -> None:
     """sql_only 子任务出现执行工具结果时必须整体拒绝，不能把结果投影给父状态。"""
+    validation = {
+        "version": 1,
+        "valid": True,
+        "snapshot_id": "sha256:snapshot",
+        "executable_sql": "SELECT region FROM orders LIMIT 1",
+        "sql_sha256": "sha256:sql",
+        "validation_digest": "sha256:validation",
+        "database_type": "postgresql",
+        "binding_fingerprint": "sha256:binding",
+    }
+    gateway_result = {
+        "version": 1,
+        "kind": "data_query_sql_result",
+        "snapshot_id": "sha256:snapshot",
+        "data_source_id": "sales-pg",
+        "validation": validation,
+        "execution": None,
+    }
     state = {
         "snapshot_id": "sha256:snapshot",
         "data_source_id": "sales-pg",
-        "payload": {"approval": {"status": "approved", "action": "sql_only"}},
+        "payload": {
+            "retrieval": {"binding": _binding()},
+            "approval": {"status": "approved", "action": "sql_only"},
+        },
     }
     steps = [
         {
             "type": "tool",
             "name": "data_validate_sql",
-            "content": json.dumps(
-                {
-                    "version": 1,
-                    "valid": True,
-                    "snapshot_id": "sha256:snapshot",
-                    "executable_sql": "SELECT region FROM orders LIMIT 1",
-                    "sql_sha256": "sha256:sql",
-                    "validation_digest": "sha256:validation",
-                }
-            ),
+            "artifact": gateway_result,
+            "content": "[Gateway validation]",
         },
         {
             "type": "tool",
             "name": "data_execute_sql",
-            "content": json.dumps({"version": 1, "ok": True, "snapshot_id": "sha256:snapshot"}),
+            "artifact": {
+                **gateway_result,
+                "execution": {
+                    "version": 1,
+                    "ok": True,
+                    "snapshot_id": "sha256:snapshot",
+                    "validation_digest": "sha256:validation",
+                    "rows": [],
+                },
+            },
+            "content": "[Gateway execution]",
         },
     ]
 
     assert _build_data_query_sql_result_from_steps(steps, active_state=state, data_source_id="sales-pg") is None
+
+
+def test_sql_only_authoritative_result_requires_gateway_artifact() -> None:
+    """sql_only 只能信任 Gateway ToolMessage artifact，不能回退解析工具 content。"""
+    validation = {
+        "version": 1,
+        "valid": True,
+        "snapshot_id": "sha256:snapshot",
+        "executable_sql": "SELECT region FROM orders LIMIT 1",
+        "sql_sha256": "sha256:sql",
+        "validation_digest": "sha256:validation",
+        "database_type": "postgresql",
+        "binding_fingerprint": "sha256:binding",
+    }
+    state = {
+        "snapshot_id": "sha256:snapshot",
+        "data_source_id": "sales-pg",
+        "payload": {
+            "retrieval": {"binding": _binding()},
+            "approval": {"status": "approved", "action": "sql_only"},
+        },
+    }
+    gateway_result = {
+        "version": 1,
+        "kind": "data_query_sql_result",
+        "snapshot_id": "sha256:snapshot",
+        "data_source_id": "sales-pg",
+        "validation": validation,
+        "execution": None,
+    }
+
+    assert (
+        _build_data_query_sql_result_from_steps(
+            [
+                {
+                    "type": "tool",
+                    "name": "data_validate_sql",
+                    "content": json.dumps(gateway_result),
+                }
+            ],
+            active_state=state,
+            data_source_id="sales-pg",
+        )
+        is None
+    )
+    result = _build_data_query_sql_result_from_steps(
+        [
+            {
+                "type": "tool",
+                "name": "data_validate_sql",
+                "artifact": gateway_result,
+                "content": "[Gateway validation]",
+            }
+        ],
+        active_state=state,
+        data_source_id="sales-pg",
+    )
+    assert result is not None
+    assert result["validation"] == validation
+    assert result["execution"] is None
 
 
 def test_sql_stage_middleware_replaces_free_text_prompt_with_json_envelope() -> None:
@@ -1427,7 +1475,7 @@ def test_sql_stage_middleware_replaces_free_text_prompt_with_json_envelope() -> 
     runtime.context = {
         "thread_id": "thread-1",
         "run_id": "run-parent-1",
-        "data_query_service_ability": _config().model_dump(mode="json"),
+        "data_query_service_ability": _runtime_ability(),
         "data_query_sql_subagent_allowed": True,
     }
     request = ToolCallRequest(
@@ -1494,7 +1542,7 @@ def test_sql_stage_middleware_blocks_target_when_custom_agent_did_not_allowlist_
     }
     runtime = MagicMock()
     runtime.context = {
-        "data_query_service_ability": _config().model_dump(mode="json"),
+        "data_query_service_ability": _runtime_ability(),
         "data_query_sql_subagent_allowed": False,
     }
     request = ToolCallRequest(
@@ -1718,7 +1766,10 @@ def test_fake_agent_completes_table_rag_labels_sql_and_final_answer(monkeypatch:
         state_schema=ThreadState,
     )
 
-    final_state = graph.invoke({"messages": [HumanMessage(id="turn-1", content="查询华东销售额")]})
+    final_state = graph.invoke(
+        {"messages": [HumanMessage(id="turn-1", content="查询华东销售额")]},
+        context={"data_query_binding": binding},
+    )
 
     active = final_state["service_states"][0]
     artifacts = [message.artifact for message in final_state["messages"] if isinstance(message, ToolMessage) and message.artifact]
@@ -1783,7 +1834,10 @@ def test_fake_agent_stops_with_review_card_before_sql_when_ambiguity_exists(monk
         state_schema=ThreadState,
     )
 
-    final_state = graph.invoke({"messages": [HumanMessage(id="turn-review-1", content="查询华东销售额")]})
+    final_state = graph.invoke(
+        {"messages": [HumanMessage(id="turn-review-1", content="查询华东销售额")]},
+        context={"data_query_binding": binding},
+    )
 
     active = final_state["service_states"][0]
     label_message = next(message for message in final_state["messages"] if isinstance(message, ToolMessage) and message.name == "publish_query_labels")
@@ -1885,7 +1939,11 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
     )
     run_config = {"configurable": {"thread_id": "data-query-review-resume"}}
 
-    paused_state = graph.invoke({"messages": [HumanMessage(id="turn-resume-1", content="查询华东销售额")]}, config=run_config)
+    paused_state = graph.invoke(
+        {"messages": [HumanMessage(id="turn-resume-1", content="查询华东销售额")]},
+        config=run_config,
+        context={"data_query_binding": binding},
+    )
     paused_service = paused_state["service_states"][0]
     review_items = paused_service["payload"]["review_items"]
     response = {
@@ -1916,6 +1974,7 @@ def test_fake_agent_resumes_from_review_checkpoint_after_human_confirmation(monk
             ]
         },
         config=run_config,
+        context={"data_query_binding": binding},
     )
 
     active = resumed_state["service_states"][0]

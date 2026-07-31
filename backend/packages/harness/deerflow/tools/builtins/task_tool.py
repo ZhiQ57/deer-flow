@@ -15,7 +15,6 @@ from langgraph.types import Command
 
 from deerflow.authz.principal import normalize_authz_attributes
 from deerflow.config import get_app_config
-from deerflow.runtime.secret_context import extract_request_secrets
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox.security import LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE, is_host_bash_allowed
 from deerflow.subagents import SubagentExecutor, get_available_subagent_names, get_subagent_config
@@ -31,6 +30,10 @@ from deerflow.subagents.status_contract import (
     SubagentStopReasonValue,
     format_subagent_result_message,
     make_subagent_additional_kwargs,
+)
+from deerflow.subagents.tool_provider import (
+    SubagentToolContext,
+    build_registered_subagent_tools,
 )
 from deerflow.tools.types import Runtime
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, get_current_trace_id, normalize_trace_id
@@ -237,17 +240,31 @@ def _build_data_query_sql_result_from_steps(
         if not isinstance(step, dict) or step.get("type") != "tool":
             continue
         name = step.get("name")
-        content = step.get("content")
-        if not isinstance(name, str) or not isinstance(content, str):
+        if not isinstance(name, str):
             continue
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            parsed_tools.append((name, parsed))
+        artifact = step.get("artifact")
+        if isinstance(artifact, dict):
+            parsed_tools.append((name, artifact))
 
-    validation = next((value for name, value in reversed(parsed_tools) if name == "data_validate_sql"), None)
+    validation: dict[str, Any] | None = None
+    execution: dict[str, Any] | None = None
+    if action == "sql_only":
+        if any(name == "data_execute_sql" for name, _value in parsed_tools):
+            return None
+        validate_payload = next((value for name, value in reversed(parsed_tools) if name == "data_validate_sql"), None)
+        if isinstance(validate_payload, dict) and validate_payload.get("kind") == "data_query_sql_result":
+            candidate = validate_payload.get("validation")
+            validation = dict(candidate) if isinstance(candidate, dict) else None
+            if validate_payload.get("execution") is not None:
+                return None
+    else:
+        execute_payload = next((value for name, value in reversed(parsed_tools) if name == "data_execute_sql"), None)
+        if isinstance(execute_payload, dict) and execute_payload.get("kind") == "data_query_sql_result":
+            candidate_validation = execute_payload.get("validation")
+            candidate_execution = execute_payload.get("execution")
+            validation = dict(candidate_validation) if isinstance(candidate_validation, dict) else None
+            execution = dict(candidate_execution) if isinstance(candidate_execution, dict) else None
+
     if (
         not isinstance(validation, dict)
         or validation.get("version") != 1
@@ -261,13 +278,7 @@ def _build_data_query_sql_result_from_steps(
     ):
         return None
 
-    execution_steps = [value for name, value in parsed_tools if name == "data_execute_sql"]
-    execution: dict[str, Any] | None = None
-    if action == "sql_only":
-        if execution_steps:
-            return None
-    else:
-        execution = execution_steps[-1] if execution_steps else None
+    if action == "execute":
         if (
             not isinstance(execution, dict)
             or execution.get("version") != 1
@@ -475,30 +486,43 @@ async def task_tool(
     tools = get_available_tools(**available_tools_kwargs)
 
     data_query_active_state: dict[str, Any] | None = None
-    data_query_service_ability = None
-    # ADD: 仅在 DataAgent 显式 SQL SubAgent 任务中注入绑定当前 snapshot 的 PostgreSQL/MySQL 工具。
+    data_query_runtime_ability: dict[str, Any] | None = None
+    # ADD: 仅识别 DataAgent SQL 子任务的权威结果重建上下文，具体工具由应用层提供器注入。
     service_ability_raw = parent_context.get("data_query_service_ability")
-    # ADD: SQL 工具装配必须同时满足服务端 custom-agent allowlist 判定，客户端开关或模型目标名都不能替代授权。
+    # ADD: SQL 结果重建必须同时满足服务端 custom-agent allowlist 判定，客户端开关或模型目标名都不能替代授权。
     if isinstance(service_ability_raw, dict) and parent_context.get("data_query_sql_subagent_allowed") is True:
-        from deerflow.agents.service_agent.registry import resolve_service_ability_safely
-        from deerflow.agents.service_agent.sql_tools import build_sql_tools
-
-        service_ability = resolve_service_ability_safely(service_ability_raw)
         active_states = runtime.state.get("service_states") if runtime is not None and isinstance(runtime.state, dict) else None
         active_state = next(
             (item for item in reversed(active_states or []) if isinstance(item, dict) and item.get("service_name") == "data_query" and item.get("stage") == "approved"),
             None,
         )
-        if service_ability is not None and service_ability.config.enable_sql_rag and subagent_type == service_ability.config.sql_subagent_name and active_state is not None:
-            tools.extend(
-                build_sql_tools(
-                    service_ability.config,
-                    active_state,
-                    secrets=extract_request_secrets(parent_context),
-                )
-            )
+        if (
+            service_ability_raw.get("type") == "data_query"
+            and service_ability_raw.get("version") == 1
+            and service_ability_raw.get("enable_sql_rag") is True
+            and service_ability_raw.get("sql_execution_enabled") is True
+            and subagent_type == service_ability_raw.get("sql_subagent_name")
+            and isinstance(service_ability_raw.get("data_source_id"), str)
+            and active_state is not None
+        ):
             data_query_active_state = active_state
-            data_query_service_ability = service_ability
+            data_query_runtime_ability = service_ability_raw
+
+    # ADD: Harness 只调用通用提供器扩展点；Gateway 等应用层决定是否注入业务工具。
+    parent_state = runtime.state if runtime is not None and isinstance(runtime.state, dict) else {}
+    tools.extend(
+        build_registered_subagent_tools(
+            SubagentToolContext(
+                subagent_type=subagent_type,
+                thread_id=str(thread_id) if thread_id is not None else None,
+                run_id=str(run_id) if run_id is not None else None,
+                user_id=str(user_id) if user_id is not None else None,
+                agent_name=str(parent_context.get("agent_name")) if parent_context.get("agent_name") else None,
+                parent_context=parent_context,
+                parent_state=parent_state,
+            )
+        )
+    )
 
     # Create executor
     executor_kwargs = {
@@ -603,12 +627,12 @@ async def task_tool(
                 _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
                 _report_subagent_usage(runtime, result)
                 task_result = result.result
-                if data_query_active_state is not None and data_query_service_ability is not None:
+                if data_query_active_state is not None and data_query_runtime_ability is not None:
                     # ADD: DataAgent SQL 结果只从捕获的工具输出重建，子代理最终自由文本不具备数据库事实权限。
                     authoritative_result = _build_data_query_sql_result_from_steps(
                         result.ai_messages or [],
                         active_state=data_query_active_state,
-                        data_source_id=data_query_service_ability.config.data_source_id,
+                        data_source_id=str(data_query_runtime_ability["data_source_id"]),
                     )
                     if authoritative_result is None:
                         error = "SQL_SUBAGENT_TOOL_RESULT_INVALID"

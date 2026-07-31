@@ -585,11 +585,11 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     sql_subagent_allowed = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents and service_ability.config.sql_subagent_name in agent_config.allowable_subagents)
     if sql_subagent_allowed:
         subagent_enabled = True
-    # ADD: service_ability 参数值=>存储=>系统运行时(runtime), 供显式 sql-subagent 工具装配使用   # TODO: 能否放入 checkpoint ?
+    # ADD: 只向运行上下文注入脱敏能力投影，DSN 配置和 Secret 引用不得进入 Harness 工具上下文。
     if service_ability is not None:
         context = config.setdefault("context", {})
         if isinstance(context, dict):
-            context["data_query_service_ability"] = service_ability.config.model_dump(mode="json") if hasattr(service_ability, "config") else None
+            context["data_query_service_ability"] = service_ability.public_metadata()
             context["data_query_sql_subagent_allowed"] = sql_subagent_allowed
             context["subagent_enabled"] = subagent_enabled
             # ADD: 将可信运行模式传给 DataAgent 标签门禁，非交互运行不得进入 human-input 等待。

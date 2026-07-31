@@ -28,6 +28,10 @@ from app.gateway.internal_auth import (
     get_internal_user,
     get_trusted_internal_owner_user_id,
 )
+from app.gateway.modules.sql_execution.run_context import (
+    prepare_sql_execution_run_context,
+    release_sql_execution_run_context,
+)
 from app.gateway.utils import sanitize_log_param
 from deerflow.agents.middlewares.dynamic_context_middleware import _DYNAMIC_CONTEXT_REMINDER_KEY, _REMINDER_DATE_KEY
 from deerflow.agents.middlewares.view_image_middleware import _IMAGE_CONTEXT_MESSAGE_MARKER_KEY
@@ -1018,6 +1022,7 @@ async def start_run(
             internal_owner_user=internal_owner_user,
             request_context=getattr(body, "context", None),
         )
+        await prepare_sql_execution_run_context(config, run_id=record.run_id)
 
         stream_modes = normalize_stream_modes(body.stream_mode)
 
@@ -1037,6 +1042,7 @@ async def start_run(
             )
         )
         record.task = task
+        task.add_done_callback(lambda _completed_task, run_id=record.run_id: release_sql_execution_run_context(run_id))
 
         # Title sync is handled by worker.py's finally block which reads the
         # title from the checkpoint and calls thread_store.update_display_name

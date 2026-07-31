@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from _router_auth_helpers import make_authed_test_app
+import pytest
+from _router_auth_helpers import call_unwrapped, make_authed_test_app
 from fastapi.testclient import TestClient
 
 from app.gateway.auth.models import User
-from app.gateway.routers import sql_execution as sql_execution_router
+from app.gateway.modules.sql_execution import router as sql_execution_router
+from app.gateway.modules.sql_execution.contracts import (
+    InternalSqlExecuteRequest,
+    InternalSqlRequest,
+)
+from app.gateway.modules.sql_execution.runtime_registry import sql_execution_runtime_registry
 
 
 def _service_ability(*, enabled: bool = True) -> dict:
@@ -201,3 +207,172 @@ def test_execute_sql_rejects_missing_agent_and_invalid_source() -> None:
     assert missing.status_code == 404
     assert invalid_source.status_code == 422
     assert invalid_agent_name.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_internal_execute_returns_gateway_authoritative_artifact() -> None:
+    """内部路由必须返回 Gateway 校验与执行组成的权威 artifact。"""
+    config = SimpleNamespace(
+        data_source_id="sales-pg",
+        sql_execution=SimpleNamespace(
+            database_type="postgresql",
+            max_execution_attempts=2,
+        ),
+    )
+    context = SimpleNamespace(
+        config=config,
+        active_state={"snapshot_id": "snapshot-1"},
+        retrieval={"binding": {"binding_fingerprint": "sha256:binding"}},
+        capability=SimpleNamespace(secrets={"database-dsn": "secret"}),
+    )
+    validation = {
+        "version": 1,
+        "valid": True,
+        "source": "subagent",
+        "executable_sql": "SELECT orders.region FROM public.orders LIMIT 10",
+        "sql_sha256": "sha256:sql",
+        "validation_digest": "sha256:validation",
+        "database_type": "postgresql",
+        "binding_fingerprint": "sha256:binding",
+        "snapshot_id": "snapshot-1",
+    }
+    execution = {
+        "version": 1,
+        "ok": True,
+        "database_type": "postgresql",
+        "duration_ms": 3.5,
+        "sql_sha256": "sha256:sql",
+        "validation_digest": "sha256:validation",
+        "columns": ["region"],
+        "rows": [{"region": "华东"}],
+        "row_count": 1,
+        "returned_row_count": 1,
+        "truncated": False,
+        "empty": False,
+    }
+    service = SimpleNamespace(
+        validate=MagicMock(return_value=validation),
+        aexecute=AsyncMock(return_value=execution),
+    )
+    body = InternalSqlExecuteRequest(
+        agent_name="data-agent",
+        sql="SELECT orders.region FROM public.orders",
+        snapshot_id="snapshot-1",
+        run_id="run-1",
+        validation_digest="sha256:validation",
+    )
+
+    with (
+        patch.object(
+            sql_execution_router,
+            "_load_internal_execution_context",
+            new=AsyncMock(return_value=context),
+        ),
+        patch.object(sql_execution_router, "SqlExecutionService", return_value=service),
+        patch.object(
+            sql_execution_runtime_registry,
+            "reserve_attempt",
+            return_value=(1, None),
+        ),
+        patch.object(sql_execution_runtime_registry, "mark_succeeded") as mark_succeeded,
+    ):
+        result = await call_unwrapped(
+            sql_execution_router.execute_subagent_sql,
+            "thread-1",
+            body,
+            SimpleNamespace(),
+        )
+
+    assert result.kind == "data_query_sql_result"
+    assert result.validation["validation_digest"] == "sha256:validation"
+    assert result.execution is not None
+    assert result.execution["rows"] == [{"region": "华东"}]
+    assert result.execution["attempt"] == 1
+    mark_succeeded.assert_called_once_with(
+        run_id="run-1",
+        snapshot_id="snapshot-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_internal_validate_records_gateway_validation_generation() -> None:
+    """内部校验成功后必须登记可被下一次执行消费的 Gateway 校验代次。"""
+    config = SimpleNamespace(data_source_id="sales-pg")
+    context = SimpleNamespace(
+        config=config,
+        active_state={"snapshot_id": "snapshot-1"},
+        retrieval={"binding": {"binding_fingerprint": "sha256:binding"}},
+        capability=SimpleNamespace(secrets={}),
+    )
+    validation = {
+        "version": 1,
+        "valid": True,
+        "source": "subagent",
+        "validation_digest": "sha256:validation",
+        "snapshot_id": "snapshot-1",
+    }
+    service = SimpleNamespace(validate=MagicMock(return_value=validation))
+    body = InternalSqlRequest(
+        agent_name="data-agent",
+        sql="SELECT orders.region FROM public.orders",
+        snapshot_id="snapshot-1",
+        run_id="run-1",
+    )
+
+    with (
+        patch.object(
+            sql_execution_router,
+            "_load_internal_execution_context",
+            new=AsyncMock(return_value=context),
+        ),
+        patch.object(
+            sql_execution_router,
+            "SqlExecutionService",
+            return_value=service,
+        ),
+        patch.object(
+            sql_execution_runtime_registry,
+            "record_validation",
+            return_value=True,
+        ) as record_validation,
+    ):
+        result = await call_unwrapped(
+            sql_execution_router.validate_subagent_sql,
+            "thread-1",
+            body,
+            SimpleNamespace(),
+        )
+
+    assert result.validation["valid"] is True
+    record_validation.assert_called_once_with(
+        run_id="run-1",
+        snapshot_id="snapshot-1",
+        validation_digest="sha256:validation",
+    )
+
+
+@pytest.mark.asyncio
+async def test_internal_route_rejects_non_internal_auth_before_state_access() -> None:
+    """普通登录会话不得调用 SQL SubAgent 内部路由。"""
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            auth_source="session",
+            auth=SimpleNamespace(user=SimpleNamespace(id="user-1")),
+        )
+    )
+    body = InternalSqlRequest(
+        agent_name="data-agent",
+        sql="SELECT 1",
+        snapshot_id="snapshot-1",
+        run_id="run-1",
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await sql_execution_router._load_internal_execution_context(
+            thread_id="thread-1",
+            body=body,
+            request=request,
+            require_execute=True,
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 403

@@ -1265,6 +1265,15 @@ class TestEnsureAgent:
             "type": "data_query",
             "version": 1,
             "sql_subagent_name": "sql-subagent",
+            "sql_execution": {"dsn_env": "secret://database-dsn"},
+        }
+        ability.public_metadata.return_value = {
+            "type": "data_query",
+            "version": 1,
+            "enable_sql_rag": True,
+            "data_source_id": "sales-pg",
+            "sql_subagent_name": "sql-subagent",
+            "sql_execution_enabled": True,
         }
         ability.filter_tools.side_effect = lambda tools: tools
         ability.build_tools.return_value = [ability_tool]
@@ -1291,6 +1300,7 @@ class TestEnsureAgent:
         assert mock_build_middlewares.call_args.kwargs["service_ability"] is ability
         assert mock_apply_prompt.call_args.kwargs["allowable_subagents"] == {"sql-subagent"}
         assert config["context"]["data_query_service_ability"]["type"] == "data_query"
+        assert "dsn_env" not in str(config["context"]["data_query_service_ability"])
         assert config["context"]["data_query_sql_subagent_allowed"] is True
         assert config["context"]["subagent_enabled"] is True
         assert ability.filter_tools.call_count == 2
@@ -1303,6 +1313,14 @@ class TestEnsureAgent:
         ability.config.sql_subagent_name = "sql-subagent"
         ability.config.model_dump.return_value = {"type": "data_query", "version": 1}
         ability.config.model_dump_json.return_value = '{"type":"data_query","version":1}'
+        ability.public_metadata.return_value = {
+            "type": "data_query",
+            "version": 1,
+            "enable_sql_rag": True,
+            "data_source_id": "sales-pg",
+            "sql_subagent_name": "sql-subagent",
+            "sql_execution_enabled": True,
+        }
         ability.filter_tools.side_effect = lambda tools: tools
         ability.build_tools.return_value = [ability_tool]
         agent_config = MagicMock()
