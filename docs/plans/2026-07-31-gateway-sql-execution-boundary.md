@@ -14,8 +14,8 @@
 - [X] 2.2 从本地最新 `dev` 创建 `refactor/gateway-sql-execution-boundary`。
 - [X] 2.3 使用 `.worktrees/gateway-sql-execution-boundary` 隔离开发。
 - [X] 2.4 开发、测试、Review 完成后提交需求分支。
-- [ ] 2.5 合并回 `dev`。
-- [ ] 2.6 推送 `origin/dev`。
+- [X] 2.5 通过 fast-forward 合并回本地 `dev`。
+- [ ] 2.6 推送 `origin/dev`。暂缓原因：本需求开始前本地 `dev` 已领先 `origin/dev` 149 个既有提交，直接推送会同时发布这些需求外历史，需由用户确认。
 
 ## 3. 后端模块
 
