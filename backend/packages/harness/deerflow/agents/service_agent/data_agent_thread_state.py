@@ -10,7 +10,6 @@ from typing import Any, TypedDict
 class DataQueryServicePayload(TypedDict, total=False):
     """DataAgent 活动快照 payload 的可选业务字段。"""
 
-    retrieval: dict[str, Any]
     labels: dict[str, Any]
     approval: dict[str, Any]
     approval_policy: dict[str, Any]
@@ -18,9 +17,6 @@ class DataQueryServicePayload(TypedDict, total=False):
     approval_result: dict[str, Any]
     approval_error_code: str
     sql_result: dict[str, Any]
-    retrieval_calls: int
-    retrieval_attempts: list[dict[str, Any]]
-    last_retrieval_error: dict[str, Any]
     review_items: list[dict[str, Any]]
     revision_query: str
     previous_snapshot_id: str

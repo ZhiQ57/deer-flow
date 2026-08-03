@@ -230,7 +230,8 @@ def validate_sql(
     sql: str,
     *,
     config: DataQueryServiceAbilityConfig,
-    retrieval: Mapping[str, Any],
+    retrieval: Mapping[str, Any] | None = None,
+    binding: Mapping[str, Any] | None = None,
     snapshot_id: str | None = None,
 ) -> SqlValidationResult:
     """使用 Gateway SQL Service 校验候选 SQL。
@@ -238,7 +239,8 @@ def validate_sql(
     Args:
         sql: SQL 模型生成的候选 SQL。
         config: 当前 DataAgent 查询能力配置。
-        retrieval: 当前 Query Snapshot 的 TableRAG registry。
+        retrieval: 兼容旧调用传入的上下文；不再要求 SQLRAG registry。
+        binding: 当前运行的无密钥数据源绑定。
         snapshot_id: 当前已批准 Query Snapshot 标识。
 
     Returns:
@@ -247,6 +249,7 @@ def validate_sql(
     return SqlExecutionService(config).validate(
         SqlValidationRequest(
             sql=sql,
+            binding=binding,
             retrieval=retrieval,
             snapshot_id=snapshot_id,
         ),

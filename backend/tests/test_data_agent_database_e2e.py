@@ -1,4 +1,4 @@
-"""DataAgent 正式闭环真实 PostgreSQL TableRAG + MySQL 业务库 E2E。"""
+"""DataAgent 正式闭环真实 PostgreSQL 绑定 + MySQL 业务库 E2E。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from table_rag.mcp.settings import TableRAGMCPSettings
 from app.gateway.modules.sql_execution.binding import resolve_data_source_binding
 from app.gateway.modules.sql_execution.service import execute_sql, validate_sql
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
-from deerflow.agents.service_agent.state import build_retrieval_context
 
 
 def _quote_mysql_identifier(value: str) -> str:
@@ -78,19 +77,12 @@ def test_real_tablerag_retrieval_and_readonly_mysql_execution() -> None:
     assert binding["retrieval_target_fingerprint"] != binding["execution_target_fingerprint"]
     assert binding["binding_fingerprint"].startswith("sha256:")
 
-    retrieval = build_retrieval_context(
-        response,
-        tool_name="sqlrag_retrieve",
-        turn_id="database-e2e-turn",
-        data_source_id=ability.data_source_id,
-        binding=binding,
-        request_args={"operation": "search-columns", "queries": ["女性因素诊断"]},
-    )
+    validation_binding = dict(binding)
     sql = f"SELECT {_quote_mysql_identifier(column_name)} FROM {_quote_mysql_identifier('text2sql')}.{_quote_mysql_identifier(table_name)} LIMIT 5"
     validation = validate_sql(
         sql,
         config=ability,
-        retrieval=retrieval,
+        binding=validation_binding,
         snapshot_id="database-e2e-snapshot",
     )
     assert validation["valid"] is True, validation
@@ -109,7 +101,7 @@ def test_real_tablerag_retrieval_and_readonly_mysql_execution() -> None:
     assert len(json.dumps(execution["rows"], ensure_ascii=False, default=str)) <= ability.sql_execution.max_result_chars
     assert isinstance(execution["duration_ms"], float | int)
 
-    assert validate_sql(f"DELETE FROM `{table_name}`", config=ability, retrieval=retrieval)["error_code"] == "SQL_READONLY_REQUIRED"
-    assert validate_sql(f"SELECT `{column_name}` FROM `{table_name}`; SELECT 1", config=ability, retrieval=retrieval)["error_code"] == "SQL_MULTIPLE_STATEMENTS"
-    assert validate_sql("SELECT table_name FROM information_schema.tables", config=ability, retrieval=retrieval)["error_code"] == "SQL_SYSTEM_DATABASE_FORBIDDEN"
-    assert validate_sql(f"SELECT SLEEP(1), `{column_name}` FROM `{table_name}`", config=ability, retrieval=retrieval)["error_code"] == "SQL_DANGEROUS_FUNCTION"
+    assert validate_sql(f"DELETE FROM `{table_name}`", config=ability, binding=validation_binding)["error_code"] == "SQL_READONLY_REQUIRED"
+    assert validate_sql(f"SELECT `{column_name}` FROM `{table_name}`; SELECT 1", config=ability, binding=validation_binding)["error_code"] == "SQL_MULTIPLE_STATEMENTS"
+    assert validate_sql("SELECT table_name FROM information_schema.tables", config=ability, binding=validation_binding)["error_code"] == "SQL_SYSTEM_DATABASE_FORBIDDEN"
+    assert validate_sql(f"SELECT SLEEP(1), `{column_name}` FROM `{table_name}`", config=ability, binding=validation_binding)["error_code"] == "SQL_DANGEROUS_FUNCTION"

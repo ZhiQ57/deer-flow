@@ -195,26 +195,6 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
         revision = sha256(f"{snapshot_id}\n{revision_query}".encode()).hexdigest()[:24]
         return f"revision:sha256:{revision}"
 
-    @staticmethod
-    def _build_evidence_projection(retrieval: Mapping[str, Any]) -> list[dict[str, str]]:
-        """把服务端检索 registry 投影为有限长度前端 Evidence 摘要。"""
-        evidence: list[dict[str, str]] = []
-        registry = retrieval.get("registry") if isinstance(retrieval.get("registry"), Mapping) else {}
-        for ref, item in list(registry.items())[:30]:
-            if not isinstance(ref, str) or not isinstance(item, Mapping):
-                continue
-            record = item.get("record") if isinstance(item.get("record"), Mapping) else {}
-            summary = next(
-                (
-                    str(record.get(name)).strip()
-                    for name in ("evidence_content", "content", "value", "column_name", "table_name")
-                    if isinstance(record.get(name), str) and str(record.get(name)).strip()
-                ),
-                "检索对象",
-            )
-            evidence.append({"ref": ref, "kind": str(item.get("kind") or "evidence"), "summary": summary[:500]})
-        return evidence
-
     def _labels_artifact(
         self,
         active: Mapping[str, Any],
@@ -237,14 +217,11 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
             前端 ``QueryIntentCard`` 可解析的 ``data_query_labels`` artifact。
 
         Raises:
-            ValueError: 当前服务状态缺少标签快照或检索上下文。
+            ValueError: 当前服务状态缺少标签快照。
         """
         snapshot = payload.get("labels")
-        retrieval = payload.get("retrieval")
-        if not isinstance(snapshot, Mapping) or not isinstance(retrieval, Mapping):
-            raise ValueError("DataAgent 查询意图审批缺少标签快照或检索上下文。")
-        if retrieval.get("ok") is not True:
-            raise ValueError("DataAgent 查询意图审批缺少有效 TableRAG 检索结果。")
+        if not isinstance(snapshot, Mapping):
+            raise ValueError("DataAgent 查询意图审批缺少标签快照。")
         snapshot_id = snapshot.get("snapshot_id")
         if not isinstance(snapshot_id, str) or not snapshot_id:
             raise ValueError("DataAgent 查询意图审批缺少 snapshot_id。")
@@ -255,7 +232,6 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
         if not isinstance(review_items, list):
             review_items = build_query_review_items(snapshot)
 
-        binding = retrieval.get("binding") if isinstance(retrieval.get("binding"), Mapping) else {}
         artifact: dict[str, Any] = {
             "version": 1,
             "kind": "data_query_labels",
@@ -268,9 +244,9 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
             "ambiguities": list(snapshot.get("ambiguities") or []) if isinstance(snapshot.get("ambiguities"), list) else [],
             "ambiguity_items": [dict(item) for item in review_items if isinstance(item, Mapping)],
             "labels": list(snapshot.get("labels") or []) if isinstance(snapshot.get("labels"), list) else [],
-            "evidence": self._build_evidence_projection(retrieval),
-            "retrieval_digest": str(snapshot.get("retrieval_digest") or retrieval.get("retrieval_digest") or ""),
-            "binding_fingerprint": str(snapshot.get("binding_fingerprint") or binding.get("binding_fingerprint") or ""),
+            "evidence": [],
+            "retrieval_digest": str(snapshot.get("retrieval_digest") or snapshot.get("context_digest") or ""),
+            "binding_fingerprint": str(snapshot.get("binding_fingerprint") or ""),
         }
         if approval_policy is not None:
             artifact["approval_required"] = bool(approval_policy.get("required"))
@@ -681,10 +657,8 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
             data_source_id=self._config.data_source_id,
             payload={
                 "revision_query": revision_query,
-                "retrieval_calls": 0,
                 "previous_snapshot_id": active.get("snapshot_id"),
                 "approval_result": approval_result,
             },
         )
         return {"messages": [message], "service_states": [service_state]}
-

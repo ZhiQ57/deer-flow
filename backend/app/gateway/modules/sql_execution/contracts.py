@@ -61,12 +61,14 @@ class SqlValidationRequest:
 
     Args:
         sql: 待校验 SQL。
-        retrieval: 当前 Query Snapshot 的 TableRAG registry 和绑定。
+        binding: 当前运行的无密钥数据源绑定。
+        retrieval: 兼容旧调用传入的上下文；不再要求 SQLRAG registry。
         snapshot_id: 当前 Query Snapshot 标识。
         source: 可信调用来源。
     """
 
     sql: str
+    binding: Mapping[str, Any] | None = None
     retrieval: Mapping[str, Any] | None = None
     snapshot_id: str | None = None
     source: SqlExecutionSource = "subagent"

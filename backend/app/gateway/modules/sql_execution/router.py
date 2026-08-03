@@ -103,13 +103,13 @@ class _InternalExecutionContext:
     Args:
         config: 当前 DataAgent 查询能力配置。
         active_state: 当前 approved Service State。
-        retrieval: 当前 Snapshot 的 TableRAG 检索合同。
+        binding: 当前 Run 的无密钥数据源绑定。
         capability: 当前 Run 的进程内 SQL 能力。
     """
 
     config: Any
     active_state: Mapping[str, Any]
-    retrieval: Mapping[str, Any]
+    binding: Mapping[str, Any]
     capability: SqlExecutionRunCapability
 
 
@@ -163,14 +163,13 @@ async def _load_internal_execution_context(
     action = approval.get("action") if isinstance(approval, Mapping) and approval.get("status") == "approved" else None
     if action not in {"execute", "sql_only"} or (require_execute and action != "execute"):
         raise HTTPException(status_code=403, detail="DataAgent SQL snapshot is not approved for this operation")
-    retrieval = payload.get("retrieval") if isinstance(payload, Mapping) else None
-    binding = retrieval.get("binding") if isinstance(retrieval, Mapping) else None
-    if not isinstance(retrieval, Mapping) or not isinstance(binding, Mapping) or binding.get("binding_fingerprint") != capability.binding.get("binding_fingerprint") or binding.get("data_source_id") != config.data_source_id:
+    binding = capability.binding
+    if binding.get("data_source_id") != config.data_source_id or binding.get("database_type") != config.sql_execution.database_type or not isinstance(binding.get("binding_fingerprint"), str):
         raise HTTPException(status_code=409, detail="DataAgent SQL binding is stale")
     return _InternalExecutionContext(
         config=config,
         active_state=active,
-        retrieval=retrieval,
+        binding=binding,
         capability=capability,
     )
 
@@ -329,7 +328,7 @@ async def validate_subagent_sql(
     ).validate(
         SqlValidationRequest(
             sql=body.sql,
-            retrieval=context.retrieval,
+            binding=context.binding,
             snapshot_id=body.snapshot_id,
             source="subagent",
         )
@@ -388,7 +387,7 @@ async def execute_subagent_sql(
     validation = service.validate(
         SqlValidationRequest(
             sql=body.sql,
-            retrieval=context.retrieval,
+            binding=context.binding,
             snapshot_id=body.snapshot_id,
             source="subagent",
         )

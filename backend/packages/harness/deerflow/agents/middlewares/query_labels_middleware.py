@@ -32,23 +32,6 @@ from deerflow.agents.service_agent.turn_context import current_visible_turn_id
 logger = logging.getLogger(__name__)
 
 _PUBLISH_QUERY_LABELS_TOOL_NAME = "publish_query_labels"
-_RECOVERABLE_LABEL_CONTEXT_MISSING = (
-    "当前没有可用于发布标签的有效 TableRAG 检索上下文。"
-    "请根据本轮请求与历史对话自行判断下一步：可以重新调用 sqlrag_retrieve 建立检索上下文，"
-    "也可以向用户说明历史快照已不足以安全继续。"
-)
-_LABEL_REENTRY_STAGES = frozenset(
-    {
-        "retrieving",
-        "labels_published",
-        "awaiting_confirmation",
-        "approved",
-        "sql_ready",
-        "succeeded",
-        "failed",
-        "cancelled",
-    }
-)
 _LABEL_SOURCES = frozenset(
     {
         "user",  # 用户直接声明的标签
@@ -64,23 +47,17 @@ class QueryLabelsMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        require_retrieval: bool = False,
-        stage_name: str | None = None,
         service_ability: object | None = None,
     ) -> None:
         """初始化查询标签 middleware。
 
         Args:
-            require_retrieval: 是否要求所有标签都在首次有效 TableRAG 检索后发布。
-            stage_name: 标签发布成功后写入的可选业务阶段名。
             service_ability: 当前 DataAgent service ability 配置，用于绑定数据源和合同版本。
 
         Return:
             None。
         """
         super().__init__()
-        self._require_retrieval = require_retrieval
-        self._stage_name = stage_name.strip() if isinstance(stage_name, str) and stage_name.strip() else None
         # ADD: 保存当前 service ability，后续标签快照必须绑定同一能力版本和数据源。
         self._service_ability = service_ability
 
@@ -179,24 +156,8 @@ class QueryLabelsMiddleware(AgentMiddleware):
                 if len(cleaned) > maximum:
                     raise ValueError(f"labels[{index}].{optional_name} 超过长度限制。")
                 record[optional_name] = cleaned
-            if source == "database" and "evidence" not in record:
-                raise ValueError(f"labels[{index}] 的数据库来源标签必须填写 evidence。")
             normalized_labels.append(record)
         return normalized_labels
-
-    @staticmethod
-    def _has_retrieval_evidence(request: ToolCallRequest) -> bool:
-        """判断当前轮次是否已有成功 TableRAG 检索。
-
-        Args:
-            request: 工具调用请求。
-
-        Return:
-            已有成功检索状态时返回 True。
-        """
-        state = request.state if isinstance(request.state, Mapping) else {}
-        retrieval = state.get("data_retrieval_context")
-        return isinstance(retrieval, Mapping) and retrieval.get("ok") is True
 
     def _build_payload(self, request: ToolCallRequest) -> dict[str, Any]:
         """从工具参数构造顶层标签 artifact。
@@ -222,11 +183,6 @@ class QueryLabelsMiddleware(AgentMiddleware):
             raise ValueError("intent 不能超过 100 个字符。")
 
         labels = self._normalize_labels(args.get("labels"))
-        has_retrieval = self._has_retrieval_evidence(request)
-        if self._require_retrieval and not has_retrieval:
-            raise ValueError("查询标签只能在首次有效 TableRAG 检索完成后发布。")
-        if any(item["source"] == "database" for item in labels) and not has_retrieval:
-            raise ValueError("数据库来源标签只能在成功获得 TableRAG Evidence 后发布。")
 
         payload: dict[str, Any] = {
             "intent": normalized_intent,
@@ -259,19 +215,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
             raise ValueError("DataAgent service ability 未启用。")
         state = request.state if isinstance(request.state, Mapping) else {}
         active = get_active_service_state(state)
-        if active is None:
-            raise ValueError(_RECOVERABLE_LABEL_CONTEXT_MISSING)
-        if active.get("stage") not in _LABEL_REENTRY_STAGES:
-            stage = str(active.get("stage") or "unknown")
-            raise ValueError(
-                f"当前 DataAgent 查询快照处于 {stage} 阶段，不能直接复用其检索上下文发布标签。"
-                "请根据历史对话自行判断是否需要重新检索、向用户追问，或结束本次查询。"
-            )
         visible_turn_id = current_visible_turn_id(state)
-        payload = active.get("payload")
-        retrieval = payload.get("retrieval") if isinstance(payload, Mapping) else None
-        if not isinstance(retrieval, Mapping) or retrieval.get("ok") is not True:
-            raise ValueError(_RECOVERABLE_LABEL_CONTEXT_MISSING)
         args = request.tool_call.get("args") or {}
         if not isinstance(args, Mapping):
             raise ValueError("标签工具参数必须是对象。")
@@ -304,22 +248,32 @@ class QueryLabelsMiddleware(AgentMiddleware):
                 raise ValueError("ambiguities 必须是 JSON 数组。") from exc
         if not isinstance(ambiguities, list):
             raise ValueError("ambiguities 必须是数组。")
-        active_turn_id = str(active.get("turn_id") or "")
-        turn_id = str(visible_turn_id or active_turn_id)
+        active_turn_id = str(active.get("turn_id") or "") if isinstance(active, Mapping) else ""
+        tool_call_id = str(request.tool_call.get("id") or "")
+        turn_id = str(visible_turn_id or active_turn_id or f"tool:{tool_call_id or 'unknown'}")
         resumed_from: dict[str, Any] | None = None
-        if turn_id and active_turn_id and turn_id != active_turn_id:
-            # ADD: 新一轮可见用户消息可以基于历史检索快照重新发布标签，
+        if active is not None and turn_id and active_turn_id and turn_id != active_turn_id:
+            # ADD: 新一轮可见用户消息可以基于历史对话重新发布标签，
             # 但必须显式记录来源，避免旧取消/完成状态被误认为当前轮次原生快照。
             resumed_from = {
                 "turn_id": active_turn_id,
                 "snapshot_id": active.get("snapshot_id"),
                 "stage": active.get("stage"),
             }
+        runtime_context = getattr(request.runtime, "context", None)
+        runtime_context = runtime_context if isinstance(runtime_context, Mapping) else {}
+        binding = runtime_context.get("data_query_binding")
+        if not (
+            isinstance(binding, Mapping)
+            and binding.get("data_source_id") == self._service_ability.data_source_id
+            and binding.get("database_type") == self._service_ability.sql_execution.database_type
+        ):
+            binding = None
         snapshot = build_query_label_snapshot(
             turn_id=turn_id,
             data_source_id=self._service_ability.data_source_id,
             ability_version=self._service_ability.version,
-            retrieval=retrieval,
+            binding=binding,
             intent=str(args.get("intent") or ""),
             labels=normalized_labels,
             summary=args.get("summary") if isinstance(args.get("summary"), str) else None,
@@ -328,18 +282,6 @@ class QueryLabelsMiddleware(AgentMiddleware):
             ambiguities_declared=ambiguities_declared,
         )
         approval_policy = decide_query_approval(self._service_ability, snapshot)
-        # ADD: 只把有限长度的 Evidence 摘要投影给前端，原始检索对象仍留在受控服务状态。
-        evidence: list[dict[str, str]] = []
-        registry = retrieval.get("registry") if isinstance(retrieval.get("registry"), Mapping) else {}
-        for ref, item in list(registry.items())[:30]:
-            if not isinstance(ref, str) or not isinstance(item, Mapping):
-                continue
-            record = item.get("record") if isinstance(item.get("record"), Mapping) else {}
-            summary = next(
-                (str(record.get(name)).strip() for name in ("evidence_content", "content", "value", "column_name", "table_name") if isinstance(record.get(name), str) and str(record.get(name)).strip()),
-                "检索对象",
-            )
-            evidence.append({"ref": ref, "kind": str(item.get("kind") or "evidence"), "summary": summary[:500]})
         artifact: dict[str, Any] = {
             "version": 1,
             "kind": "data_query_labels",
@@ -352,7 +294,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
             "ambiguities": snapshot["ambiguities"],
             "ambiguity_items": build_query_review_items(snapshot),
             "labels": snapshot["labels"],
-            "evidence": evidence,
+            "evidence": [],
             "retrieval_digest": snapshot["retrieval_digest"],
             "binding_fingerprint": snapshot["binding_fingerprint"],
             "approval_required": bool(approval_policy["required"]),
@@ -361,7 +303,6 @@ class QueryLabelsMiddleware(AgentMiddleware):
         if resumed_from is not None:
             artifact["resumed_from"] = dict(resumed_from)
         service_payload = {
-            "retrieval": dict(retrieval),
             "labels": dict(snapshot),
             "approval_policy": dict(approval_policy),
             "review_items": build_query_review_items(snapshot),
@@ -370,7 +311,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
             service_payload["resumed_from"] = dict(resumed_from)
         service_state = make_service_state(
             turn_id=turn_id,
-            stage=self._stage_name or "labels_published",
+            stage="labels_published",
             snapshot_id=snapshot["snapshot_id"],
             data_source_id=self._service_ability.data_source_id,
             payload=service_payload,
@@ -443,8 +384,6 @@ class QueryLabelsMiddleware(AgentMiddleware):
             "messages": [message],
             "data_query_labels": payload,
         }
-        if self._stage_name is not None:
-            update["data_agent_stage"] = self._stage_name
         return Command(update=update)
 
     @override

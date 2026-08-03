@@ -7,13 +7,12 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
-from deerflow.agents.service_agent.query_intent_approval_middleware import QueryIntentApprovalMiddleware
 from app.gateway.modules.sql_execution.binding import resolve_data_source_binding
+from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig, parse_service_ability
+from deerflow.agents.service_agent.query_intent_approval_middleware import QueryIntentApprovalMiddleware
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility, resolve_service_ability, resolve_service_ability_safely
 from deerflow.agents.service_agent.sql_stage_middleware import SqlStageMiddleware
-from deerflow.agents.service_agent.table_rag_middleware import TableRagStageMiddleware
 from deerflow.agents.thread_state import merge_service_states
 from deerflow.config.agents_config import AgentConfig, preserve_non_managed_fields
 from deerflow.tools.tools import BUILTIN_TOOLS
@@ -56,14 +55,13 @@ def test_agent_config_preserves_service_ability() -> None:
 
 
 def test_data_agent_service_ability_registers_data_query_middlewares() -> None:
-    """DataAgent 业务 middleware 不再按轮次强制重置，按检索、标签、意图审批和 SQL 阶段串行。"""
+    """DataAgent 业务 middleware 不再挂载 SQLRAG 检索状态登记层。"""
     config = parse_service_ability(_ability_config())
     assert config is not None
 
     middlewares = DataAgentServiceAbility(config).build_middlewares()
 
     assert [type(middleware) for middleware in middlewares] == [
-        TableRagStageMiddleware,
         QueryLabelsMiddleware,
         QueryIntentApprovalMiddleware,
         SqlStageMiddleware,

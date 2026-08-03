@@ -276,6 +276,7 @@ _DATA_QUERY_LABEL_REENTRY_SOURCE_STAGES = frozenset(
 )
 
 
+# ADD: DataAgent 活动状态延续
 def _is_resumed_data_query_label_publish(current: Mapping[str, object], incoming: Mapping[str, object]) -> bool:
     """判断新标签快照是否是在显式延续当前历史快照。
 
@@ -297,7 +298,7 @@ def _is_resumed_data_query_label_publish(current: Mapping[str, object], incoming
     return resumed_from.get("turn_id") == current.get("turn_id") and resumed_from.get("snapshot_id") == current.get("snapshot_id")
 
 
-# ADD: 对 DataAgent 活动快照执行单向状态机合并，丢弃旧轮次、旧 snapshot 和阶段回退写入。
+# ADD: DataAgent 活动状态替换
 def _can_replace_data_query_state(current: Mapping[str, object], incoming: Mapping[str, object]) -> bool:
     """判断新的 DataAgent 服务状态能否替换当前活动快照。"""
     if current.get("version") != 1 or incoming.get("version") != 1:
@@ -310,11 +311,11 @@ def _can_replace_data_query_state(current: Mapping[str, object], incoming: Mappi
     incoming_snapshot = incoming.get("snapshot_id")
     if isinstance(current_turn, str) and isinstance(incoming_turn, str) and current_turn != incoming_turn:
         # 新用户问题不再依赖单独的 turn-reset middleware 先写 idle；
-        # TableRAG 检索可以直接开启新快照；如果模型显式复用当前历史快照重新发布标签，
+        # 标签发布可以直接开启新快照；如果模型显式复用当前历史快照重新发布标签，
         # 也允许 labels_published 进入新 turn。旧轮 SQL/审批结果仍不能覆盖当前轮。
         if _is_resumed_data_query_label_publish(current, incoming):
             return True
-        return incoming_stage in {"idle", "retrieving", "needs_refinement"}
+        return incoming_stage in {"idle", "retrieving", "needs_refinement", "labels_published"}
 
     if current_snapshot == incoming_snapshot:
         if current_stage in _DATA_QUERY_TERMINAL_STAGES:
@@ -332,7 +333,7 @@ def _can_replace_data_query_state(current: Mapping[str, object], incoming: Mappi
     return current_snapshot is None
 
 
-# ADD: 按 service_name 替换活动快照，避免 dict 不可哈希和状态无界增长。
+# ADD: service_agent 活动状态 (按 service_name 区分)
 def merge_service_states(existing: list[ServiceState] | None, new: list[ServiceState] | None) -> list[ServiceState]:
     """合并服务状态快照并保持每个服务只有一个活动状态。
 
@@ -344,8 +345,8 @@ def merge_service_states(existing: list[ServiceState] | None, new: list[ServiceS
         按最近更新时间排列且有界的活动服务状态列表。
 
     Raises:
-        TypeError: 更新项不是映射对象。
-        ValueError: 快照缺少 service_name。
+        TypeError: 更新项不是映射对象
+        ValueError: 快照缺少 service_name
     """
     active: dict[str, ServiceState] = {}
     order: list[str] = []

@@ -153,7 +153,6 @@ def validate_sql_request(
         版本化 SQL 校验结果。
     """
     sql = request.sql
-    retrieval = request.retrieval
     if request.source not in {"subagent", "manual_ui"}:
         return {"version": 1, "valid": False, "error_code": "SQL_SOURCE_INVALID"}
     if not isinstance(sql, str) or not sql.strip():
@@ -166,7 +165,9 @@ def validate_sql_request(
         }
     if not config.sql_execution.allowed_schemas:
         return {"version": 1, "valid": False, "error_code": "SQL_SCHEMA_REQUIRED"}
-    binding = manual_binding if request.source == "manual_ui" else retrieval.get("binding") if isinstance(retrieval, Mapping) else None
+    legacy_retrieval = request.retrieval
+    legacy_binding = legacy_retrieval.get("binding") if isinstance(legacy_retrieval, Mapping) else None
+    binding = manual_binding if request.source == "manual_ui" else request.binding or legacy_binding
     if not isinstance(binding, Mapping) or not isinstance(
         binding.get("binding_fingerprint"),
         str,
@@ -197,16 +198,12 @@ def validate_sql_request(
         return {"version": 1, "valid": False, "error_code": "SQL_SELECT_REQUIRED"}
 
     cte_names = {str(cte.alias_or_name).lower() for cte in parsed.find_all(exp.CTE)}
-    table_aliases: dict[str, str] = {}
     physical_tables: list[exp.Table] = []
     for table in parsed.find_all(exp.Table):
         table_name = table.name.lower()
         if table_name in cte_names and not table.db:
             continue
         physical_tables.append(table)
-        table_aliases[table_name] = table_name
-        if table.alias_or_name:
-            table_aliases[str(table.alias_or_name).lower()] = table_name
     if not physical_tables:
         return {"version": 1, "valid": False, "error_code": "SQL_TABLE_REQUIRED"}
 
@@ -269,68 +266,6 @@ def validate_sql_request(
                     "valid": False,
                     "error_code": "SQL_SCHEMA_NOT_ALLOWED",
                     "error_message": (f"Schema `{schema_name}` 未配置在 sql_execution.allowed_schemas 中。"),
-                }
-
-    registry_tables: set[str] = set()
-    registry_columns: set[str] = set()
-    if request.source == "subagent":
-        registry = retrieval.get("registry") if isinstance(retrieval, Mapping) else None
-        registry = registry if isinstance(registry, Mapping) else {}
-        for item in registry.values():
-            if not isinstance(item, Mapping) or not isinstance(
-                item.get("record"),
-                Mapping,
-            ):
-                continue
-            record = item["record"]
-            table_name = record.get("table_name")
-            if not isinstance(table_name, str) or not table_name.strip():
-                continue
-            table_name = table_name.strip().lower()
-            if item.get("kind") == "table":
-                registry_tables.add(table_name)
-            if item.get("kind") == "column":
-                registry_tables.add(table_name)
-                column_name = record.get("column_name")
-                if isinstance(column_name, str) and column_name.strip():
-                    registry_columns.add(
-                        f"{table_name}.{column_name.strip().lower()}",
-                    )
-        if not registry_tables or not registry_columns:
-            return {
-                "version": 1,
-                "valid": False,
-                "error_code": "SQL_RETRIEVAL_REGISTRY_REQUIRED",
-            }
-
-    select_aliases = {str(expression.alias).lower() for select in parsed.find_all(exp.Select) for expression in select.expressions if isinstance(expression, exp.Alias) and expression.alias}
-    for column in parsed.find_all(exp.Column):
-        table = column.table.lower() if column.table else ""
-        name = column.name
-        if not table and name.lower() in select_aliases:
-            continue
-        actual_table = table_aliases.get(table, table)
-        if request.source == "manual_ui" or table in cte_names:
-            continue
-        if actual_table and f"{actual_table}.{name.lower()}" not in registry_columns:
-            return {
-                "version": 1,
-                "valid": False,
-                "error_code": "SQL_COLUMN_NOT_IN_RETRIEVAL",
-            }
-        if not actual_table and not any(item.endswith(f".{name.lower()}") for item in registry_columns):
-            return {
-                "version": 1,
-                "valid": False,
-                "error_code": "SQL_COLUMN_NOT_IN_RETRIEVAL",
-            }
-    if request.source == "subagent":
-        for table in physical_tables:
-            if table.name.lower() not in registry_tables:
-                return {
-                    "version": 1,
-                    "valid": False,
-                    "error_code": "SQL_TABLE_NOT_IN_RETRIEVAL",
                 }
 
     executable = parsed.sql(dialect=_dialect(config), pretty=False).strip()

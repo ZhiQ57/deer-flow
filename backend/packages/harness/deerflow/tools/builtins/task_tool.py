@@ -206,6 +206,7 @@ def _build_data_query_sql_result_from_steps(
     *,
     active_state: dict[str, Any],
     data_source_id: str,
+    binding: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """从子代理工具步骤构造 DataAgent SQL 结果合同。
 
@@ -213,6 +214,7 @@ def _build_data_query_sql_result_from_steps(
         steps: SubagentExecutor 捕获的 AIMessage/ToolMessage 字典。
         active_state: 父线程当前 approved DataAgent 快照。
         data_source_id: 服务端配置的数据源标识。
+        binding: Gateway 为当前运行注入的无密钥 SQL 执行绑定。
 
     Returns:
         只包含真实校验/执行工具输出的 SQL 结果；合同不完整时返回 None。
@@ -223,10 +225,10 @@ def _build_data_query_sql_result_from_steps(
     state_data_source_id = active_state.get("data_source_id")
     if state_data_source_id is not None and state_data_source_id != data_source_id:
         return None
+    if not isinstance(binding, dict) or binding.get("data_source_id") != data_source_id:
+        return None
     payload = active_state.get("payload")
     approval = payload.get("approval") if isinstance(payload, dict) else None
-    retrieval = payload.get("retrieval") if isinstance(payload, dict) else None
-    binding = retrieval.get("binding") if isinstance(retrieval, dict) else None
     expected_database_type = binding.get("database_type") if isinstance(binding, dict) else None
     expected_binding_fingerprint = binding.get("binding_fingerprint") if isinstance(binding, dict) else None
     if not isinstance(expected_database_type, str) or not isinstance(expected_binding_fingerprint, str):
@@ -632,10 +634,12 @@ async def task_tool(
                 task_result_artifact: dict[str, Any] | None = None
                 if data_query_active_state is not None and data_query_runtime_ability is not None:
                     # ADD: DataAgent SQL 结果只从捕获的工具输出重建，子代理最终自由文本不具备数据库事实权限。
+                    runtime_binding = parent_context.get("data_query_binding")
                     authoritative_result = _build_data_query_sql_result_from_steps(
                         result.ai_messages or [],
                         active_state=data_query_active_state,
                         data_source_id=str(data_query_runtime_ability["data_source_id"]),
+                        binding=runtime_binding if isinstance(runtime_binding, dict) else None,
                     )
                     if authoritative_result is None:
                         error = "SQL_SUBAGENT_TOOL_RESULT_INVALID"

@@ -17,8 +17,8 @@ class QueryLabelInput(BaseModel):
     value: str = Field(min_length=1, max_length=200, description="向用户展示的标签值。")
     source: Literal["user", "database", "derived"] = Field(description="标签来源：用户原文、数据库真实值或基于证据推导。")
     normalized: str | None = Field(default=None, max_length=200, description="可选的标准化值。")
-    # ADD: 数据库标签只接收服务端登记的 Evidence ref，不再接受可伪造的自由文本摘要。
-    evidence_refs: list[str] = Field(default_factory=list, max_length=20, description="当前 TableRAG retrieval registry 中的 Evidence/Table/Column/Value ref。")
+    # ADD: 可选保留模型在普通工具上下文中看到的证据引用；服务端不再维护 TableRAG registry。
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20, description="可选的证据引用，来源于模型可见的工具上下文。")
 
 
 @tool("publish_query_labels", parse_docstring=True)
@@ -34,10 +34,10 @@ def publish_query_labels_tool(
     不请求额外模型，也不作为 TableRAG、SQL 校验或 SQL 执行的前置门禁。
 
     每次调用都应提交当前完整标签快照，后一次调用会替换前一次。宿主 Agent 可以
-    配置该工具必须在首次有效数据库检索后发布；调用时必须遵守宿主流程的阶段要求。
+    配置该工具必须遵守宿主流程的阶段要求。
 
-    数据库来源标签必须将 source 设置为 database，并引用当前 TableRAG registry 中的
-    evidence_refs；不得提交自由文本 Evidence 或把未经检索确认的猜测标记为数据库真实值。
+    数据库来源标签应将 source 设置为 database；检索结果由 DeerFlow 原生工具消息进入
+    模型上下文，服务端不再把 SQLRAG 结果登记为单独的业务状态。
 
     Args:
         intent: lead-agent 当前确认的用户意图，例如 ranking、trend、aggregation 或 detail。

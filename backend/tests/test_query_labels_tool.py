@@ -16,7 +16,6 @@ class _QueryLabelsState(AgentState):
     """查询标签真实 Agent 图集成测试状态。"""
 
     data_query_labels: dict[str, Any] | None
-    data_retrieval_context: dict[str, Any] | None
 
 
 class _ToolCallingModel(FakeMessagesListChatModel):

@@ -15,7 +15,6 @@ from app.gateway.modules.sql_execution.contracts import (
 from app.gateway.modules.sql_execution.error_classifier import classify_execution_error
 from app.gateway.modules.sql_execution.service import SqlExecutionService
 from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
-from deerflow.agents.service_agent.state import build_retrieval_context
 
 
 def _config(*, max_execution_attempts: int = 3) -> DataQueryServiceAbilityConfig:
@@ -52,33 +51,16 @@ def _config(*, max_execution_attempts: int = 3) -> DataQueryServiceAbilityConfig
     )
 
 
-def _retrieval(config: DataQueryServiceAbilityConfig) -> dict[str, Any]:
-    """构造绑定当前数据库目标的 TableRAG 检索结果。
+def _binding(config: DataQueryServiceAbilityConfig) -> dict[str, Any]:
+    """构造绑定当前数据库目标的无密钥运行绑定。
 
     Args:
         config: 当前 SQL 执行配置。
 
     Returns:
-        带服务端绑定和字段 registry 的检索上下文。
+        Gateway 注入 Harness 的安全绑定摘要。
     """
-    binding = resolve_data_source_binding(config)
-    return build_retrieval_context(
-        {
-            "ok": True,
-            "operation": "hybrid-search",
-            "result": {
-                "tables": [{"table_name": "orders"}],
-                "columns": [
-                    {"table_name": "orders", "column_name": "region"},
-                    {"table_name": "orders", "column_name": "missing_region"},
-                ],
-            },
-        },
-        tool_name="sqlrag_retrieve",
-        turn_id="turn-1",
-        data_source_id=config.data_source_id,
-        binding=binding,
-    )
+    return resolve_data_source_binding(config)
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +78,7 @@ def test_sql_execution_service_validates_and_returns_json_safe_rows(monkeypatch:
     validation = service.validate(
         SqlValidationRequest(
             sql="SELECT orders.region FROM public.orders",
-            retrieval=_retrieval(config),
+            binding=_binding(config),
             snapshot_id="snapshot-1",
         )
     )
@@ -166,26 +148,19 @@ def test_manual_ui_does_not_require_static_table_or_column_allowlist() -> None:
     assert "error_code" not in validation
 
 
-@pytest.mark.parametrize(
-    ("sql", "error_code"),
-    [
-        ("SELECT COUNT(1) FROM public.unknown_table", "SQL_TABLE_NOT_IN_RETRIEVAL"),
-        ("SELECT orders.unknown_column FROM public.orders", "SQL_COLUMN_NOT_IN_RETRIEVAL"),
-    ],
-)
-def test_subagent_keeps_table_rag_registry_constraints(sql: str, error_code: str) -> None:
-    """SQL SubAgent 仍只能使用当前 TableRAG registry 登记的表和字段。"""
+def test_subagent_no_longer_requires_retrieval_registry() -> None:
+    """SQL SubAgent 校验不再依赖 SQLRAG registry，字段错误交给数据库返回。"""
     config = _config()
     validation = SqlExecutionService(config).validate(
         SqlValidationRequest(
-            sql=sql,
-            retrieval=_retrieval(config),
+            sql="SELECT orders.unknown_column FROM public.orders",
+            binding=_binding(config),
             snapshot_id="snapshot-1",
         )
     )
 
-    assert validation["valid"] is False
-    assert validation["error_code"] == error_code
+    assert validation["valid"] is True
+    assert "error_code" not in validation
 
 
 def test_sql_execution_service_rejects_cross_source_validation() -> None:
@@ -195,7 +170,7 @@ def test_sql_execution_service_rejects_cross_source_validation() -> None:
     validation = service.validate(
         SqlValidationRequest(
             sql="SELECT orders.region FROM public.orders",
-            retrieval=_retrieval(config),
+            binding=_binding(config),
             snapshot_id="snapshot-1",
         )
     )
@@ -249,7 +224,7 @@ def test_sql_execution_service_returns_repairable_database_error(monkeypatch: py
     validation = service.validate(
         SqlValidationRequest(
             sql="SELECT orders.missing_region FROM public.orders",
-            retrieval=_retrieval(config),
+            binding=_binding(config),
             snapshot_id="snapshot-1",
         )
     )

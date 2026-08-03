@@ -81,7 +81,7 @@ class SqlStageMiddleware(AgentMiddleware):
             }
         return None
 
-    def _envelope(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any], Mapping[str, Any]] | None:
+    def _envelope(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any], Mapping[str, Any], Mapping[str, Any]] | None:
         """从当前状态构造严格 JSON SQL SubAgent 请求与审批授权。"""
         state = request.state if isinstance(request.state, Mapping) else {}
         if not self._config.enable_sql_rag:
@@ -95,16 +95,23 @@ class SqlStageMiddleware(AgentMiddleware):
         approval = self._approval_from_payload(active, payload)
         if approval is None:
             return None
-        retrieval = payload.get("retrieval")
         labels = payload.get("labels")
-        if not isinstance(retrieval, Mapping) or not isinstance(labels, Mapping):
+        if not isinstance(labels, Mapping):
             return None
         runtime_context = getattr(request.runtime, "context", None)
         runtime_context = runtime_context if isinstance(runtime_context, Mapping) else {}
         # ADD: 正式 custom-agent 运行必须由服务端显式确认 SQL SubAgent 位于 allowable_subagents。
         if "data_query_service_ability" in runtime_context and runtime_context.get("data_query_sql_subagent_allowed") is not True:
             return None
-        # ADD: 只传递当前 snapshot 的最小结构化证据，不传 DSN、Secret 或完整数据库行。
+        binding = runtime_context.get("data_query_binding")
+        if (
+            not isinstance(binding, Mapping)
+            or binding.get("data_source_id") != self._config.data_source_id
+            or binding.get("database_type") != self._config.sql_execution.database_type
+            or not isinstance(binding.get("binding_fingerprint"), str)
+        ):
+            return None
+        # ADD: 只传递当前标签和运行身份，不传 DSN、Secret 或完整数据库行。
         envelope = {
             "version": 1,
             "kind": "data_query_sql_request",
@@ -120,13 +127,9 @@ class SqlStageMiddleware(AgentMiddleware):
             "max_execution_attempts": self._config.sql_execution.max_execution_attempts,
             "intent": labels.get("intent"),
             "labels": labels.get("labels", []),
-            "retrieval_digest": retrieval.get("retrieval_digest"),
-            "evidence": retrieval.get("evidences", [])[:30] if isinstance(retrieval.get("evidences"), list) else [],
-            "tables": retrieval.get("tables", [])[:30] if isinstance(retrieval.get("tables"), list) else [],
-            "columns": retrieval.get("columns", [])[:100] if isinstance(retrieval.get("columns"), list) else [],
-            "values": retrieval.get("values", [])[:50] if isinstance(retrieval.get("values"), list) else [],
-            "join_graphs": retrieval.get("join_graphs", [])[:30] if isinstance(retrieval.get("join_graphs"), list) else [],
+            "context_digest": labels.get("context_digest"),
             "instructions": (
+                "基于父对话中已有的 MCP/SQLRAG 工具消息与当前标签生成只读 SQL。"
                 "先调用 data_validate_sql。action=execute 时才可调用 data_execute_sql；"
                 "执行失败且 retryable=true 时，根据 error_category、error_message 和 recommended_action 修复 SQL，"
                 "重新调用 data_validate_sql 后再执行，不得超过 max_execution_attempts。"
@@ -134,7 +137,7 @@ class SqlStageMiddleware(AgentMiddleware):
                 "validation 必须原样保留 sql_sha256 和 validation_digest；禁止 Markdown 和自由文本。"
             ),
         }
-        return envelope, approval, active
+        return envelope, approval, active, binding
 
     @staticmethod
     def _replace_task_args(request: ToolCallRequest, envelope: Mapping[str, Any]) -> ToolCallRequest:
@@ -184,6 +187,7 @@ class SqlStageMiddleware(AgentMiddleware):
         result: ToolMessage | Command,
         approval: Mapping[str, Any],
         active: Mapping[str, Any],
+        binding: Mapping[str, Any],
     ) -> ToolMessage | Command:
         """验证子代理返回并投影 sql_ready/failed 阶段。"""
         message = self._result_message(result)
@@ -205,8 +209,6 @@ class SqlStageMiddleware(AgentMiddleware):
         ):
             return self._error(request, "SQL_SUBAGENT_CONTRACT_INVALID")
         active_payload = active.get("payload") if isinstance(active.get("payload"), Mapping) else {}
-        retrieval = active_payload.get("retrieval") if isinstance(active_payload.get("retrieval"), Mapping) else {}
-        binding = retrieval.get("binding") if isinstance(retrieval.get("binding"), Mapping) else {}
         validation = parsed.get("validation")
         if (
             not isinstance(validation, Mapping)
@@ -317,8 +319,8 @@ class SqlStageMiddleware(AgentMiddleware):
         authorized = self._envelope(request)
         if authorized is None:
             return self._error(request, "SQL_STAGE_NOT_APPROVED")
-        envelope, approval, active = authorized
-        return self._merge_result(request, handler(self._replace_task_args(request, envelope)), approval, active)
+        envelope, approval, active, binding = authorized
+        return self._merge_result(request, handler(self._replace_task_args(request, envelope)), approval, active, binding)
 
     @override
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]) -> ToolMessage | Command:
@@ -328,5 +330,5 @@ class SqlStageMiddleware(AgentMiddleware):
         authorized = self._envelope(request)
         if authorized is None:
             return self._error(request, "SQL_STAGE_NOT_APPROVED")
-        envelope, approval, active = authorized
-        return self._merge_result(request, await handler(self._replace_task_args(request, envelope)), approval, active)
+        envelope, approval, active, binding = authorized
+        return self._merge_result(request, await handler(self._replace_task_args(request, envelope)), approval, active, binding)

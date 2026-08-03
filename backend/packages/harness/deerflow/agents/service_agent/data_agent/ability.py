@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import BaseTool
 
-from .service_ability_config import DataQueryServiceAbilityConfig
+from config import DataQueryServiceAbilityConfig, parse_service_ability
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +87,12 @@ class DataAgentServiceAbility:
         """返回 DataAgent 当前阶段的业务 middleware。"""
         from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 
-        from ..query_intent_approval_middleware import QueryIntentApprovalMiddleware
-        from ..sql_stage_middleware import SqlStageMiddleware
-        from ..table_rag_middleware import TableRagStageMiddleware
+        from .query_intent_approval_middleware import QueryIntentApprovalMiddleware
+        from .sql_stage_middleware import SqlStageMiddleware
 
         # ADD: 业务 middleware 只挂在 DataAgent 适配器，默认 lead-agent 不受影响。
         return [
-            TableRagStageMiddleware(self.config),
-            QueryLabelsMiddleware(require_retrieval=True, service_ability=self.config),
+            QueryLabelsMiddleware(service_ability=self.config),
             QueryIntentApprovalMiddleware(self.config),
             SqlStageMiddleware(self.config),
         ]
@@ -102,7 +100,6 @@ class DataAgentServiceAbility:
     def public_metadata(self) -> dict[str, Any]:
         """返回能力的脱敏前端/运行 metadata。"""
         return self.config.public_metadata()
-
 
 def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
     """安全解析 custom-agent 的 service ability。
@@ -114,23 +111,26 @@ def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbil
         已解析的能力适配器；配置错误时记录脱敏信息并返回 None。
     """
     try:
-        # ADD: 解析 DataAgent service ability 参数
-        parsed = DataQueryServiceAbilityConfig.model_validate(dict(raw))
-        if parsed is None:
-                return None
-        if parsed.type == "data_query" and parsed.version == 1:
-            return DataAgentServiceAbility(parsed)
-        raise ValueError(f"不支持的 service_ability 结构参数: {parsed.type}/v{parsed.version}")
+        config = parse_service_ability(raw)
+
+        if config is None:
+            return None
+        
+        if config.type == "data_query" and config.version == 1:
+            return DataAgentServiceAbility(config)
+        
+        raise ValueError(f"不支持的 service_ability 合同：{config.type}/v{config.version}")
+    
     except (TypeError, ValueError) as exc:
         issues: list[str] = []
         errors = getattr(exc, "errors", None)
+
         if callable(errors):
             for error in errors(include_url=False, include_input=False):
                 location = ".".join(str(part) for part in error.get("loc", ())) or "service_ability"
                 issues.append(f"{location}: 值不符合 {error.get('type', '配置')} 约束")
+
         if not issues:
             issues.append("service_ability: 配置类型或版本不受支持")
-        logger.error(
-            "DataAgent service_ability 配置无效(%s)".join(issues),
-        )
+        logger.error("DataAgent service_ability 配置无效（%s）".join(issues))
         return None
