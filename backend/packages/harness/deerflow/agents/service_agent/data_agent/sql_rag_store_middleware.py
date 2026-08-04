@@ -23,7 +23,7 @@ from deerflow.runtime.secret_context import extract_request_secrets
 from .binding import resolve_data_source_binding
 from .service_ability_config import DataQueryServiceAbilityConfig
 from .sqlrag_contract import SQLRAG_RETRIEVE_TOOL_NAME, is_sqlrag_retrieval_tool_name
-from .thread_state import build_retrieval_context, get_active_service_state, make_service_state, merge_retrieval_contexts
+from .service_thread_state import build_retrieval_context, get_active_service_state, make_service_state, merge_retrieval_contexts
 
 
 class SqlRagStoreMiddleware(AgentMiddleware):

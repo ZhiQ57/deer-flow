@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import BaseTool
 
-from config import DataQueryServiceAbilityConfig, parse_service_ability
+from .service_config import DataQueryServiceAbilityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbil
         已解析的能力适配器；配置错误时记录脱敏信息并返回 None。
     """
     try:
-        config = parse_service_ability(raw)
+        config = DataQueryServiceAbilityConfig.model_validate(dict(raw))
 
         if config is None:
             return None

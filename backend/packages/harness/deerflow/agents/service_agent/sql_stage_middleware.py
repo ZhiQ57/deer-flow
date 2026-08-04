@@ -30,6 +30,40 @@ class SqlStageMiddleware(AgentMiddleware):
         super().__init__()
         self._config = config
 
+    
+    @override
+    def after_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
+        """同步模型返回后限制并行 SQL SubAgent 调用。"""
+        return self._limit_parallel_sql_calls(state)
+
+    @override
+    async def aafter_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
+        """异步模型返回后复用同一并行 SQL SubAgent 限制。"""
+        return self._limit_parallel_sql_calls(state)
+
+    @override
+    def wrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolMessage | Command]) -> ToolMessage | Command:
+        """同步阻断未授权 SQL 委派并校验返回合同。"""
+        if not self._is_target(request):
+            return handler(request)
+        authorized = self._envelope(request)
+        if authorized is None:
+            return self._error(request, "SQL_STAGE_NOT_APPROVED")
+        envelope, approval, active, binding = authorized
+        return self._merge_result(request, handler(self._replace_task_args(request, envelope)), approval, active, binding)
+
+    @override
+    async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]) -> ToolMessage | Command:
+        """异步阻断未授权 SQL 委派并校验返回合同。"""
+        if not self._is_target(request):
+            return await handler(request)
+        authorized = self._envelope(request)
+        if authorized is None:
+            return self._error(request, "SQL_STAGE_NOT_APPROVED")
+        envelope, approval, active, binding = authorized
+        return self._merge_result(request, await handler(self._replace_task_args(request, envelope)), approval, active, binding)
+
+
     @staticmethod
     def _error(request: ToolCallRequest, code: str) -> Command:
         """返回带子代理失败终态的阶段错误。"""
@@ -81,14 +115,16 @@ class SqlStageMiddleware(AgentMiddleware):
             }
         return None
 
+    # 入口
     def _envelope(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any], Mapping[str, Any], Mapping[str, Any]] | None:
         """从当前状态构造严格 JSON SQL SubAgent 请求与审批授权。"""
         state = request.state if isinstance(request.state, Mapping) else {}
-        if not self._config.enable_sql_rag:
-            return None
+
+        # 读取 DataAgent 活动状态
         active = get_active_service_state(state)
         if active is None:
             return None
+        
         payload = active.get("payload")
         if not isinstance(payload, Mapping):
             return None
@@ -300,35 +336,3 @@ class SqlStageMiddleware(AgentMiddleware):
             state,
             lambda tool_call: tool_call.get("name") == "task" and isinstance(tool_call.get("args"), Mapping) and tool_call["args"].get("subagent_type") == self._config.sql_subagent_name,
         )
-
-    @override
-    def after_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
-        """同步模型返回后限制并行 SQL SubAgent 调用。"""
-        return self._limit_parallel_sql_calls(state)
-
-    @override
-    async def aafter_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
-        """异步模型返回后复用同一并行 SQL SubAgent 限制。"""
-        return self._limit_parallel_sql_calls(state)
-
-    @override
-    def wrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolMessage | Command]) -> ToolMessage | Command:
-        """同步阻断未授权 SQL 委派并校验返回合同。"""
-        if not self._is_target(request):
-            return handler(request)
-        authorized = self._envelope(request)
-        if authorized is None:
-            return self._error(request, "SQL_STAGE_NOT_APPROVED")
-        envelope, approval, active, binding = authorized
-        return self._merge_result(request, handler(self._replace_task_args(request, envelope)), approval, active, binding)
-
-    @override
-    async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]) -> ToolMessage | Command:
-        """异步阻断未授权 SQL 委派并校验返回合同。"""
-        if not self._is_target(request):
-            return await handler(request)
-        authorized = self._envelope(request)
-        if authorized is None:
-            return self._error(request, "SQL_STAGE_NOT_APPROVED")
-        envelope, approval, active, binding = authorized
-        return self._merge_result(request, await handler(self._replace_task_args(request, envelope)), approval, active, binding)

@@ -3,6 +3,7 @@ from collections.abc import Mapping, Sequence
 from functools import cache
 from typing import Annotated, Any, NotRequired, TypedDict, get_type_hints
 
+from deerflow.agents.service_agent.thread_state_registry import ServiceState, merge_service_states
 from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
 from langgraph.channels import DeltaChannel
@@ -10,7 +11,7 @@ from langgraph.graph.message import add_messages
 
 import deerflow.checkpoint_patches as _checkpoint_patches  # noqa: F401 - import-time saver fixes
 from deerflow.agents.goal_state import GoalState
-from deerflow.agents.service_agent.data_agent_thread_state import ServiceState, normalize_service_state_version
+from deerflow.agents.service_agent.data_agent_thread_state import normalize_service_state_version
 from deerflow.config.database_config import CheckpointChannelMode
 from deerflow.subagents.status_contract import SUBAGENT_STATUS_VALUES
 
@@ -244,151 +245,151 @@ def merge_skill_context(existing: list[SkillEntry] | None, new: list[SkillEntry]
     return merged
 
 
-_SERVICE_STATE_MAX_ENTRIES = 16
-
-_DATA_QUERY_STAGE_RANK = {
-    "idle": 0,
-    "retrieving": 1,
-    "needs_refinement": 1,
-    "labels_published": 2,
-    "awaiting_confirmation": 2,
-    "approved": 3,
-    "sql_generating": 4,
-    "sql_validating": 5,
-    "sql_ready": 6,
-    "executing": 7,
-    "succeeded": 8,
-    "failed": 8,
-    "cancelled": 8,
-}
-_DATA_QUERY_TERMINAL_STAGES = frozenset({"succeeded", "failed", "cancelled", "unsupported_version"})
-_DATA_QUERY_LABEL_REENTRY_SOURCE_STAGES = frozenset(
-    {
-        "retrieving",
-        "labels_published",
-        "awaiting_confirmation",
-        "approved",
-        "sql_ready",
-        "succeeded",
-        "failed",
-        "cancelled",
-    }
-)
+# _SERVICE_STATE_MAX_ENTRIES = 16
+# _DATA_QUERY_STAGE_RANK = {
+#     "idle": 0,
+#     "retrieving": 1,
+#     "needs_refinement": 1,
+#     "labels_published": 2,
+#     "awaiting_confirmation": 2,
+#     "approved": 3,
+#     "sql_generating": 4,
+#     "sql_validating": 5,
+#     "sql_ready": 6,
+#     "executing": 7,
+#     "succeeded": 8,
+#     "failed": 8,
+#     "cancelled": 8,
+# }
+# _DATA_QUERY_TERMINAL_STAGES = frozenset({"succeeded", "failed", "cancelled", "unsupported_version"})
+# _DATA_QUERY_LABEL_REENTRY_SOURCE_STAGES = frozenset(
+#     {
+#         "retrieving",
+#         "labels_published",
+#         "awaiting_confirmation",
+#         "approved",
+#         "sql_ready",
+#         "succeeded",
+#         "failed",
+#         "cancelled",
+#     }
+# )
 
 
 # ADD: DataAgent 活动状态延续
-def _is_resumed_data_query_label_publish(current: Mapping[str, object], incoming: Mapping[str, object]) -> bool:
-    """判断新标签快照是否是在显式延续当前历史快照。
+# def _is_resumed_data_query_label_publish(current: Mapping[str, object], incoming: Mapping[str, object]) -> bool:
+#     """判断新标签快照是否是在显式延续当前历史快照。
 
-    Args:
-        current: checkpoint 中当前 DataAgent 活动快照。
-        incoming: 本次工具调用产生的新 DataAgent 快照。
+#     Args:
+#         current: checkpoint 中当前 DataAgent 活动快照。
+#         incoming: 本次工具调用产生的新 DataAgent 快照。
 
-    Returns:
-        新快照带有匹配的 resumed_from 来源时返回 True。
-    """
-    if current.get("stage") not in _DATA_QUERY_LABEL_REENTRY_SOURCE_STAGES or incoming.get("stage") != "labels_published":
-        return False
-    payload = incoming.get("payload")
-    if not isinstance(payload, Mapping):
-        return False
-    resumed_from = payload.get("resumed_from")
-    if not isinstance(resumed_from, Mapping):
-        return False
-    return resumed_from.get("turn_id") == current.get("turn_id") and resumed_from.get("snapshot_id") == current.get("snapshot_id")
+#     Returns:
+#         新快照带有匹配的 resumed_from 来源时返回 True。
+#     """
+#     if current.get("stage") not in _DATA_QUERY_LABEL_REENTRY_SOURCE_STAGES or incoming.get("stage") != "labels_published":
+#         return False
+#     payload = incoming.get("payload")
+#     if not isinstance(payload, Mapping):
+#         return False
+#     resumed_from = payload.get("resumed_from")
+#     if not isinstance(resumed_from, Mapping):
+#         return False
+#     return resumed_from.get("turn_id") == current.get("turn_id") and resumed_from.get("snapshot_id") == current.get("snapshot_id")
 
 
 # ADD: DataAgent 活动状态替换
-def _can_replace_data_query_state(current: Mapping[str, object], incoming: Mapping[str, object]) -> bool:
-    """判断新的 DataAgent 服务状态能否替换当前活动快照。"""
-    if current.get("version") != 1 or incoming.get("version") != 1:
-        return True
-    current_turn = current.get("turn_id")
-    incoming_turn = incoming.get("turn_id")
-    incoming_stage = incoming.get("stage")
-    current_stage = current.get("stage")
-    current_snapshot = current.get("snapshot_id")
-    incoming_snapshot = incoming.get("snapshot_id")
-    if isinstance(current_turn, str) and isinstance(incoming_turn, str) and current_turn != incoming_turn:
-        # 新用户问题不再依赖单独的 turn-reset middleware 先写 idle；
-        # 标签发布可以直接开启新快照；如果模型显式复用当前历史快照重新发布标签，
-        # 也允许 labels_published 进入新 turn。旧轮 SQL/审批结果仍不能覆盖当前轮。
-        if _is_resumed_data_query_label_publish(current, incoming):
-            return True
-        return incoming_stage in {"idle", "retrieving", "needs_refinement", "labels_published"}
+# def _can_replace_data_query_state(current: Mapping[str, object], incoming: Mapping[str, object]) -> bool:
+#     """判断新的 DataAgent 服务状态能否替换当前活动快照。"""
+#     if current.get("version") != 1 or incoming.get("version") != 1:
+#         return True
+#     current_turn = current.get("turn_id")
+#     incoming_turn = incoming.get("turn_id")
+#     incoming_stage = incoming.get("stage")
+#     current_stage = current.get("stage")
+#     current_snapshot = current.get("snapshot_id")
+#     incoming_snapshot = incoming.get("snapshot_id")
+#     if isinstance(current_turn, str) and isinstance(incoming_turn, str) and current_turn != incoming_turn:
+#         # 新用户问题不再依赖单独的 turn-reset middleware 先写 idle；
+#         # 标签发布可以直接开启新快照；如果模型显式复用当前历史快照重新发布标签，
+#         # 也允许 labels_published 进入新 turn。旧轮 SQL/审批结果仍不能覆盖当前轮。
+#         if _is_resumed_data_query_label_publish(current, incoming):
+#             return True
+#         return incoming_stage in {"idle", "retrieving", "needs_refinement", "labels_published"}
 
-    if current_snapshot == incoming_snapshot:
-        if current_stage in _DATA_QUERY_TERMINAL_STAGES:
-            return incoming_stage == current_stage
-        current_rank = _DATA_QUERY_STAGE_RANK.get(str(current_stage))
-        incoming_rank = _DATA_QUERY_STAGE_RANK.get(str(incoming_stage))
-        if current_rank is None or incoming_rank is None:
-            return incoming_stage == current_stage
-        return incoming_rank >= current_rank
+#     if current_snapshot == incoming_snapshot:
+#         if current_stage in _DATA_QUERY_TERMINAL_STAGES:
+#             return incoming_stage == current_stage
+#         current_rank = _DATA_QUERY_STAGE_RANK.get(str(current_stage))
+#         incoming_rank = _DATA_QUERY_STAGE_RANK.get(str(incoming_stage))
+#         if current_rank is None or incoming_rank is None:
+#             return incoming_stage == current_stage
+#         return incoming_rank >= current_rank
 
-    if incoming_stage in {"retrieving", "needs_refinement"}:
-        return current_stage in {"idle", "retrieving", "needs_refinement", "labels_published", "awaiting_confirmation"}
-    if incoming_stage in {"labels_published", "awaiting_confirmation", "approved", "cancelled"}:
-        return current_stage in {"retrieving", "labels_published"}
-    return current_snapshot is None
+#     if incoming_stage in {"retrieving", "needs_refinement"}:
+#         return current_stage in {"idle", "retrieving", "needs_refinement", "labels_published", "awaiting_confirmation"}
+#     if incoming_stage in {"labels_published", "awaiting_confirmation", "approved", "cancelled"}:
+#         return current_stage in {"retrieving", "labels_published"}
+#     return current_snapshot is None
 
+# ADD: 通用业务状态
+# class ServiceState(TypedDict, total=False):
+#     service_name: str
+#     version: str
 
 # ADD: service_agent 活动状态 (按 service_name 区分)
-def merge_service_states(existing: list[ServiceState] | None, new: list[ServiceState] | None) -> list[ServiceState]:
-    """合并服务状态快照并保持每个服务只有一个活动状态。
+# def merge_service_states(existing: list[ServiceState] | None, new: list[ServiceState] | None) -> list[ServiceState]:
+#     """合并服务状态快照并保持每个服务只有一个活动状态。
 
-    Args:
-        existing: checkpoint 中的现有服务状态。
-        new: 当前 LangGraph step 产生的服务状态更新。
+#     Args:
+#         existing: checkpoint 中的现有服务状态。
+#         new: 当前 LangGraph step 产生的服务状态更新。
 
-    Returns:
-        按最近更新时间排列且有界的活动服务状态列表。
+#     Returns:
+#         按最近更新时间排列且有界的活动服务状态列表。
 
-    Raises:
-        TypeError: 更新项不是映射对象
-        ValueError: 快照缺少 service_name
-    """
-    active: dict[str, ServiceState] = {}
-    order: list[str] = []
+#     Raises:
+#         TypeError: 更新项不是映射对象
+#         ValueError: 快照缺少 service_name
+#     """
+#     active: dict[str, dict] = {}
+#     order: list[str] = []
 
-    def _key(item: Mapping[str, object]) -> str:
-        service_name = item.get("service_name")
-        if isinstance(service_name, str) and service_name.strip():
-            return service_name.strip()
-        # ADD: 兼容历史展示状态，避免升级时静默丢失旧卡片数据。
-        label = item.get("label")
-        if isinstance(label, str) and label.strip():
-            return f"legacy:{label.strip()}"
-        raise ValueError("service state 必须包含非空 service_name。")
+#     def _apply(item: dict) -> None:
+#         if not isinstance(item, Mapping):
+#             raise TypeError("service state 更新项必须是对象。")
+#         service_name = item.get("service_name")
+#         if isinstance(service_name, str) and service_name.strip():
+#             key = service_name.strip()
+#         # ADD: 兼容历史展示状态，避免升级时静默丢失旧卡片数据。
+#         label = item.get("label")
+#         if isinstance(label, str) and label.strip():
+#             key = f"legacy:{label.strip()}"
+#             raise ValueError("service state 必须包含非空 service_name。")
+#         if item.get("clear") is True:
+#             active.pop(key, None)
+#             if key in order:
+#                 order.remove(key)
+#             return
+#         # ADD: DataAgent 未知状态版本在 reducer 入口安全降级，避免历史 checkpoint 无法读取或恢复旧授权。
+#         normalized = normalize_service_state_version(item)
+#         normalized.pop("clear", None)
+#         current = active.get(key)
+#         if key == "data_query" and isinstance(current, Mapping) and not _can_replace_data_query_state(current, normalized):
+#             return
+#         if key in order:
+#             order.remove(key)
+#         order.append(key)
+#         active[key] = normalized
 
-    def _apply(item: ServiceState) -> None:
-        if not isinstance(item, Mapping):
-            raise TypeError("service state 更新项必须是对象。")
-        key = _key(item)
-        if item.get("clear") is True:
-            active.pop(key, None)
-            if key in order:
-                order.remove(key)
-            return
-        # ADD: DataAgent 未知状态版本在 reducer 入口安全降级，避免历史 checkpoint 无法读取或恢复旧授权。
-        normalized = normalize_service_state_version(item)
-        normalized.pop("clear", None)
-        current = active.get(key)
-        if key == "data_query" and isinstance(current, Mapping) and not _can_replace_data_query_state(current, normalized):
-            return
-        if key in order:
-            order.remove(key)
-        order.append(key)
-        active[key] = normalized
+#     for item in existing or []:
+#         _apply(item)
+#     for item in new or []:
+#         _apply(item)
 
-    for item in existing or []:
-        _apply(item)
-    for item in new or []:
-        _apply(item)
-
-    if len(order) > _SERVICE_STATE_MAX_ENTRIES:
-        order = order[-_SERVICE_STATE_MAX_ENTRIES:]
-    return [active[key] for key in order]
+#     if len(order) > _SERVICE_STATE_MAX_ENTRIES:
+#         order = order[-_SERVICE_STATE_MAX_ENTRIES:]
+#     return [active[key] for key in order]
 
 
 class ThreadState(AgentState):
