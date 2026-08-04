@@ -61,8 +61,23 @@ class DataAgentServiceAbility:
         Raises:
             RuntimeError: 名称严格等于 ``sqlrag_retrieve`` 的 MCP 工具不是唯一一个。
         """
-        from deerflow.agents.service_agent.sqlrag_contract import is_legacy_sqlrag_tool_name, is_sqlrag_retrieval_tool_name
         from deerflow.tools.mcp_metadata import is_mcp_tool
+
+        # TODO: 删除
+        SQLRAG_RETRIEVE_TOOL_NAME = "sqlrag_retrieve"
+        # TODO: 删除
+        _LEGACY_SQLRAG_TOOL_NAMES = (
+            "tablerag_retrieve",
+            "tablerag_raw_retrieve",
+            "tablerag_search_evidences",
+            "tablerag_search_tables",
+            "tablerag_search_columns",
+            "tablerag_search_values",
+            "tablerag_expand_join_graph",
+            "tablerag_validate_index",
+            "tablerag_initialize_indexes",
+            "tablerag_sync_field_values",
+        )
 
         filtered: list[BaseTool] = []
         sqlrag_count = 0
@@ -70,11 +85,11 @@ class DataAgentServiceAbility:
             if not is_mcp_tool(tool):
                 filtered.append(tool)
                 continue
-            if is_sqlrag_retrieval_tool_name(tool.name):
+            if isinstance(tool.name, str) and tool.name == SQLRAG_RETRIEVE_TOOL_NAME:
                 sqlrag_count += 1
                 filtered.append(tool)
                 continue
-            if is_legacy_sqlrag_tool_name(tool.name):
+            if tool.name.endswith(f"_{SQLRAG_RETRIEVE_TOOL_NAME}") or any(tool.name == legacy or tool.name.endswith(f"_{legacy}") for legacy in _LEGACY_SQLRAG_TOOL_NAMES):
                 continue
             filtered.append(tool)
         if sqlrag_count == 0:

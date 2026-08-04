@@ -17,10 +17,9 @@ from langgraph.types import Command
 from deerflow.subagents.status_contract import make_subagent_additional_kwargs, read_subagent_result_metadata
 from deerflow.utils.messages import message_content_to_text
 
-from .config import DataQueryServiceAbilityConfig
+from .service_config import DataQueryServiceAbilityConfig
 from .sql_executor import SqlExecutionService, SqlValidationRequest
 from .state import get_active_service_state, make_service_state
-from .tool_call_limits import keep_first_matching_tool_call
 
 
 class SqlStageMiddleware(AgentMiddleware):

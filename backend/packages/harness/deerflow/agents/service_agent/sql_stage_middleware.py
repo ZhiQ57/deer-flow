@@ -18,7 +18,6 @@ from deerflow.subagents.status_contract import make_subagent_additional_kwargs, 
 
 from .config import DataQueryServiceAbilityConfig
 from .state import get_active_service_state, make_service_state
-from .tool_call_limits import keep_first_matching_tool_call
 
 
 class SqlStageMiddleware(AgentMiddleware):
@@ -329,10 +328,3 @@ class SqlStageMiddleware(AgentMiddleware):
         args = request.tool_call.get("args")
         return isinstance(args, Mapping) and args.get("subagent_type") == self._config.sql_subagent_name
 
-    # ADD: 单个模型响应只保留第一次 SQL SubAgent 委派，避免 LangGraph 并行 tool call 对同一快照重复执行。
-    def _limit_parallel_sql_calls(self, state: Mapping[str, Any]) -> dict[str, Any] | None:
-        """删除同一 AIMessage 中第二个及后续目标 SQL SubAgent 调用。"""
-        return keep_first_matching_tool_call(
-            state,
-            lambda tool_call: tool_call.get("name") == "task" and isinstance(tool_call.get("args"), Mapping) and tool_call["args"].get("subagent_type") == self._config.sql_subagent_name,
-        )

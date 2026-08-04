@@ -10,10 +10,11 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from hashlib import sha256
-from typing import Any, override
+from typing import Any, Sequence, override
 
+from deerflow.agents.human_input import read_human_input_response
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
@@ -22,12 +23,10 @@ from langgraph.types import Command
 from deerflow.agents.service_agent.state import (
     build_query_label_snapshot,
     build_query_review_items,
-    decide_query_approval,
     get_active_service_state,
     make_service_state,
 )
-from deerflow.agents.service_agent.tool_call_limits import keep_first_matching_tool_call
-from deerflow.agents.service_agent.turn_context import current_visible_turn_id
+from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -387,22 +386,6 @@ class QueryLabelsMiddleware(AgentMiddleware):
         return Command(update=update)
 
     @override
-    def after_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
-        """同步模型返回后只保留一个标签发布调用。"""
-        return keep_first_matching_tool_call(
-            state,
-            lambda tool_call: tool_call.get("name") == _PUBLISH_QUERY_LABELS_TOOL_NAME,
-        )
-
-    @override
-    async def aafter_model(self, state: Mapping[str, Any], runtime: Runtime) -> dict[str, Any] | None:
-        """异步模型返回后复用标签发布串行化规则。"""
-        return keep_first_matching_tool_call(
-            state,
-            lambda tool_call: tool_call.get("name") == _PUBLISH_QUERY_LABELS_TOOL_NAME,
-        )
-
-    @override
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -439,3 +422,69 @@ class QueryLabelsMiddleware(AgentMiddleware):
         if request.tool_call.get("name") != _PUBLISH_QUERY_LABELS_TOOL_NAME:
             return await handler(request)
         return self._handle_query_labels(request)
+
+def current_visible_turn_id(state: Mapping[str, Any] | None) -> str | None:
+    """读取最新可见 HumanMessage 的稳定 ID。
+
+    Args:
+        state: LangGraph 当前线程状态。
+
+    Returns:
+        最新真实用户消息 ID；如果只有 hidden human-input 回复或没有用户消息则返回 None。
+    """
+    messages = state.get("messages") if isinstance(state, Mapping) else None
+    if not isinstance(messages, Sequence):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, HumanMessage):
+            continue
+        if read_human_input_response(message.additional_kwargs) is not None:
+            continue
+        if isinstance(message.id, str) and message.id:
+            return message.id
+        digest = sha256(str(message.content).encode("utf-8")).hexdigest()[:24]
+        return f"human:{digest}"
+    return None
+
+
+# ADD: 统一计算查询意图是否需要人工审批；当前模型路径不再依赖自报 confidence。
+def decide_query_approval(
+    config: DataQueryServiceAbilityConfig,
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    """根据 confirmation_mode 计算查询意图的审批策略。"""
+    confidence = snapshot.get("confidence")
+    confidence_ok = confidence is None or (
+        isinstance(confidence, (int, float))
+        and not isinstance(confidence, bool)
+        and float(confidence) >= config.min_auto_confidence
+    )
+    ambiguities = snapshot.get("ambiguities")
+    complete = (
+        isinstance(snapshot.get("snapshot_id"), str)
+        and isinstance(snapshot.get("binding_fingerprint"), str)
+        and snapshot.get("binding_fingerprint") != "binding:unavailable"
+        and snapshot.get("constraints_complete") is True
+        and isinstance(snapshot.get("labels"), list)
+        and bool(snapshot.get("labels"))
+        and snapshot.get("ambiguities_declared") is True
+        and confidence_ok
+        and isinstance(ambiguities, list)
+        and not ambiguities
+    )
+    required = config.confirmation_mode == "always" or (
+        config.confirmation_mode == "on_ambiguity" and not complete
+    )
+    if config.confirmation_mode == "always":
+        reason = "confirmation_mode=always，必须调用 ask_intent_approval。"
+    elif config.confirmation_mode == "on_ambiguity" and not complete:
+        reason = "存在未消解歧义或快照未满足自动放行条件，需要人类审批。"
+    else:
+        reason = "当前查询可由模型继续判断是否请求人类审批。"
+    return {
+        "version": 1,
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "required": required,
+        "mode": config.confirmation_mode,
+        "reason": reason,
+    }
