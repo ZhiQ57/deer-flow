@@ -34,12 +34,11 @@ _TOOL_NAME = "ask_intent_approval"
 class QueryIntentApprovalMiddleware(AgentMiddleware):
     """把 DataAgent 查询意图审批封装为模型原生工具调用协议。
 
-    该 middleware 只服务于 DataAgent：
+    暂时该 middleware 只服务于 DataAgent.
 
-    1. 模型调用 ``ask_intent_approval`` 时，服务端基于当前标签快照构造审批卡片并暂停；
+    1. 模型调用 `ask_intent_approval` 时，服务端基于当前标签快照构造审批卡片并暂停；
     2. 人类提交 hidden ``human_input_response`` 后，服务端用同一个 ToolMessage ID
-       替换审批请求，把最终审批结果写回工具消息历史；
-    3. SQL 阶段只读取持久化的审批快照，不再依赖“当前可见 turn”。
+       替换审批请求，把最终审批结果写回工具消息历史.
     """
 
     def __init__(self, config: DataQueryServiceAbilityConfig) -> None:
@@ -82,6 +81,84 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
         if request.tool_call.get("name") != _TOOL_NAME:
             return await handler(request)
         return self._handle_approval_request(request)
+
+    # 主入口
+    def _handle_approval_request(self, request: ToolCallRequest) -> ToolMessage | Command:
+        """处理模型主动调用 ``ask_intent_approval`` 的请求。"""
+        state = request.state if isinstance(request.state, Mapping) else {}
+        active = get_active_service_state(state)
+        if active is None:
+            return self._error(request, "QUERY_INTENT_APPROVAL_SNAPSHOT_MISSING")
+
+        payload = active.get("payload")
+        if not isinstance(payload, Mapping):
+            return self._error(request, "QUERY_INTENT_APPROVAL_PAYLOAD_INVALID")
+
+        stage = active.get("stage")
+        if stage == "awaiting_confirmation":
+            pending_request = payload.get("approval_request")
+            if isinstance(pending_request, Mapping):
+                return self._hidden_status_message(
+                    request,
+                    content="当前 DataAgent 查询意图审批已在等待人类提交，请不要重复创建审批卡片。",
+                )
+            return self._error(request, "QUERY_INTENT_APPROVAL_REQUEST_MISSING")
+
+        if stage in {"approved", "succeeded", "sql_ready"}:
+            approval = payload.get("approval")
+            action = approval.get("action") if isinstance(approval, Mapping) else None
+            return self._hidden_status_message(
+                request,
+                content=f"当前查询意图已审批通过，审批动作为 {action or 'unknown'}，请直接继续后续 SQL 阶段。",
+            )
+
+        if stage == "cancelled":
+            return self._hidden_status_message(
+                request,
+                content="当前查询意图审批已经取消；如果用户重新执行并仍需确认，请先重新发布标签快照，再调用 ask_intent_approval。",
+            )
+
+        if stage != "labels_published":
+            return self._error(request, "QUERY_INTENT_APPROVAL_STAGE_NOT_READY")
+
+        snapshot = payload.get("labels")
+        if not isinstance(snapshot, Mapping):
+            return self._error(request, "QUERY_INTENT_APPROVAL_LABELS_MISSING")
+        tool_call_id = str(request.tool_call.get("id") or "missing-tool-call-id")
+        try:
+            approval_request = build_query_approval_request(snapshot, tool_call_id=tool_call_id)
+            approval = {
+                "version": 1,
+                "snapshot_id": active.get("snapshot_id"),
+                "status": "awaiting_confirmation",
+                "action": None,
+                "source": None,
+                "request_id": approval_request["request_id"],
+                "tool_call_id": tool_call_id,
+            }
+            message = self._request_message(
+                active=active,
+                payload=payload,
+                request_payload=approval_request,
+                approval=approval,
+            )
+        except ValueError:
+            logger.debug("构造 DataAgent 查询意图审批请求失败。", exc_info=True)
+            return self._error(request, "QUERY_INTENT_APPROVAL_REQUEST_INVALID")
+
+        next_payload = {
+            **dict(payload),
+            "approval": approval,
+            "approval_request": approval_request,
+        }
+        service_state = make_service_state(
+            turn_id=str(active.get("turn_id") or ""),
+            stage="awaiting_confirmation",
+            snapshot_id=str(active.get("snapshot_id") or ""),
+            data_source_id=self._config.data_source_id,
+            payload=next_payload,
+        )
+        return Command(update={"messages": [message], "service_states": [service_state]}, goto=END)
 
 
     @staticmethod
@@ -392,83 +469,6 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
             name=_TOOL_NAME,
             status="error",
         )
-
-    def _handle_approval_request(self, request: ToolCallRequest) -> ToolMessage | Command:
-        """处理模型主动调用 ``ask_intent_approval`` 的请求。"""
-        state = request.state if isinstance(request.state, Mapping) else {}
-        active = get_active_service_state(state)
-        if active is None:
-            return self._error(request, "QUERY_INTENT_APPROVAL_SNAPSHOT_MISSING")
-
-        payload = active.get("payload")
-        if not isinstance(payload, Mapping):
-            return self._error(request, "QUERY_INTENT_APPROVAL_PAYLOAD_INVALID")
-
-        stage = active.get("stage")
-        if stage == "awaiting_confirmation":
-            pending_request = payload.get("approval_request")
-            if isinstance(pending_request, Mapping):
-                return self._hidden_status_message(
-                    request,
-                    content="当前 DataAgent 查询意图审批已在等待人类提交，请不要重复创建审批卡片。",
-                )
-            return self._error(request, "QUERY_INTENT_APPROVAL_REQUEST_MISSING")
-
-        if stage in {"approved", "succeeded", "sql_ready"}:
-            approval = payload.get("approval")
-            action = approval.get("action") if isinstance(approval, Mapping) else None
-            return self._hidden_status_message(
-                request,
-                content=f"当前查询意图已审批通过，审批动作为 {action or 'unknown'}，请直接继续后续 SQL 阶段。",
-            )
-
-        if stage == "cancelled":
-            return self._hidden_status_message(
-                request,
-                content="当前查询意图审批已经取消；如果用户重新执行并仍需确认，请先重新发布标签快照，再调用 ask_intent_approval。",
-            )
-
-        if stage != "labels_published":
-            return self._error(request, "QUERY_INTENT_APPROVAL_STAGE_NOT_READY")
-
-        snapshot = payload.get("labels")
-        if not isinstance(snapshot, Mapping):
-            return self._error(request, "QUERY_INTENT_APPROVAL_LABELS_MISSING")
-        tool_call_id = str(request.tool_call.get("id") or "missing-tool-call-id")
-        try:
-            approval_request = build_query_approval_request(snapshot, tool_call_id=tool_call_id)
-            approval = {
-                "version": 1,
-                "snapshot_id": active.get("snapshot_id"),
-                "status": "awaiting_confirmation",
-                "action": None,
-                "source": None,
-                "request_id": approval_request["request_id"],
-                "tool_call_id": tool_call_id,
-            }
-            message = self._request_message(
-                active=active,
-                payload=payload,
-                request_payload=approval_request,
-                approval=approval,
-            )
-        except ValueError:
-            logger.debug("构造 DataAgent 查询意图审批请求失败。", exc_info=True)
-            return self._error(request, "QUERY_INTENT_APPROVAL_REQUEST_INVALID")
-
-        next_payload = {
-            **dict(payload),
-            "approval": approval,
-            "approval_request": approval_request,
-        }
-        service_state = make_service_state(
-            turn_id=str(active.get("turn_id") or ""),
-            stage="awaiting_confirmation",
-            snapshot_id=str(active.get("snapshot_id") or ""),
-            data_source_id=self._config.data_source_id,
-            payload=next_payload,
-        )
-        return Command(update={"messages": [message], "service_states": [service_state]}, goto=END)
 
     def _project_response(self, state: Mapping[str, Any]) -> dict[str, Any] | None:
         """把 hidden human-input 回复投影为最终工具结果和服务状态。"""

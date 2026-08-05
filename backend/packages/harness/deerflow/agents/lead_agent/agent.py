@@ -580,8 +580,11 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
     agent_config = (load_agent_config(agent_name, user_id=resolved_user_id) if resolved_user_id is not None else load_agent_config(agent_name)) if not is_bootstrap else None
+
     # ADD: 由 service_ability 合同决定 DataAgent 是否启用业务工具和 middleware。
+    # TODO: 这里解析的是外层的 service-ability, 需要独立方法注入
     service_ability = resolve_service_ability_safely(agent_config if agent_config else None)
+
     # ADD: 只有 custom-agent 显式 allowlist SQL SubAgent 时才开启现有 task 工具。
     sql_subagent_allowed = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents and service_ability.config.sql_subagent_name in agent_config.allowable_subagents)
     if sql_subagent_allowed:

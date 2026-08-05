@@ -49,6 +49,8 @@ class SqlStageMiddleware(AgentMiddleware):
         # 判断是否为 SQL SubAgent 请求, 不是则忽略处理
         if not self._is_target(request):
             return await handler(request)
+
+        
         authorized = self._envelope(request)
         if authorized is None:
             return self._error(request, "SQL_STAGE_NOT_APPROVED")
@@ -115,7 +117,7 @@ class SqlStageMiddleware(AgentMiddleware):
                 "reason": policy.get("reason"),
             }
         return None
-
+    
     # 入口
     def _envelope(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any], Mapping[str, Any], Mapping[str, Any]] | None:
         """从当前状态构造严格 JSON SQL SubAgent 请求与审批授权。"""
