@@ -214,7 +214,8 @@ class AgentConfig(BaseModel):
     # Per-agent reasoning-effort default for models that support it. None = do
     # not override (a request-supplied reasoning_effort still wins over this).
     reasoning_effort: Literal["low", "medium", "high"] | None = None
-    # ADD: 保留可扩展的定制业务能力配置，DataAgent 运行时再按合同严格解析。
+    
+    # ADD: 可扩展的定制业务能力配置
     service_ability: dict[str, Any] | None = None
     # Optional binding to GitHub repositories so this agent can respond to
     # webhook events from the gateway dispatcher. None means "no GitHub

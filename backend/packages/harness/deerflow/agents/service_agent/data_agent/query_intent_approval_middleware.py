@@ -21,7 +21,7 @@ from langgraph.types import Command
 from deerflow.agents.human_input import read_human_input_response
 
 from .service_ability_config import DataQueryServiceAbilityConfig
-from .service_thread_state import (
+from .service_state import (
     build_query_approval_request,
     build_query_review_items,
     get_active_service_state,

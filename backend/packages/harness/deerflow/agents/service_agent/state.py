@@ -6,11 +6,130 @@ import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, Callable, TypeAlias, TypedDict
+
+from deerflow.agents.service_agent.contracts import ServiceState
 
 from .config import DataQueryServiceAbilityConfig
 
 _LABEL_SOURCES = frozenset({"user", "database", "derived"})
+
+
+
+def merge_service_states(
+    existing: list[ServiceState] | None,
+    updates: list[ServiceState] | None,
+) -> list[ServiceState]:
+    """根据 SERVICE_ABILITY_REGISTRY 合并业务状态。"""
+
+    # 延迟导入，避免 registry -> data_agent.service_state
+    # -> contracts 的导入链影响 ThreadState 初始化。
+    from .registry import SERVICE_ABILITY_REGISTRY
+
+    active: dict[str, ServiceState] = {}
+
+    for state in [
+        *(existing or []),
+        *(updates or []),
+    ]:
+        if not isinstance(state, Mapping):
+            raise TypeError("service state 必须是对象。")
+
+        service_name = state.get("service_name")
+
+        if not isinstance(service_name, str):
+            raise ValueError("service state 缺少 service_name。")
+
+        service_name = service_name.strip()
+
+        if not service_name:
+            raise ValueError("service_name 不能为空。")
+
+        if state.get("clear") is True:
+            active.pop(service_name, None)
+            continue
+
+        incoming: ServiceState = {
+            **state,
+            "service_name": service_name,
+        }
+
+        incoming.pop("clear", None)
+
+        version = incoming.get("version")
+
+        spec = None
+
+        if isinstance(version, int) and not isinstance(version, bool):
+            spec = SERVICE_ABILITY_REGISTRY.get(service_name)
+
+        merger = spec.state_merger if spec is not None else None
+
+        current = active.get(service_name)
+
+        merged = (
+            merger(current, incoming)
+            if merger is not None
+            else incoming
+        )
+
+        if merged is None:
+            continue
+
+        active.pop(service_name, None)
+        active[service_name] = merged
+
+    return list(active.values())
+
+
+
+# def merge_service_states(
+#     existing: list[ServiceState] | None,
+#     updates: list[ServiceState] | None,
+# ) -> list[ServiceState]:
+#     """
+#     合并 service_states。
+#     """
+#     # 延迟导入，避免 registry -> data_agent.service_state
+#     # -> contracts 的导入链影响 ThreadState 初始化。
+#     from .registry import SERVICE_ABILITY_REGISTRY
+
+#     active: dict[str, ServiceState] = {}
+
+#     for state in [*(existing or []), *(updates or [])]:
+#         service_name = state["service_name"].strip()
+
+#         if not service_name:
+#             raise ValueError("service_name 不能为空")
+
+#         if state.get("clear"):
+#             active.pop(service_name, None)
+#             continue
+
+#         incoming = {
+#             **state,
+#             "service_name": service_name,
+#         }
+#         incoming.pop("clear", None)
+
+#         merge = SERVICE_ABILITY_REGISTRY.get(service_name)
+#         merged = (
+#             merge(active.get(service_name), incoming)
+#             if merge
+#             else incoming
+#         )
+
+#         if merged is None:
+#             continue
+
+#         # 重新插入，使最近更新的业务位于末尾。
+#         active.pop(service_name, None)
+#         active[service_name] = merged
+
+#     return list(active.values())
+
+
+
 
 
 def _canonical_json(value: object) -> str:
@@ -38,6 +157,7 @@ def get_active_service_state(state: Mapping[str, Any] | None, *, service_name: s
     if not isinstance(state, Mapping):
         return None
     service_states = state.get("service_states")
+
     if isinstance(service_states, Sequence) and not isinstance(service_states, (str, bytes, bytearray)):
         for item in reversed(service_states):
             if isinstance(item, Mapping) and item.get("service_name") == service_name and item.get("clear") is not True:
@@ -45,7 +165,7 @@ def get_active_service_state(state: Mapping[str, Any] | None, *, service_name: s
     return None
 
 
-# ADD: 生成最小、可持久化的 DataAgent 服务状态更新。
+# ADD: 创建业务活动状态字段
 def make_service_state(
     *,
     turn_id: str,
@@ -55,7 +175,7 @@ def make_service_state(
     data_source_id: str | None = None,
     updated_at: str | None = None,
 ) -> dict[str, Any]:
-    """构造 service_states reducer 可接受的 v1 快照。"""
+    """构造 service_states 活动状态"""
     body: dict[str, Any] = {
         "service_name": "data_query",
         "version": 1,

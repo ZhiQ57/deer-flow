@@ -1,40 +1,23 @@
-"""DataAgent service ability 注册表。"""
+"""DataAgent能力实现类"""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import BaseTool
 
-from .service_config import DataQueryServiceAbilityConfig
 
 logger = logging.getLogger(__name__)
-
-
-class ServiceAbilityAdapter(Protocol):
-    """业务能力适配器协议。"""
-
-    name: str
-
-    def filter_tools(self, tools: list[BaseTool]) -> list[BaseTool]: ...
-
-    def build_tools(self) -> list[BaseTool]: ...
-
-    def build_middlewares(self) -> list[AgentMiddleware]: ...
-
-    def public_metadata(self) -> dict[str, Any]: ...
 
 
 class DataAgentServiceAbility:
     """DataAgent 查询闭环的正式 service ability 实现。"""
 
-    # ADD: 提供 DataAgent 专属工具和 middleware，避免污染默认 lead-agent。
-    name = "data_query"
+    name = "data-agent"
 
-    def __init__(self, config: DataQueryServiceAbilityConfig) -> None:
+    def __init__(self, config: dict) -> None:
         """初始化 DataAgent 能力适配器。
 
         Args:
@@ -65,27 +48,7 @@ class DataAgentServiceAbility:
 
         # TODO: 删除
         SQLRAG_RETRIEVE_TOOL_NAME = "sqlrag_retrieve"
-        SQLRAG_OPERATIONS = frozenset(
-            {
-                "hybrid-search",
-                "search-evidences",
-                "search-tables",
-                "search-columns",
-                "search-values",
-                "expand-join-graph",
-            }
-        )
-        """sqlrag_retrieve 支持的六种只读检索操作。"""
-
-        SQLRAG_SINGLE_ROUTE_COLLECTIONS = {
-            "search-evidences": "evidences",
-            "search-tables": "tables",
-            "search-columns": "columns",
-            "search-values": "values",
-            "expand-join-graph": "join_graphs",
-        }
-        """单路操作与 DataAgent 检索集合的映射。"""
-
+        # TODO: 删除
         _LEGACY_SQLRAG_TOOL_NAMES = (
             "tablerag_retrieve",
             "tablerag_raw_retrieve",
@@ -135,37 +98,3 @@ class DataAgentServiceAbility:
     def public_metadata(self) -> dict[str, Any]:
         """返回能力的脱敏前端/运行 metadata。"""
         return self.config.public_metadata()
-
-def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
-    """安全解析 custom-agent 的 service ability。
-
-    Args:
-        raw: ``AgentConfig.service_ability`` 原始配置。
-
-    Returns:
-        已解析的能力适配器；配置错误时记录脱敏信息并返回 None。
-    """
-    try:
-        config = DataQueryServiceAbilityConfig.model_validate(dict(raw))
-
-        if config is None:
-            return None
-        
-        if config.type == "data_query" and config.version == 1:
-            return DataAgentServiceAbility(config)
-        
-        raise ValueError(f"不支持的 service_ability 合同：{config.type}/v{config.version}")
-    
-    except (TypeError, ValueError) as exc:
-        issues: list[str] = []
-        errors = getattr(exc, "errors", None)
-
-        if callable(errors):
-            for error in errors(include_url=False, include_input=False):
-                location = ".".join(str(part) for part in error.get("loc", ())) or "service_ability"
-                issues.append(f"{location}: 值不符合 {error.get('type', '配置')} 约束")
-
-        if not issues:
-            issues.append("service_ability: 配置类型或版本不受支持")
-        logger.error("DataAgent service_ability 配置无效（%s）".join(issues))
-        return None

@@ -2,150 +2,116 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
-from typing import Any, Protocol
+from dataclasses import dataclass
+import logging
 
-from langchain.agents.middleware import AgentMiddleware
-from langchain_core.tools import BaseTool
-
-from .config import DataQueryServiceAbilityConfig, parse_service_ability
+from deerflow.agents.service_agent.contracts import ServiceAbilityAdapter, ServiceState
+from deerflow.agents.service_agent.data_agent.service_ability import DataAgentServiceAbility
+from deerflow.agents.service_agent.data_agent.service_config import DataAgentServiceAbilityConfig
+from deerflow.agents.service_agent.data_agent.service_state import merge_data_query_state
+from deerflow.agents.service_agent.contracts import StateMerger
+from deerflow.config.agents_config import AgentConfig
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 
-class ServiceAbilityAdapter(Protocol):
-    """业务能力适配器协议。"""
+# 业务注册表抽象类
+@dataclass(frozen=True)
+class ServiceAbilitySpec:
+    config_cls: type[BaseModel]
+    adapter_cls: type[ServiceAbilityAdapter]
+    state_merger: StateMerger | None = None  # 可选的业务状态合并函数
 
-    name: str
+# 业务注册表字典
+SERVICE_ABILITY_REGISTRY: dict[str, ServiceAbilitySpec] = {
+    "data-agent": ServiceAbilitySpec(
+        config_cls=DataAgentServiceAbilityConfig,   # 配置类
+        adapter_cls=DataAgentServiceAbility,        # 适配器
+        state_merger=merge_data_query_state,        # 业务状态合并函数
+    ),
+}
 
-    def filter_tools(self, tools: list[BaseTool]) -> list[BaseTool]: ...
-
-    def build_tools(self) -> list[BaseTool]: ...
-
-    def build_middlewares(self) -> list[AgentMiddleware]: ...
-
-    def public_metadata(self) -> dict[str, Any]: ...
-
-
-class DataAgentServiceAbility:
-    """DataAgent 查询闭环的正式 service ability 实现。"""
-
-    # ADD: 提供 DataAgent 专属工具和 middleware，避免污染默认 lead-agent。
-    name = "data_query"
-
-    def __init__(self, config: DataQueryServiceAbilityConfig) -> None:
-        """初始化 DataAgent 能力适配器。
-
-        Args:
-            config: 已经通过 Pydantic 合同校验的能力配置。
-        """
-        self.config = config
-
-    def build_tools(self) -> list[BaseTool]:
-        """返回 DataAgent 当前阶段允许的业务工具。"""
-        from deerflow.tools.builtins.ask_intent_approval_tool import ask_intent_approval_tool
-        from deerflow.tools.builtins.query_labels_tool import publish_query_labels_tool
-
-        return [publish_query_labels_tool, ask_intent_approval_tool]
-
-    def filter_tools(self, tools: list[BaseTool]) -> list[BaseTool]:
-        """收敛 DataAgent 的 SQLRAG MCP 工具面。
-
-        Args:
-            tools: DeerFlow 已加载的基础、MCP 和社区工具。
-
-        Returns:
-            移除旧 TableRAG 多工具合同后的工具列表。
-
-        Raises:
-            RuntimeError: 名称严格等于 ``sqlrag_retrieve`` 的 MCP 工具不是唯一一个。
-        """
-        from deerflow.tools.mcp_metadata import is_mcp_tool
-
-        # TODO: 删除
-        SQLRAG_RETRIEVE_TOOL_NAME = "sqlrag_retrieve"
-        # TODO: 删除
-        _LEGACY_SQLRAG_TOOL_NAMES = (
-            "tablerag_retrieve",
-            "tablerag_raw_retrieve",
-            "tablerag_search_evidences",
-            "tablerag_search_tables",
-            "tablerag_search_columns",
-            "tablerag_search_values",
-            "tablerag_expand_join_graph",
-            "tablerag_validate_index",
-            "tablerag_initialize_indexes",
-            "tablerag_sync_field_values",
-        )
-
-        filtered: list[BaseTool] = []
-        sqlrag_count = 0
-        for tool in tools:
-            if not is_mcp_tool(tool):
-                filtered.append(tool)
-                continue
-            if isinstance(tool.name, str) and tool.name == SQLRAG_RETRIEVE_TOOL_NAME:
-                sqlrag_count += 1
-                filtered.append(tool)
-                continue
-            if tool.name.endswith(f"_{SQLRAG_RETRIEVE_TOOL_NAME}") or any(tool.name == legacy or tool.name.endswith(f"_{legacy}") for legacy in _LEGACY_SQLRAG_TOOL_NAMES):
-                continue
-            filtered.append(tool)
-        if sqlrag_count == 0:
-            raise RuntimeError("DataAgent requires the exact MCP tool name 'sqlrag_retrieve'. Set mcpServers.tablerag.tool_name_prefix=false and refresh the MCP tool cache.")
-        if sqlrag_count > 1:
-            raise RuntimeError("DataAgent requires exactly one MCP tool named 'sqlrag_retrieve'. Disable duplicate unprefixed MCP servers before building the agent.")
-        return filtered
-
-    def build_middlewares(self) -> list[AgentMiddleware]:
-        """返回 DataAgent 当前阶段的业务 middleware。"""
-        from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
-
-        from .query_intent_approval_middleware import QueryIntentApprovalMiddleware
-        from .sql_stage_middleware import SqlStageMiddleware
-
-        # ADD: 业务 middleware 只挂在 DataAgent 适配器，默认 lead-agent 不受影响。
-        return [
-            QueryLabelsMiddleware(service_ability=self.config),
-            QueryIntentApprovalMiddleware(self.config),
-            SqlStageMiddleware(self.config),
-        ]
-
-    def public_metadata(self) -> dict[str, Any]:
-        """返回能力的脱敏前端/运行 metadata。"""
-        return self.config.public_metadata()
-
-def resolve_service_ability_safely(raw: Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
-    """安全解析 custom-agent 的 service ability。
+def resolve_service_ability_safely(app_config: AgentConfig | None) -> ServiceAbilityAdapter | None:
+    """安全解析 custom-agent 的 service ability
 
     Args:
-        raw: ``AgentConfig.service_ability`` 原始配置。
+        app_config: `AgentConfig` 实例，包含 service_ability 配置。
 
     Returns:
-        已解析的能力适配器；配置错误时记录脱敏信息并返回 None。
+        已解析 service_ability 能力
     """
-    try:
-        config = parse_service_ability(raw)
 
-        if config is None:
-            return None
-        
-        if config.type == "data_query" and config.version == 1:
-            return DataAgentServiceAbility(config)
-        
-        raise ValueError(f"不支持的 service_ability 合同：{config.type}/v{config.version}")
-    
-    except (TypeError, ValueError) as exc:
-        issues: list[str] = []
-        errors = getattr(exc, "errors", None)
-
-        if callable(errors):
-            for error in errors(include_url=False, include_input=False):
-                location = ".".join(str(part) for part in error.get("loc", ())) or "service_ability"
-                issues.append(f"{location}: 值不符合 {error.get('type', '配置')} 约束")
-
-        if not issues:
-            issues.append("service_ability: 配置类型或版本不受支持")
-        logger.error("DataAgent service_ability 配置无效（%s）".join(issues))
+    if app_config is None:
         return None
+
+    # 读取智能体名称
+    if isinstance(app_config, Mapping):
+        name = app_config.get("service_name")   # 字典
+    else:
+        name = getattr(app_config, "service_name", None)  # 对象
+
+    try:
+        # 根据注册表获取智能体的能力配置
+        service_ability = SERVICE_ABILITY_REGISTRY.get(name)
+        if service_ability is None or app_config is None:
+            return None
+
+        # 解析能力配置
+        # 例如: config = DataQueryServiceAbilityConfig.model_validate(app_config.service_ability)
+        config = service_ability.config_cls.model_validate(app_config)
+
+        # 实例化适配器
+        return service_ability.adapter_cls(config)
+
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} 的 service_ability 解析失败: {exc}") from exc
+
+
+def merge_service_states(
+    existing: list[ServiceState] | None,
+    updates: list[ServiceState] | None,
+) -> list[ServiceState]:
+    """
+    合并 service_states。
+    """
+
+    active: dict[str, ServiceState] = {}
+
+    for state in [*(existing or []), *(updates or [])]:
+        service_name = state["service_name"].strip()
+
+        if not service_name:
+            raise ValueError("service_name 不能为空")
+
+        if state.get("clear"):
+            active.pop(service_name, None)
+            continue
+
+        incoming = {
+            **state,
+            "service_name": service_name,
+        }
+        incoming.pop("clear", None)
+
+        spec = SERVICE_ABILITY_REGISTRY.get(service_name)
+
+        merger = spec.state_merger if spec is not None else None
+
+        merged = (
+            merger(active.get(service_name), incoming)
+            if merger is not None
+            else incoming
+        )
+
+        if merged is None:
+            continue
+
+        # 重新插入，使最近更新的业务位于末尾。
+        active.pop(service_name, None)
+        active[service_name] = merged
+
+    return list(active.values())
+
+

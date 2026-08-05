@@ -21,6 +21,16 @@ _SECRET_REF_PATTERN = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*|secret://[^\s]+)$"
 logger = logging.getLogger(__name__)
 
 
+class BaseServiceAbilityConfig(BaseModel):
+    """业务能力字段抽象配置类"""
+    # 业务名称
+    service_name: str
+    # 审批模式: auto=自动审批, on_ambiguity=仅在意图不明确时审批, always=总是审批.
+    confirmation_mode: Literal["auto", "on_ambiguity", "always"] = "on_ambiguity"
+    # 版本号
+    version: str
+
+
 class SqlExecutionConfig(BaseModel):
     """SQL 只读执行配置。"""
 
@@ -148,31 +158,3 @@ class DataQueryServiceAbilityConfig(BaseModel):
             "database_type": self.sql_execution.database_type,
             "sql_execution_enabled": self.sql_execution.enabled,
         }
-
-
-def parse_service_ability(raw: Mapping[str, Any] | None) -> DataQueryServiceAbilityConfig | None:
-    """解析 DataAgent service ability 配置。
-
-    Args:
-        raw: AgentConfig 中的 service_ability 原始字典。
-
-    Returns:
-        解析后的 DataQueryServiceAbilityConfig；未配置时返回 None。
-
-    Raises:
-        TypeError: 配置不是映射对象。
-        pydantic.ValidationError: 配置合同不合法。
-    """
-    if raw is None:
-        return None
-    if not isinstance(raw, Mapping):
-        raise TypeError("service_ability 必须是对象。")
-
-    # ADD: 解析 DataAgent service ability 参数
-    parsed = DataQueryServiceAbilityConfig.model_validate(dict(raw))
-    extra_fields = sorted((parsed.model_extra or {}).keys())
-    sql_extra_fields = sorted((parsed.sql_execution.model_extra or {}).keys())
-    if extra_fields or sql_extra_fields:
-        # ADD: 出现未知扩展字段, 打印提示
-        logger.debug("DataAgent service_ability 包含未识别扩展字段：top=%s sql_execution=%s", extra_fields, sql_extra_fields)
-    return parsed

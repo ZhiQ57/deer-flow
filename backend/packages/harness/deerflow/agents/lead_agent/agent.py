@@ -372,12 +372,13 @@ def build_middlewares(
     if todo_list_middleware is not None:
         middlewares.append(todo_list_middleware)
 
-    # ADD: 按 service_ability 动态加载定制化 middleware，普通 Agent 不进入业务分支。
+    # ADD: 按 service_ability 动态加载定制化 middleware.
     agent_name = validate_agent_name(cfg.get("agent_name"))  # cfg.get("agent_name")可读取配置的智能体名称
     is_bootstrap = cfg.get("is_bootstrap", False)
     if service_ability is None and not is_bootstrap and agent_name:
         agent_config = load_agent_config(agent_name, user_id=user_id) if user_id is not None else load_agent_config(agent_name)
-        service_ability = resolve_service_ability_safely(agent_config.service_ability if agent_config else None)
+        # 解析 service_ability 配置参数
+        service_ability = resolve_service_ability_safely(agent_config if agent_config else None)
 
     # Add TokenUsageMiddleware when token_usage tracking is enabled
     if resolved_app_config.token_usage.enabled:
@@ -451,7 +452,7 @@ def build_middlewares(
     if configured_middlewares:
         middlewares.extend(configured_middlewares)
 
-    # ADD: 将 DataAgent service ability 放入现有业务扩展槽，保持默认 middleware 链和末端 Clarification 不变。
+    # ADD: 将 service ability 放入现有业务扩展槽，保持默认 middleware 链和末端 Clarification 不变。
     if service_ability is not None:
         middlewares.extend(service_ability.build_middlewares())
 
@@ -580,7 +581,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
     agent_config = (load_agent_config(agent_name, user_id=resolved_user_id) if resolved_user_id is not None else load_agent_config(agent_name)) if not is_bootstrap else None
     # ADD: 由 service_ability 合同决定 DataAgent 是否启用业务工具和 middleware。
-    service_ability = resolve_service_ability_safely(agent_config.service_ability if agent_config else None)
+    service_ability = resolve_service_ability_safely(agent_config if agent_config else None)
     # ADD: 只有 custom-agent 显式 allowlist SQL SubAgent 时才开启现有 task 工具。
     sql_subagent_allowed = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents and service_ability.config.sql_subagent_name in agent_config.allowable_subagents)
     if sql_subagent_allowed:

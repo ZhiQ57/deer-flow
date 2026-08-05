@@ -7,7 +7,10 @@ import re
 from collections.abc import Mapping
 from typing import Any, Literal
 
+from deerflow.agents.service_agent.config import BaseServiceAbilityConfig
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 _DATABASE_TYPE_ALIASES = {
     "mysql": "mysql",
@@ -18,7 +21,6 @@ _DATABASE_TYPE_ALIASES = {
     "postgresqls": "postgresql",
 }
 _SECRET_REF_PATTERN = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*|secret://[^\s]+)$")
-logger = logging.getLogger(__name__)
 
 
 class SqlExecutionConfig(BaseModel):
@@ -88,8 +90,7 @@ class SqlExecutionConfig(BaseModel):
             raise ValueError("sql_execution.readonly 必须为 true。")
         return self
 
-
-class DataQueryServiceAbilityConfig(BaseModel):
+class DataAgentServiceAbilityConfig(BaseModel):
     """DataAgent service ability 配置参数"""
 
     # ADD: 为 DataAgent 固定能力类型和版本，阻止适配器猜测配置含义。
@@ -109,25 +110,11 @@ class DataQueryServiceAbilityConfig(BaseModel):
 
     min_auto_confidence: float = Field(default=0.85, ge=0.0, le=1.0)  # TODO 删除
     sql_subagent_name: str = Field(default="sql-subagent", min_length=1, max_length=100)
+
     sql_execution: SqlExecutionConfig
 
-    # ADD: 自动确认阈值必须是数值，不能把 true/false 解释成 1/0。
-    @field_validator("min_auto_confidence", mode="before")
-    @classmethod
-    def _reject_boolean_confidence(cls, value: object) -> object:
-        """拒绝布尔类型的自动确认阈值。"""
-        if isinstance(value, bool):
-            raise ValueError("min_auto_confidence 不能使用布尔值。")
-        return value
-
-    @field_validator("table_rag_config", "data_source_id", "sql_subagent_name")
-    @classmethod
-    def _strip_required_strings(cls, value: str) -> str:
-        """去除配置字符串首尾空白。"""
-        return value.strip()
-
     @model_validator(mode="after")
-    def _validate_sql_requirement(self) -> DataQueryServiceAbilityConfig:
+    def _validate_sql_requirement(self) -> DataAgentServiceAbilityConfig:
         """启用 SQL-RAG 时确保 允许开启 SQL 执行"""
         if self.enable_sql_rag and not self.sql_execution.enabled:
             raise ValueError("enable_sql_rag=true 时 sql_execution.enabled 必须为 true。")

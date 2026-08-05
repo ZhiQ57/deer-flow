@@ -9,30 +9,12 @@ from hashlib import sha256
 from typing import Any, TypedDict
 
 from deerflow.agents.service_agent.data_agent.const import _NEW_SNAPSHOT_SOURCES, _NEW_TURN_STAGES, _RESUMABLE_STAGES, _STAGE_RANK, _TERMINAL_STAGES, DATA_QUERY_VERSION
-from deerflow.agents.service_agent.utils import _sha256_id
-from deerflow.agents.service_agent.thread_state_registry import ServiceState
-
-
-from .service_config import DataQueryServiceAbilityConfig
-
+from deerflow.agents.service_agent.contracts import ServiceState
 
 
 class DataAgentServiceState(ServiceState, total=False):
     """DataAgent 业务能力字段"""
 
-    confirmation_mode: str
-    enable_subagent_sql_execution: str
-    allowed_type: str
-    execute_database: str
-    dsn_env: str
-
-    # 拓展字段
-    extends: DataAgentExtends
-
-
-class DataAgentExtends(TypedDict, total=False):
-    """DataAgent 扩展状态字段。"""
-    
     labels: dict[str, Any]
     approval: dict[str, Any]
     approval_policy: dict[str, Any]
@@ -43,6 +25,16 @@ class DataAgentExtends(TypedDict, total=False):
     review_items: list[dict[str, Any]]
     revision_query: str
     previous_snapshot_id: str
+
+
+# ADD: 创建业务活动状态字段
+def make_service_state(
+    
+):
+    
+    pass
+
+
 
 def merge_data_query_state(
     current: dict[str, Any] | None,
