@@ -45,7 +45,7 @@ from deerflow.agents.middlewares.todo_middleware import TodoMiddleware
 from deerflow.agents.middlewares.token_usage_middleware import TokenUsageMiddleware
 from deerflow.agents.middlewares.tool_error_handling_middleware import build_lead_runtime_middlewares
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
-from deerflow.agents.service_agent.registry import ServiceAbilityAdapter, resolve_service_ability_safely
+from deerflow.agents.service_agent.registry import ServiceAbilityAdapter, resolve_nested_service_ability_safely, resolve_service_ability_safely
 from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
 from deerflow.authz.tool_filter import apply_tool_authorization
 from deerflow.config.agents_config import load_agent_config, validate_agent_name
@@ -583,7 +583,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     # ADD: 由 service_ability 合同决定 DataAgent 是否启用业务工具和 middleware。
     # TODO: 这里解析的是外层的 service-ability, 需要独立方法注入
-    service_ability = resolve_service_ability_safely(agent_config if agent_config else None)
+    service_ability = resolve_nested_service_ability_safely(agent_config if agent_config else None)
 
     # ADD: 只有 custom-agent 显式 allowlist SQL SubAgent 时才开启现有 task 工具。
     sql_subagent_allowed = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents and service_ability.config.sql_subagent_name in agent_config.allowable_subagents)

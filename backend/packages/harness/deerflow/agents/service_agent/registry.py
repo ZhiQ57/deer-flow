@@ -33,6 +33,38 @@ SERVICE_ABILITY_REGISTRY: dict[str, ServiceAbilitySpec] = {
     ),
 }
 
+
+def resolve_nested_service_ability_safely(agent_config: AgentConfig | None) -> ServiceAbilityAdapter | None:
+    """只从 AgentConfig.service_ability 嵌套块解析 service ability。
+
+    这个方法专门给 custom agent 的 config.yaml 使用，不再把整份 AgentConfig
+    直接喂给业务配置模型，避免 name/model/tool_groups/skills 等外层字段混进来。
+    """
+    if agent_config is None:
+        return None
+
+    raw_service_ability = getattr(agent_config, "service_ability", None)
+    if raw_service_ability is None:
+        return None
+
+    if isinstance(raw_service_ability, BaseModel):
+        raw_service_ability = raw_service_ability.model_dump(exclude_none=True)
+    elif not isinstance(raw_service_ability, Mapping):
+        raise ValueError("AgentConfig.service_ability 必须是字典或 Pydantic 模型")
+
+    service_name = str(raw_service_ability.get("service_name") or "").strip()
+    if not service_name:
+        raise ValueError("AgentConfig.service_ability 缺少 service_name")
+
+    spec = SERVICE_ABILITY_REGISTRY.get(service_name)
+    if spec is None:
+        raise ValueError(f"不支持的 service_ability: {service_name}")
+
+    config = spec.config_cls.model_validate(raw_service_ability)
+    return spec.adapter_cls(config)
+
+
+
 def resolve_service_ability_safely(app_config: AgentConfig | None) -> ServiceAbilityAdapter | None:
     """安全解析 custom-agent 的 service ability
 
