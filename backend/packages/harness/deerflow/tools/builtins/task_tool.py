@@ -199,42 +199,56 @@ def _merge_skill_allowlists(parent: list[str] | None, child: list[str] | None) -
     parent_set = set(parent)
     return [skill for skill in child if skill in parent_set]
 
+# ADD:
+def _data_query_sql_request_from_prompt(prompt: str) -> dict[str, Any] | None:
+    """从 SQL SubAgent 的 task prompt 中读取本次 SQL 请求。"""
+    try:
+        parsed = json.loads(prompt)
+    except (TypeError, json.JSONDecodeError):
+        return None
 
-# ADD: 从 SQL SubAgent 捕获的真实 ToolMessage 构造权威结果，禁止信任模型自由文本中的执行行。
+    if not isinstance(parsed, dict) or parsed.get("kind") != "data_query_sql_request":
+        return None
+
+    flow_id = parsed.get("flow_id")
+    action = parsed.get("action")
+    if not isinstance(flow_id, str) or not flow_id.strip():
+        return None
+    if action not in {"execute", "sql_only"}:
+        return None
+
+    request_payload = dict(parsed)
+    request_payload["flow_id"] = flow_id.strip()
+    return request_payload
+
+# ADD:
 def _build_data_query_sql_result_from_steps(
     steps: list[dict[str, Any]],
     *,
-    active_state: dict[str, Any],
+    request_payload: dict[str, Any],
     data_source_id: str,
     binding: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """从子代理工具步骤构造 DataAgent SQL 结果合同。
+    """从 SQL 子代理真实工具步骤构造权威 SQL 结果。"""
 
-    Args:
-        steps: SubagentExecutor 捕获的 AIMessage/ToolMessage 字典。
-        active_state: 父线程当前 approved DataAgent 快照。
-        data_source_id: 服务端配置的数据源标识。
-        binding: Gateway 为当前运行注入的无密钥 SQL 执行绑定。
+    flow_id = request_payload.get("flow_id")
+    action = request_payload.get("action")
+    if not isinstance(flow_id, str) or not flow_id.strip():
+        return None
+    if action not in {"execute", "sql_only"}:
+        return None
 
-    Returns:
-        只包含真实校验/执行工具输出的 SQL 结果；合同不完整时返回 None。
-    """
-    snapshot_id = active_state.get("snapshot_id")
-    if not isinstance(snapshot_id, str) or not snapshot_id:
+    flow_id = flow_id.strip()
+    request_data_source_id = request_payload.get("data_source_id")
+    if request_data_source_id is not None and request_data_source_id != data_source_id:
         return None
-    state_data_source_id = active_state.get("data_source_id")
-    if state_data_source_id is not None and state_data_source_id != data_source_id:
-        return None
+
     if not isinstance(binding, dict) or binding.get("data_source_id") != data_source_id:
         return None
-    payload = active_state.get("payload")
-    approval = payload.get("approval") if isinstance(payload, dict) else None
-    expected_database_type = binding.get("database_type") if isinstance(binding, dict) else None
-    expected_binding_fingerprint = binding.get("binding_fingerprint") if isinstance(binding, dict) else None
+
+    expected_database_type = binding.get("database_type")
+    expected_binding_fingerprint = binding.get("binding_fingerprint")
     if not isinstance(expected_database_type, str) or not isinstance(expected_binding_fingerprint, str):
-        return None
-    action = approval.get("action") if isinstance(approval, dict) and approval.get("status") == "approved" else None
-    if action not in {"execute", "sql_only"}:
         return None
 
     parsed_tools: list[tuple[str, dict[str, Any]]] = []
@@ -242,14 +256,13 @@ def _build_data_query_sql_result_from_steps(
         if not isinstance(step, dict) or step.get("type") != "tool":
             continue
         name = step.get("name")
-        if not isinstance(name, str):
-            continue
         artifact = step.get("artifact")
-        if isinstance(artifact, dict):
+        if isinstance(name, str) and isinstance(artifact, dict):
             parsed_tools.append((name, artifact))
 
     validation: dict[str, Any] | None = None
     execution: dict[str, Any] | None = None
+
     if action == "sql_only":
         if any(name == "data_execute_sql" for name, _value in parsed_tools):
             return None
@@ -271,7 +284,7 @@ def _build_data_query_sql_result_from_steps(
         not isinstance(validation, dict)
         or validation.get("version") != 1
         or validation.get("valid") is not True
-        or validation.get("snapshot_id") != snapshot_id
+        or validation.get("flow_id") != flow_id
         or not isinstance(validation.get("executable_sql"), str)
         or not isinstance(validation.get("sql_sha256"), str)
         or not isinstance(validation.get("validation_digest"), str)
@@ -284,7 +297,7 @@ def _build_data_query_sql_result_from_steps(
         if (
             not isinstance(execution, dict)
             or execution.get("version") != 1
-            or execution.get("snapshot_id") != snapshot_id
+            or execution.get("flow_id") != flow_id
             or execution.get("validation_digest") != validation.get("validation_digest")
             or not isinstance(execution.get("ok"), bool)
         ):
@@ -293,12 +306,12 @@ def _build_data_query_sql_result_from_steps(
     return {
         "version": 1,
         "kind": "data_query_sql_result",
-        "snapshot_id": snapshot_id,
+        "flow_id": flow_id,
         "data_source_id": data_source_id,
+        "action": action,
         "validation": validation,
         "execution": execution,
     }
-
 
 def _task_result_command(
     *,
@@ -489,27 +502,26 @@ async def task_tool(
         available_tools_kwargs["app_config"] = resolved_app_config
     tools = get_available_tools(**available_tools_kwargs)
 
-    data_query_active_state: dict[str, Any] | None = None
+    data_query_sql_request: dict[str, Any] | None = None
     data_query_runtime_ability: dict[str, Any] | None = None
-    # ADD: 仅识别 DataAgent SQL 子任务的权威结果重建上下文，具体工具由应用层提供器注入。
+
     service_ability_raw = parent_context.get("data_query_service_ability")
-    # ADD: SQL 结果重建必须同时满足服务端 custom-agent allowlist 判定，客户端开关或模型目标名都不能替代授权。
     if isinstance(service_ability_raw, dict) and parent_context.get("data_query_sql_subagent_allowed") is True:
-        active_states = runtime.state.get("service_states") if runtime is not None and isinstance(runtime.state, dict) else None
-        active_state = next(
-            (item for item in reversed(active_states or []) if isinstance(item, dict) and item.get("service_name") == "data_query" and item.get("stage") == "approved"),
-            None,
-        )
+        sql_request = _data_query_sql_request_from_prompt(prompt)
+        data_source_id = service_ability_raw.get("data_source_id")
+        request_data_source_id = sql_request.get("data_source_id") if sql_request is not None else None
+
         if (
             service_ability_raw.get("type") == "data_query"
             and service_ability_raw.get("version") == 1
             and service_ability_raw.get("enable_sql_rag") is True
             and service_ability_raw.get("sql_execution_enabled") is True
             and subagent_type == service_ability_raw.get("sql_subagent_name")
-            and isinstance(service_ability_raw.get("data_source_id"), str)
-            and active_state is not None
+            and isinstance(data_source_id, str)
+            and sql_request is not None
+            and (request_data_source_id is None or request_data_source_id == data_source_id)
         ):
-            data_query_active_state = active_state
+            data_query_sql_request = sql_request
             data_query_runtime_ability = service_ability_raw
 
     # ADD: Harness 只调用通用提供器扩展点；Gateway 等应用层决定是否注入业务工具。
@@ -524,6 +536,7 @@ async def task_tool(
                 agent_name=str(parent_context.get("agent_name")) if parent_context.get("agent_name") else None,
                 parent_context=parent_context,
                 parent_state=parent_state,
+                task_prompt=prompt,
             )
         )
     )
@@ -632,12 +645,12 @@ async def task_tool(
                 _report_subagent_usage(runtime, result)
                 task_result = result.result
                 task_result_artifact: dict[str, Any] | None = None
-                if data_query_active_state is not None and data_query_runtime_ability is not None:
+                if data_query_sql_request is not None and data_query_runtime_ability is not None:
                     # ADD: DataAgent SQL 结果只从捕获的工具输出重建，子代理最终自由文本不具备数据库事实权限。
                     runtime_binding = parent_context.get("data_query_binding")
                     authoritative_result = _build_data_query_sql_result_from_steps(
                         result.ai_messages or [],
-                        active_state=data_query_active_state,
+                        request_payload=data_query_sql_request,
                         data_source_id=str(data_query_runtime_ability["data_source_id"]),
                         binding=runtime_binding if isinstance(runtime_binding, dict) else None,
                     )

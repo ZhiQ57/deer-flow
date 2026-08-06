@@ -11,9 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.gateway.auth_disabled import AUTH_SOURCE_INTERNAL
 from app.gateway.authz import require_permission
-from app.gateway.services import build_thread_checkpoint_state_accessor
 from deerflow.agents.service_agent.registry import DataAgentServiceAbility, resolve_service_ability_safely
-from deerflow.agents.service_agent.state import get_active_service_state
 from deerflow.config.agents_config import load_agent_config
 
 from .contracts import (
@@ -102,13 +100,13 @@ class _InternalExecutionContext:
 
     Args:
         config: 当前 DataAgent 查询能力配置。
-        active_state: 当前 approved Service State。
+        flow_id: 当前 approved Flow。
         binding: 当前 Run 的无密钥数据源绑定。
         capability: 当前 Run 的进程内 SQL 能力。
     """
 
     config: Any
-    active_state: Mapping[str, Any]
+    flow_id: str
     binding: Mapping[str, Any]
     capability: SqlExecutionRunCapability
 
@@ -118,7 +116,6 @@ async def _load_internal_execution_context(
     thread_id: str,
     body: InternalSqlRequest,
     request: Request,
-    require_execute: bool,
 ) -> _InternalExecutionContext:
     """加载内部 SQL 请求的权威 Gateway 上下文。
 
@@ -126,13 +123,11 @@ async def _load_internal_execution_context(
         thread_id: 当前线程标识。
         body: SQL SubAgent 内部请求。
         request: FastAPI 请求上下文。
-        require_execute: 是否要求 Snapshot 已批准执行。
-
     Returns:
         已验证的内部 SQL 执行上下文。
 
     Raises:
-        HTTPException: 身份、Run、Agent、Snapshot 或审批状态不匹配。
+        HTTPException: 身份、Run、Agent、Flow 或绑定不匹配。
     """
     if getattr(request.state, "auth_source", None) != AUTH_SOURCE_INTERNAL:
         raise HTTPException(status_code=403, detail="Internal SQL execution requires trusted Gateway authentication")
@@ -142,33 +137,18 @@ async def _load_internal_execution_context(
         thread_id=thread_id,
         user_id=user_id,
         agent_name=body.agent_name,
-        snapshot_id=body.snapshot_id,
+        flow_id=body.flow_id,
     )
     if capability is None:
         raise HTTPException(status_code=403, detail="SQL execution capability is missing or expired")
 
     config = await _load_sql_config(body.agent_name, user_id)
-    accessor, state_config = await build_thread_checkpoint_state_accessor(
-        request,
-        thread_id=thread_id,
-        fail_closed=True,
-    )
-    snapshot = await accessor.aget(state_config)
-    values = snapshot.values if isinstance(snapshot.values, Mapping) else {}
-    active = get_active_service_state(values)
-    if not isinstance(active, Mapping) or active.get("snapshot_id") != body.snapshot_id:
-        raise HTTPException(status_code=409, detail="DataAgent SQL snapshot is stale")
-    payload = active.get("payload")
-    approval = payload.get("approval") if isinstance(payload, Mapping) else None
-    action = approval.get("action") if isinstance(approval, Mapping) and approval.get("status") == "approved" else None
-    if action not in {"execute", "sql_only"} or (require_execute and action != "execute"):
-        raise HTTPException(status_code=403, detail="DataAgent SQL snapshot is not approved for this operation")
     binding = capability.binding
     if binding.get("data_source_id") != config.data_source_id or binding.get("database_type") != config.sql_execution.database_type or not isinstance(binding.get("binding_fingerprint"), str):
         raise HTTPException(status_code=409, detail="DataAgent SQL binding is stale")
     return _InternalExecutionContext(
         config=config,
-        active_state=active,
+        flow_id=body.flow_id,
         binding=binding,
         capability=capability,
     )
@@ -190,7 +170,7 @@ def _internal_result(
         可直接写入 ToolMessage artifact 的结果合同。
     """
     return InternalSqlResult(
-        snapshot_id=str(context.active_state["snapshot_id"]),
+        flow_id=context.flow_id,
         data_source_id=context.config.data_source_id,
         validation=dict(validation),
         execution=dict(execution) if isinstance(execution, Mapping) else None,
@@ -234,7 +214,7 @@ def _attempt_rejected_execution(
         "duration_ms": 0,
         "sql_sha256": validation.get("sql_sha256"),
         "validation_digest": validation.get("validation_digest"),
-        "snapshot_id": validation.get("snapshot_id"),
+        "flow_id": validation.get("flow_id"),
         "attempt": attempt,
         "max_attempts": max_attempts,
     }
@@ -320,7 +300,6 @@ async def validate_subagent_sql(
         thread_id=thread_id,
         body=body,
         request=request,
-        require_execute=False,
     )
     validation = SqlExecutionService(
         context.config,
@@ -329,7 +308,7 @@ async def validate_subagent_sql(
         SqlValidationRequest(
             sql=body.sql,
             binding=context.binding,
-            snapshot_id=body.snapshot_id,
+            flow_id=body.flow_id,
             source="subagent",
         )
     )
@@ -337,14 +316,14 @@ async def validate_subagent_sql(
     if validation.get("valid") is True and isinstance(validation_digest, str):
         if not sql_execution_runtime_registry.record_validation(
             run_id=body.run_id,
-            snapshot_id=body.snapshot_id,
+            flow_id=body.flow_id,
             validation_digest=validation_digest,
         ):
             validation = {
                 "version": 1,
                 "valid": False,
                 "error_code": "SQL_GATEWAY_CAPABILITY_EXPIRED",
-                "snapshot_id": body.snapshot_id,
+                "flow_id": body.flow_id,
                 "source": "subagent",
             }
     return _internal_result(context, validation)
@@ -378,7 +357,6 @@ async def execute_subagent_sql(
         thread_id=thread_id,
         body=body,
         request=request,
-        require_execute=True,
     )
     service = SqlExecutionService(
         context.config,
@@ -388,7 +366,7 @@ async def execute_subagent_sql(
         SqlValidationRequest(
             sql=body.sql,
             binding=context.binding,
-            snapshot_id=body.snapshot_id,
+            flow_id=body.flow_id,
             source="subagent",
         )
     )
@@ -406,7 +384,7 @@ async def execute_subagent_sql(
             "duration_ms": 0,
             "sql_sha256": validation.get("sql_sha256"),
             "validation_digest": validation.get("validation_digest"),
-            "snapshot_id": body.snapshot_id,
+            "flow_id": body.flow_id,
             "attempt": 0,
             "max_attempts": context.config.sql_execution.max_execution_attempts,
         }
@@ -415,7 +393,7 @@ async def execute_subagent_sql(
     max_attempts = context.config.sql_execution.max_execution_attempts
     attempt, rejected_category = sql_execution_runtime_registry.reserve_attempt(
         run_id=body.run_id,
-        snapshot_id=body.snapshot_id,
+        flow_id=body.flow_id,
         validation_digest=body.validation_digest,
         max_attempts=max_attempts,
     )
@@ -438,12 +416,12 @@ async def execute_subagent_sql(
             source="subagent",
         )
     )
-    execution["snapshot_id"] = body.snapshot_id
+    execution["flow_id"] = body.flow_id
     execution["attempt"] = attempt
     execution["max_attempts"] = max_attempts
     if execution.get("ok") is True:
         sql_execution_runtime_registry.mark_succeeded(
             run_id=body.run_id,
-            snapshot_id=body.snapshot_id,
+            flow_id=body.flow_id,
         )
     return _internal_result(context, validation, execution)

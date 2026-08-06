@@ -86,13 +86,11 @@ class DataAgentServiceAbility:
         from deerflow.agents.middlewares.query_labels_middleware import QueryLabelsMiddleware
 
         from .query_intent_approval_middleware import QueryIntentApprovalMiddleware
-        from .sql_stage_middleware import SqlStageMiddleware
 
         # ADD: 业务 middleware 只挂在 DataAgent 适配器，默认 lead-agent 不受影响。
         return [
             QueryLabelsMiddleware(service_ability=self.config),
             QueryIntentApprovalMiddleware(self.config),
-            SqlStageMiddleware(self.config),
         ]
 
     def public_metadata(self) -> dict[str, Any]:

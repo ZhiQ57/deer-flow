@@ -58,7 +58,7 @@ class SqlExecutionService:
         return self._config
 
     def validate(self, request: SqlValidationRequest) -> SqlValidationResult:
-        """校验 SQL 并生成绑定当前来源和 Snapshot 的规范 SQL。
+        """校验 SQL 并生成绑定当前来源和 Flow 的规范 SQL。
 
         Args:
             request: SQL 校验请求。
@@ -80,11 +80,14 @@ class SqlExecutionService:
                     "valid": False,
                     "error_code": "SQL_BINDING_MISMATCH",
                 }
-        return validate_sql_request(
+        validation = validate_sql_request(
             request,
             config=self._config,
             manual_binding=manual_binding,
         )
+        if "flow_id" not in validation:
+            validation = {**validation, "flow_id": request.flow_id}
+        return validation
 
     def execute(self, request: SqlExecutionRequest) -> SqlExecutionResult:
         """执行最近一次已校验 SQL。
@@ -100,6 +103,7 @@ class SqlExecutionService:
         database_type = self._config.sql_execution.database_type
         result_identity = {
             "database_type": database_type,
+            "flow_id": validation.get("flow_id"),
             "sql_sha256": validation.get("sql_sha256"),
             "validation_digest": validation.get("validation_digest"),
         }
@@ -232,7 +236,7 @@ def validate_sql(
     config: DataQueryServiceAbilityConfig,
     retrieval: Mapping[str, Any] | None = None,
     binding: Mapping[str, Any] | None = None,
-    snapshot_id: str | None = None,
+    flow_id: str | None = None,
 ) -> SqlValidationResult:
     """使用 Gateway SQL Service 校验候选 SQL。
 
@@ -241,7 +245,7 @@ def validate_sql(
         config: 当前 DataAgent 查询能力配置。
         retrieval: 兼容旧调用传入的上下文；不再要求 SQLRAG registry。
         binding: 当前运行的无密钥数据源绑定。
-        snapshot_id: 当前已批准 Query Snapshot 标识。
+        flow_id: 当前已批准 Query Flow 标识。
 
     Returns:
         版本化 SQL 校验结果。
@@ -251,7 +255,7 @@ def validate_sql(
             sql=sql,
             binding=binding,
             retrieval=retrieval,
-            snapshot_id=snapshot_id,
+            flow_id=flow_id,
         ),
     )
 

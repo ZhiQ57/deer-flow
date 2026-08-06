@@ -20,12 +20,12 @@ class SqlExecutionRunCapability:
         binding: Gateway 解析的无密钥数据源绑定。
         secrets: 只驻留 Gateway 内存的请求级 Secret。
         created_at: 注册时间。
-        snapshots: 已授权给 SQL SubAgent 的 Snapshot 集合。
-        validation_generations: 每个 Snapshot 最新有效校验的代次。
-        validation_digests: 每个 Snapshot 最新有效校验摘要。
-        consumed_validation_generations: 每个 Snapshot 已消费的校验代次。
-        attempts: 每个 Snapshot 已占用的数据库执行次数。
-        succeeded: 已经执行成功的 Snapshot 集合。
+        flow_ids: 已授权给 SQL SubAgent 的 Flow 集合。
+        validation_generations: 每个 Flow 最新有效校验的代次。
+        validation_digests: 每个 Flow 最新有效校验摘要。
+        consumed_validation_generations: 每个 Flow 已消费的校验代次。
+        attempts: 每个 Flow 已占用的数据库执行次数。
+        succeeded: 已经执行成功的 Flow 集合。
     """
 
     run_id: str
@@ -35,7 +35,7 @@ class SqlExecutionRunCapability:
     binding: dict[str, Any]
     secrets: dict[str, str]
     created_at: float = field(default_factory=time.monotonic)
-    snapshots: set[str] = field(default_factory=set)
+    flow_ids: set[str] = field(default_factory=set)
     validation_generations: dict[str, int] = field(default_factory=dict)
     validation_digests: dict[str, str] = field(default_factory=dict)
     consumed_validation_generations: dict[str, int] = field(default_factory=dict)
@@ -93,23 +93,23 @@ class SqlExecutionRuntimeRegistry:
             )
             self._trim_locked()
 
-    def authorize_snapshot(
+    def authorize_flow(
         self,
         *,
         run_id: str,
         thread_id: str,
         user_id: str,
         agent_name: str,
-        snapshot_id: str,
+        flow_id: str,
     ) -> bool:
-        """授权当前 Run 使用指定 Snapshot。
+        """授权当前 Run 使用指定 Flow。
 
         Args:
             run_id: 父运行标识。
             thread_id: 父线程标识。
             user_id: 当前用户标识。
             agent_name: 当前 Custom Agent 名称。
-            snapshot_id: 当前 approved Snapshot。
+            flow_id: 当前 approved Flow。
 
         Returns:
             Run 能力存在且身份完全匹配时返回 True。
@@ -119,21 +119,21 @@ class SqlExecutionRuntimeRegistry:
             entry = self._entries.get(run_id)
             if entry is None or not self._matches(entry, thread_id, user_id, agent_name):
                 return False
-            entry.snapshots.add(snapshot_id)
+            entry.flow_ids.add(flow_id)
             return True
 
     def record_validation(
         self,
         *,
         run_id: str,
-        snapshot_id: str,
+        flow_id: str,
         validation_digest: str,
     ) -> bool:
         """登记一次由内部校验路由产生的有效 SQL 校验。
 
         Args:
             run_id: 父运行标识。
-            snapshot_id: 当前 Snapshot。
+            flow_id: 当前 Flow。
             validation_digest: Gateway 生成的有效校验摘要。
 
         Returns:
@@ -142,11 +142,11 @@ class SqlExecutionRuntimeRegistry:
         with self._lock:
             self._evict_locked()
             entry = self._entries.get(run_id)
-            if entry is None or snapshot_id not in entry.snapshots:
+            if entry is None or flow_id not in entry.flow_ids:
                 return False
-            generation = entry.validation_generations.get(snapshot_id, 0) + 1
-            entry.validation_generations[snapshot_id] = generation
-            entry.validation_digests[snapshot_id] = validation_digest
+            generation = entry.validation_generations.get(flow_id, 0) + 1
+            entry.validation_generations[flow_id] = generation
+            entry.validation_digests[flow_id] = validation_digest
             return True
 
     def resolve(
@@ -156,7 +156,7 @@ class SqlExecutionRuntimeRegistry:
         thread_id: str,
         user_id: str,
         agent_name: str,
-        snapshot_id: str,
+        flow_id: str,
     ) -> SqlExecutionRunCapability | None:
         """解析已授权 SQL 能力。
 
@@ -165,7 +165,7 @@ class SqlExecutionRuntimeRegistry:
             thread_id: 父线程标识。
             user_id: 当前用户标识。
             agent_name: 当前 Custom Agent 名称。
-            snapshot_id: 当前 Snapshot。
+            flow_id: 当前 Flow。
 
         Returns:
             身份及 Snapshot 均匹配的能力；否则返回 None。
@@ -175,7 +175,7 @@ class SqlExecutionRuntimeRegistry:
             entry = self._entries.get(run_id)
             if entry is None or not self._matches(entry, thread_id, user_id, agent_name):
                 return None
-            if snapshot_id not in entry.snapshots:
+            if flow_id not in entry.flow_ids:
                 return None
             return entry
 
@@ -183,7 +183,7 @@ class SqlExecutionRuntimeRegistry:
         self,
         *,
         run_id: str,
-        snapshot_id: str,
+        flow_id: str,
         validation_digest: str,
         max_attempts: int,
     ) -> tuple[int, str | None]:
@@ -191,7 +191,7 @@ class SqlExecutionRuntimeRegistry:
 
         Args:
             run_id: 父运行标识。
-            snapshot_id: 当前 Snapshot。
+            flow_id: 当前 Flow。
             validation_digest: SQL SubAgent 最近一次校验返回的摘要。
             max_attempts: Gateway 配置的最大执行次数。
 
@@ -201,32 +201,32 @@ class SqlExecutionRuntimeRegistry:
         with self._lock:
             self._evict_locked()
             entry = self._entries.get(run_id)
-            if entry is None or snapshot_id not in entry.snapshots:
+            if entry is None or flow_id not in entry.flow_ids:
                 return 0, "capability_missing"
-            attempt = entry.attempts.get(snapshot_id, 0)
-            generation = entry.validation_generations.get(snapshot_id, 0)
-            expected_digest = entry.validation_digests.get(snapshot_id)
+            attempt = entry.attempts.get(flow_id, 0)
+            generation = entry.validation_generations.get(flow_id, 0)
+            expected_digest = entry.validation_digests.get(flow_id)
             if generation <= 0 or expected_digest is None:
                 return attempt, "validation_missing"
             if expected_digest != validation_digest:
                 return attempt, "validation_mismatch"
-            if snapshot_id in entry.succeeded:
+            if flow_id in entry.succeeded:
                 return attempt, "execution_complete"
             if attempt >= max_attempts:
                 return attempt, "attempt_budget"
-            if entry.consumed_validation_generations.get(snapshot_id, 0) >= generation:
+            if entry.consumed_validation_generations.get(flow_id, 0) >= generation:
                 return attempt, "validation_reuse"
             attempt += 1
-            entry.attempts[snapshot_id] = attempt
-            entry.consumed_validation_generations[snapshot_id] = generation
+            entry.attempts[flow_id] = attempt
+            entry.consumed_validation_generations[flow_id] = generation
             return attempt, None
 
-    def mark_succeeded(self, *, run_id: str, snapshot_id: str) -> None:
-        """标记 Snapshot 已成功执行。
+    def mark_succeeded(self, *, run_id: str, flow_id: str) -> None:
+        """标记 Flow 已成功执行。
 
         Args:
             run_id: 父运行标识。
-            snapshot_id: 当前 Snapshot。
+            flow_id: 当前 Flow。
 
         Returns:
             无返回值。
@@ -234,7 +234,7 @@ class SqlExecutionRuntimeRegistry:
         with self._lock:
             entry = self._entries.get(run_id)
             if entry is not None:
-                entry.succeeded.add(snapshot_id)
+                entry.succeeded.add(flow_id)
 
     def discard_run(self, run_id: str) -> None:
         """删除已结束 Run 的 SQL 能力和请求级数据库 Secret。

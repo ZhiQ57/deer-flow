@@ -22,6 +22,7 @@ class SubagentToolContext:
         agent_name: 当前 Custom Agent 名称。
         parent_context: 父运行的只读运行上下文。
         parent_state: 父智能体当前只读状态。
+        task_prompt: 当前 task 工具传给子代理的任务 prompt
     """
 
     subagent_type: str
@@ -31,6 +32,8 @@ class SubagentToolContext:
     agent_name: str | None
     parent_context: Mapping[str, Any]
     parent_state: Mapping[str, Any]
+    # ADD
+    task_prompt: str | None = None
 
 
 class SubagentToolProvider(Protocol):

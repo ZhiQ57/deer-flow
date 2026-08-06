@@ -289,9 +289,9 @@ def validate_sql_request(
         "executable_sql": executable,
         "sql_sha256": sql_digest(executable),
         "validation_digest": sql_digest(
-            f"{config.data_source_id}\n{config.sql_execution.database_type}\n{binding_fingerprint}\n{request.source}\n{request.snapshot_id or ''}\n{executable}",
+            f"{config.data_source_id}\n{config.sql_execution.database_type}\n{binding_fingerprint}\n{request.source}\n{request.flow_id or ''}\n{executable}",
         ),
-        "snapshot_id": request.snapshot_id,
+        "flow_id": request.flow_id,
         "database_type": config.sql_execution.database_type,
         "binding_fingerprint": binding_fingerprint,
         "row_limit_applied": row_limit_applied,

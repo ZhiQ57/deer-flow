@@ -23,7 +23,7 @@ class SqlValidationResult(TypedDict, total=False):
     executable_sql: str
     sql_sha256: str
     validation_digest: str
-    snapshot_id: str | None
+    flow_id: str | None
     database_type: str
     binding_fingerprint: str
     row_limit_applied: bool
@@ -44,7 +44,7 @@ class SqlExecutionResult(TypedDict, total=False):
     duration_ms: float
     sql_sha256: str | None
     validation_digest: str | None
-    snapshot_id: str
+    flow_id: str
     attempt: int
     max_attempts: int
     row_count: int
@@ -63,14 +63,14 @@ class SqlValidationRequest:
         sql: 待校验 SQL。
         binding: 当前运行的无密钥数据源绑定。
         retrieval: 兼容旧调用传入的上下文；不再要求 SQLRAG registry。
-        snapshot_id: 当前 Query Snapshot 标识。
+        flow_id: 当前 Query Flow 标识。
         source: 可信调用来源。
     """
 
     sql: str
     binding: Mapping[str, Any] | None = None
     retrieval: Mapping[str, Any] | None = None
-    snapshot_id: str | None = None
+    flow_id: str | None = None
     source: SqlExecutionSource = "subagent"
 
 
@@ -136,7 +136,7 @@ class SqlExecuteResponse(BaseModel):
     duration_ms: float = 0
     sql_sha256: str | None = None
     validation_digest: str | None = None
-    snapshot_id: str | None = None
+    flow_id: str | None = None
     attempt: int | None = None
     max_attempts: int | None = None
     row_count: int | None = None
@@ -154,10 +154,10 @@ class InternalSqlRequest(BaseModel):
 
     agent_name: str = Field(min_length=1, max_length=100, pattern=AGENT_NAME_PATTERN.pattern)
     sql: str = Field(min_length=1, max_length=50_000)
-    snapshot_id: str = Field(min_length=1, max_length=200)
+    flow_id: str = Field(min_length=1, max_length=200)
     run_id: str = Field(min_length=1, max_length=200)
 
-    @field_validator("agent_name", "sql", "snapshot_id", "run_id")
+    @field_validator("agent_name", "sql", "flow_id", "run_id")
     @classmethod
     def _strip_internal_text(cls, value: str) -> str:
         """清理内部请求文本。
@@ -209,7 +209,7 @@ class InternalSqlResult(BaseModel):
 
     version: Literal[1] = 1
     kind: Literal["data_query_sql_result"] = "data_query_sql_result"
-    snapshot_id: str
+    flow_id: str
     data_source_id: str
     validation: dict[str, Any]
     execution: dict[str, Any] | None = None
