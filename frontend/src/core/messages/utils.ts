@@ -74,6 +74,38 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
     return null;
   }
 
+  /**
+   * 查找 task 工具调用所属的子代理分组。
+   *
+   * 子代理执行期间可能先产生独立的思考消息。后续 ToolMessage 若只按
+   * `lastOpenGroup()` 归入最近的 processing 分组，就会与原 task 调用
+   * 脱离，导致子代理卡片误判为失败，同时把成功结果按普通工具重复渲染。
+   */
+  function findSubagentGroupForTask(
+    toolCallId: string | undefined,
+  ): AssistantSubagentGroup | null {
+    if (!toolCallId) {
+      return null;
+    }
+    for (const group of [...groups].reverse()) {
+      if (group.type !== "assistant:subagent") {
+        continue;
+      }
+      const ownsToolCall = group.messages.some(
+        (item) =>
+          item.type === "ai" &&
+          item.tool_calls?.some(
+            (toolCall) =>
+              toolCall.name === "task" && toolCall.id === toolCallId,
+          ),
+      );
+      if (ownsToolCall) {
+        return group;
+      }
+    }
+    return null;
+  }
+
   for (const message of messages) {
     if (isHiddenFromUIMessage(message)) {
       continue;
@@ -85,6 +117,21 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
     }
 
     if (message.type === "tool") {
+      const taskGroup = findSubagentGroupForTask(message.tool_call_id);
+      if (taskGroup) {
+        // task 结果必须回到原子代理分组，避免中间思考消息把结果截断到
+        // processing 分组后，子代理卡片拿不到终态。
+        taskGroup.messages.push(message);
+        if (isDataQuerySqlResultToolMessage(message)) {
+          groups.push({
+            id: message.id,
+            type: "assistant:query-result",
+            messages: [message],
+          });
+        }
+        continue;
+      }
+
       if (isClarificationToolMessage(message)) {
         // Add to the preceding processing group to preserve tool-call association,
         // then also open a standalone clarification group for prominent display.

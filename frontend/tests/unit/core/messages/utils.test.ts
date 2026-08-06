@@ -184,6 +184,54 @@ test("renders DataAgent intent and SQL artifacts as dedicated groups", () => {
   ]);
 });
 
+test("keeps a task result with its subagent group across intermediate reasoning", () => {
+  const taskResult = {
+    id: "task-result-1",
+    type: "tool",
+    name: "task",
+    tool_call_id: "task-1",
+    content: "Task Succeeded. Result: done",
+  } as Message;
+  const messages = [
+    { id: "human-1", type: "human", content: "执行 SQL" },
+    {
+      id: "ai-task-1",
+      type: "ai",
+      content: "",
+      tool_calls: [
+        {
+          id: "task-1",
+          name: "task",
+          args: {
+            subagent_type: "sql-subagent",
+            description: "修正 SQL 并执行",
+            prompt: "生成并执行 SQL",
+          },
+        },
+      ],
+    },
+    {
+      id: "ai-reasoning-1",
+      type: "ai",
+      content: "",
+      additional_kwargs: { reasoning_content: "正在检查 SQL 结果" },
+    },
+    taskResult,
+  ] as Message[];
+
+  const groups = getMessageGroups(messages);
+  const subagentGroup = groups.find(
+    (group) => group.type === "assistant:subagent",
+  );
+
+  expect(groups.map((group) => group.type)).toEqual([
+    "human",
+    "assistant:subagent",
+    "assistant:processing",
+  ]);
+  expect(subagentGroup?.messages).toContain(taskResult);
+});
+
 test("hides raw entity extraction payloads and other internal DataAgent JSON tool outputs", () => {
   const messages = [
     { id: "human-1", type: "human", content: "查询销售额" },
