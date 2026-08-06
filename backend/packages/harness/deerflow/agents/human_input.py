@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 HUMAN_INPUT_RESPONSE_KEY = "human_input_response"
 
@@ -13,6 +13,7 @@ class HumanInputTextResponse(TypedDict):
     kind: Literal["human_input_response"]
     source: str
     request_id: str
+    flow_id: NotRequired[str]       # ADD: 意图标签审批需要唯一ID
     response_kind: Literal["text"]
     value: str
 
@@ -22,6 +23,7 @@ class HumanInputOptionResponse(TypedDict):
     kind: Literal["human_input_response"]
     source: str
     request_id: str
+    flow_id: NotRequired[str]
     response_kind: Literal["option"]
     option_id: str
     value: str
@@ -46,13 +48,14 @@ def read_human_input_response(additional_kwargs: Mapping[str, object] | None) ->
 
     source = _non_empty_string(raw.get("source"))
     request_id = _non_empty_string(raw.get("request_id"))
+    flow_id = _non_empty_string(raw.get("flow_id"))
     value = _non_empty_string(raw.get("value"))
     if source is None or request_id is None or value is None:
         return None
 
     response_kind = raw.get("response_kind")
     if response_kind == "text":
-        return {
+        response: HumanInputTextResponse = {
             "version": 1,
             "kind": "human_input_response",
             "source": source,
@@ -60,11 +63,15 @@ def read_human_input_response(additional_kwargs: Mapping[str, object] | None) ->
             "response_kind": "text",
             "value": value,
         }
+        # ADD: 增加 flow_id 
+        if flow_id is not None:
+            response["flow_id"] = flow_id
+        return response
     if response_kind == "option":
         option_id = _non_empty_string(raw.get("option_id"))
         if option_id is None:
             return None
-        return {
+        response: HumanInputOptionResponse = {
             "version": 1,
             "kind": "human_input_response",
             "source": source,
@@ -73,4 +80,8 @@ def read_human_input_response(additional_kwargs: Mapping[str, object] | None) ->
             "option_id": option_id,
             "value": value,
         }
+        # ADD: 增加 flow_id 
+        if flow_id is not None:
+            response["flow_id"] = flow_id
+        return response
     return None

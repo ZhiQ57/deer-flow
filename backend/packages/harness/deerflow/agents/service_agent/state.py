@@ -461,32 +461,4 @@ def build_query_review_items(snapshot: Mapping[str, Any]) -> list[dict[str, Any]
     return items
 
 
-# ADD: 复用 DeerFlow human-input v1 请求并把 snapshot 绑定保留在服务端 artifact。
-def build_query_approval_request(snapshot: Mapping[str, Any], *, tool_call_id: str) -> dict[str, Any]:
-    """构造 DataAgent 查询意图审批请求。"""
-    snapshot_id = snapshot.get("snapshot_id")
-    if not isinstance(snapshot_id, str) or not snapshot_id:
-        raise ValueError("确认请求缺少 snapshot_id。")
-    request_digest = sha256(f"{snapshot_id}\n{tool_call_id}".encode()).hexdigest()[:24]
-    ambiguities = snapshot.get("ambiguities") if isinstance(snapshot.get("ambiguities"), list) else []
-    summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), str) else "请确认当前查询意图。"
-    context = "；".join(str(item) for item in ambiguities) if ambiguities else None
-    review_items = build_query_review_items(snapshot)
-    return {
-        "version": 1,
-        "kind": "human_input_request",
-        "source": "ask_intent_approval",
-        "request_id": f"data-query:{request_digest}",
-        "tool_call_id": tool_call_id,
-        "snapshot_id": snapshot_id,
-        "title": "确认数据库查询意图",
-        "question": summary,
-        "context": context,
-        "input_mode": "choice_with_other",
-        "options": [
-            {"id": "execute", "label": "确认并执行", "value": "execute"},
-            {"id": "sql_only", "label": "仅生成 SQL", "value": "sql_only"},
-            {"id": "cancel", "label": "取消查询", "value": "cancel"},
-        ],
-        "review_items": review_items,
-    }
+
