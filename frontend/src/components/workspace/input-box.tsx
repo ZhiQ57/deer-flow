@@ -12,6 +12,7 @@ import {
   PaperclipIcon,
   PlusIcon,
   RocketIcon,
+  ShieldCheckIcon,
   SparklesIcon,
   SquareIcon,
   TargetIcon,
@@ -159,6 +160,7 @@ import { SlashSkillChip } from "./slash-skill-chip";
 import { Tooltip } from "./tooltip";
 
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
+export type DataAgentApprovalMode = "always" | "on_ambiguity" | "auto";
 
 const COMPOSER_DRAFT_SAVE_DELAY_MS = 300;
 
@@ -293,6 +295,7 @@ export function InputBox({
   draftThreadId = threadId,
   draftAgentName,
   defaultModelName,
+  dataAgentApprovalMode,
   initialValue,
   onContextChange,
   onFollowupsVisibilityChange,
@@ -328,6 +331,11 @@ export function InputBox({
    * (issue #4336). ``null`` / undefined = no agent default → use models[0].
    */
   defaultModelName?: string | null;
+  /**
+   * DataAgent 审批模式占位值。
+   * 当前仅用于前端展示和本地切换，不写回后端配置。
+   */
+  dataAgentApprovalMode?: DataAgentApprovalMode;
   initialValue?: string;
   onContextChange?: (
     context: Omit<
@@ -350,6 +358,8 @@ export function InputBox({
   const queryClient = useQueryClient();
   const searchParams = useSearchParams();
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
+  const [selectedApprovalMode, setSelectedApprovalMode] =
+    useState<DataAgentApprovalMode>(dataAgentApprovalMode ?? "on_ambiguity");
   const { models } = useModels();
   const { user } = useAuth();
   const { thread, isMock } = useThread();
@@ -378,6 +388,12 @@ export function InputBox({
   const voiceLatestTextRef = useRef("");
   const voiceLastErrorKindRef = useRef<SpeechRecognitionErrorKind | null>(null);
   const voiceStopRequestedRef = useRef(false);
+
+  useEffect(() => {
+    if (dataAgentApprovalMode) {
+      setSelectedApprovalMode(dataAgentApprovalMode);
+    }
+  }, [dataAgentApprovalMode]);
   const voiceRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -2043,6 +2059,27 @@ export function InputBox({
     }
   }, []);
 
+  const approvalModeOptions = [
+    {
+      value: "always" as const,
+      label: t.inputBox.approvalModeAlways,
+      description: t.inputBox.approvalModeAlwaysDescription,
+    },
+    {
+      value: "on_ambiguity" as const,
+      label: t.inputBox.approvalModeOnAmbiguity,
+      description: t.inputBox.approvalModeOnAmbiguityDescription,
+    },
+    {
+      value: "auto" as const,
+      label: t.inputBox.approvalModeAuto,
+      description: t.inputBox.approvalModeAutoDescription,
+    },
+  ];
+  const selectedApprovalModeLabel =
+    approvalModeOptions.find((option) => option.value === selectedApprovalMode)
+      ?.label ?? t.inputBox.approvalModeOnAmbiguity;
+
   return (
     <div
       ref={promptRootRef}
@@ -2273,6 +2310,56 @@ export function InputBox({
               supported={voiceInputSupported}
               onToggle={toggleVoiceInput}
             />
+            {dataAgentApprovalMode ? (
+              <PromptInputActionMenu>
+                <PromptInputActionMenuTrigger
+                  className="max-w-32 gap-1! px-2! sm:max-w-none"
+                  data-testid="data-agent-approval-mode-trigger"
+                  disabled={composerLocked}
+                >
+                  <ShieldCheckIcon className="size-3" />
+                  <span className="truncate text-xs font-normal">
+                    {selectedApprovalModeLabel}
+                  </span>
+                </PromptInputActionMenuTrigger>
+                <PromptInputActionMenuContent className="w-80">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="text-muted-foreground text-xs">
+                      {t.inputBox.approvalMode}
+                    </DropdownMenuLabel>
+                    <PromptInputActionMenu>
+                      {approvalModeOptions.map((option) => (
+                        <PromptInputActionMenuItem
+                          key={option.value}
+                          className={cn(
+                            selectedApprovalMode === option.value
+                              ? "text-accent-foreground"
+                              : "text-muted-foreground/65",
+                          )}
+                          data-testid={`data-agent-approval-mode-${option.value}`}
+                          onSelect={() => setSelectedApprovalMode(option.value)}
+                        >
+                          <div className="flex flex-col gap-2">
+                            <div className="flex items-center gap-1 font-bold">
+                              <ShieldCheckIcon className="mr-2 size-4" />
+                              {option.label}
+                            </div>
+                            <div className="pl-7 text-xs">
+                              {option.description}
+                            </div>
+                          </div>
+                          {selectedApprovalMode === option.value ? (
+                            <CheckIcon className="ml-auto size-4" />
+                          ) : (
+                            <div className="ml-auto size-4" />
+                          )}
+                        </PromptInputActionMenuItem>
+                      ))}
+                    </PromptInputActionMenu>
+                  </DropdownMenuGroup>
+                </PromptInputActionMenuContent>
+              </PromptInputActionMenu>
+            ) : null}
             <Tooltip
               content={
                 polishingInput

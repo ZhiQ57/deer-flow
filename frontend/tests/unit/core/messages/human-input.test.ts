@@ -5,10 +5,13 @@ import {
   buildHumanInputResponseText,
   createHumanInputOptionResponse,
   createHumanInputTextResponse,
+  createMultiQuestionChoiceResponse,
   deriveHumanInputThreadState,
   extractHumanInputRequest,
   extractHumanInputResponse,
   hasOpenHumanInputRequest,
+  parseHumanInputRequest,
+  parseIntentApprovalAnswers,
   shouldClearPendingHumanInputOnThreadError,
 } from "@/core/messages/human-input";
 
@@ -220,4 +223,145 @@ test("creates option and text responses for a request", () => {
   expect(buildHumanInputResponseText(request!, optionResponse)).toBe(
     'For your clarification "Which environment should I deploy to?", my answer is: staging',
   );
+});
+
+test("parses multi-question requests and creates flow-bound JSON answers", () => {
+  const request = parseHumanInputRequest({
+    version: 1,
+    kind: "human_input_request",
+    source: "ask_intent_approval",
+    request_id: "data-query:req",
+    flow_id: "ABCDEFGH",
+    title: "确认数据查询意图",
+    context: "需要确认这些查询条件",
+    input_mode: "multi_question_choice",
+    questions: [
+      {
+        id: "question_1",
+        question: "时间范围是否是 2024 年全年？",
+        options: [
+          {
+            id: "question_1_option_1",
+            label: "是",
+            value: "是",
+          },
+        ],
+      },
+      {
+        id: "question_2",
+        question: "统计口径使用订单金额还是支付金额？",
+        options: [
+          {
+            id: "question_2_option_2",
+            label: "支付金额",
+            value: "支付金额",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(request).not.toBeNull();
+  const response = createMultiQuestionChoiceResponse(request!, [
+    {
+      question_id: "question_1",
+      option_id: "question_1_option_1",
+      value: "是",
+    },
+    {
+      question_id: "question_2",
+      option_id: "question_2_option_2",
+      value: "支付金额",
+    },
+  ]);
+
+  expect(response.flow_id).toBe("ABCDEFGH");
+  expect(parseIntentApprovalAnswers(response)).toEqual({
+    kind: "intent_approval_answers",
+    flow_id: "ABCDEFGH",
+    answers: [
+      {
+        question_id: "question_1",
+        option_id: "question_1_option_1",
+        value: "是",
+      },
+      {
+        question_id: "question_2",
+        option_id: "question_2_option_2",
+        value: "支付金额",
+      },
+    ],
+    final_action: "execute",
+  });
+});
+
+test("rejects multi-question requests without flow_id or valid options", () => {
+  const base = {
+    version: 1,
+    kind: "human_input_request",
+    source: "ask_intent_approval",
+    request_id: "data-query:req",
+    input_mode: "multi_question_choice",
+    questions: [
+      {
+        id: "question_1",
+        question: "确认时间范围？",
+        options: [{ id: "option_1", label: "是", value: "是" }],
+      },
+    ],
+  };
+
+  expect(parseHumanInputRequest(base)).toBeNull();
+  expect(
+    parseHumanInputRequest({
+      ...base,
+      flow_id: "ABCDEFGH",
+      questions: [{ ...base.questions[0], options: [] }],
+    }),
+  ).toBeNull();
+});
+
+test("does not mark a flow-bound request answered by a mismatched response", () => {
+  const requestMessage = {
+    type: "tool",
+    name: "ask_intent_approval",
+    content: "fallback",
+    artifact: {
+      human_input: {
+        version: 1,
+        kind: "human_input_request",
+        source: "ask_intent_approval",
+        request_id: "data-query:req",
+        flow_id: "ABCDEFGH",
+        input_mode: "multi_question_choice",
+        questions: [
+          {
+            id: "question_1",
+            question: "确认时间范围？",
+            options: [{ id: "option_1", label: "是", value: "是" }],
+          },
+        ],
+      },
+    },
+  } as unknown as Message;
+  const responseMessage = {
+    type: "human",
+    content: "hidden",
+    additional_kwargs: {
+      hide_from_ui: true,
+      human_input_response: {
+        version: 1,
+        kind: "human_input_response",
+        source: "ask_intent_approval",
+        request_id: "data-query:req",
+        flow_id: "DIFFERENT",
+        response_kind: "text",
+        value: "{}",
+      },
+    },
+  } as unknown as Message;
+
+  const state = deriveHumanInputThreadState([requestMessage, responseMessage]);
+  expect(state.answeredResponses.size).toBe(0);
+  expect(state.latestOpenRequestId).toBe("data-query:req");
 });

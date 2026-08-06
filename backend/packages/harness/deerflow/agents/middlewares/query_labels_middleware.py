@@ -10,10 +10,13 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from hashlib import sha256
+import secrets
 from typing import Any, Sequence, override
 
 from deerflow.agents.human_input import read_human_input_response
+from deerflow.agents.human_input import read_human_input_response
 from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.prebuilt.tool_node import ToolCallRequest
@@ -38,7 +41,7 @@ _LABEL_SOURCES = frozenset(
         "derived",   # 模型推理生成的标签
     }
 )
-
+_FLOW_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 
 class QueryLabelsMiddleware(AgentMiddleware):
     """拦截标签声明工具并把结构化标签写入 runtime 状态。"""
@@ -114,16 +117,20 @@ class QueryLabelsMiddleware(AgentMiddleware):
 
         try:
             # 整理为结构化字段
-            payload, service_state = self._extract_query_labels(request)
+            payload = self._extract_query_labels(request)
         except ValueError as exc:
             return self._error(request, str(exc))
+
+        # 获取审批决策
+        approval = payload.get("approval") if isinstance(payload.get("approval"), Mapping) else {}
 
         # 构造 publish_query_labels 工具结果(ToolMessgae.content)
         content = {
             "ok": True,
-            "approval_required": "",
-            "approval_reason": service_state.get("approval_policy", {}),
-            "next_tool": "ask_intent_approval",
+            "flow_id": approval.get("flow_id", f"miss-flow-id-{self._build_flow_id()}"),      # TODO: 未来可绑定当前会话的 flow_id
+            "approval_required": approval.get("required", False),
+            "approval_reason": approval.get("reason", {}),
+            "next_tool": approval.get("next_tool", None),
         }
         
         message = ToolMessage(
@@ -134,13 +141,13 @@ class QueryLabelsMiddleware(AgentMiddleware):
             content=json.dumps(content, ensure_ascii=False),
             artifact=payload,
         )
-
+        
         self._emit_stream_event(payload)
-        update: dict[str, Any] = {"messages": [message], "service_states": [service_state]}
+        update: dict[str, Any] = {"messages": [message]}
         return Command(update=update)
 
     # ADD: 提取标签
-    def _extract_query_labels(self, request: ToolCallRequest) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _extract_query_labels(self, request: ToolCallRequest) -> dict[str, Any]:
         """提取工具请求的参数做结构化装配.
 
         Args:
@@ -185,19 +192,19 @@ class QueryLabelsMiddleware(AgentMiddleware):
             "approval": approval
         }
 
-        service_payload = {
-            "labels": normalized_labels,
-            "review_items": build_query_review_items(args),
-            "approval": approval
-        }
+        # service_payload = {
+        #     "labels": normalized_labels,
+        #     "review_items": build_query_review_items(args),
+        #     "approval": approval
+        # }
 
-        # ADD: 创建活动状态
-        service_state = make_service_state(
-            stage="labels_published",
-            data_source_id=self._service_ability.data_source_id,
-            payload=service_payload,
-        )
-        return artifact, service_state
+        # # ADD: 创建活动状态
+        # service_state = make_service_state(
+        #     stage="labels_published",
+        #     data_source_id=self._service_ability.data_source_id,
+        #     payload=service_payload,
+        # )
+        return artifact
 
 
 
@@ -324,14 +331,18 @@ class QueryLabelsMiddleware(AgentMiddleware):
     # ADD: 判断意图是否需要人工审批
     @staticmethod
     def _decide_query_approval(
+        self,
         config: DataQueryServiceAbilityConfig | None,
         args: Mapping[str, Any],
     ) -> dict[str, Any]:
         """根据审批配置和模型判断，生成本轮标签发布后的审批决策。"""
         model_requested_approval = bool(args.get("approval_required"))
 
+        flow_id = self._build_flow_id()  # 生成新的 flow_id
+
         if config is not None and config.confirmation_mode == "always":
             return {
+                "flow_id": flow_id,
                 "required": True,
                 "reason": "当前审批配置要求必须进行人工审批,调用 ask_intent_approval 工具",
                 "next_tool": "ask_intent_approval",
@@ -342,13 +353,28 @@ class QueryLabelsMiddleware(AgentMiddleware):
             and model_requested_approval
         ):
             return {
+                "flow_id": flow_id,
                 "required": True,
                 "reason": "存在未消解歧义，需要人类审批,请调用 ask_intent_approval 工具",
                 "next_tool": "ask_intent_approval",
             }
 
         return {
+            "flow_id": flow_id,
             "required": False,
             "reason": "当前意图和标签无需人工审批，可以继续下一步。",
             "next_tool": None,
         }
+
+    def _build_flow_id(self) -> str:
+        """生成一个新的 flow_id，用于标识当前意图标签发布的审批流程。
+        Return:
+            新的 flow_id 字符串。
+        """
+
+        value = int.from_bytes(secrets.token_bytes(5), "big")
+        chars = []
+        for _ in range(8):
+            chars.append(_FLOW_ID_ALPHABET[value & 31])
+            value >>= 5
+        return "".join(reversed(chars))

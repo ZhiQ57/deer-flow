@@ -1,8 +1,7 @@
 import { describe, expect, it } from "@rstest/core";
 
 import {
-  createDataQueryReviewResponse,
-  parseDataQueryReviewDecisions,
+  parseDataQueryIntentApprovalArtifact,
   parseDataQueryLabelsArtifact,
   parseDataQuerySqlResultArtifact,
   summarizeDataQueryInternalPayloadText,
@@ -10,67 +9,47 @@ import {
 
 function artifact() {
   return {
-    version: 1,
-    kind: "data_query_labels",
-    service_name: "data_query",
-    snapshot_id: "sha256:snapshot",
-    data_source_id: "sales-pg",
-    turn_id: "turn-1",
-    retrieval_digest: "retrieval:sha256:digest",
-    binding_fingerprint: "sha256:target",
     intent: "ranking",
     summary: "查询华东销售额最高的商品",
-    ambiguities: [],
-    ambiguity_items: [],
     labels: [
       {
         label: "指标",
         value: "销售额",
         source: "database",
-        evidence_refs: ["evidence:sha256:metric"],
+        evidence: "销售额口径",
       },
     ],
-    evidence: [
-      {
-        ref: "evidence:sha256:metric",
-        kind: "evidence",
-        summary: "销售额口径",
-      },
-    ],
+    evidence: [],
     approval: {
-      version: 1,
-      snapshot_id: "sha256:snapshot",
-      status: "approved",
-      action: "execute",
-      source: "policy",
+      flow_id: "ABCDEFGH",
+      required: true,
+      reason: "需要人工审批",
+      next_tool: "ask_intent_approval",
     },
   };
 }
 
 describe("parseDataQueryLabelsArtifact", () => {
-  it("parses the canonical v1 artifact", () => {
+  it("parses the new publish_query_labels artifact", () => {
     expect(parseDataQueryLabelsArtifact(artifact())?.labels[0]?.value).toBe(
       "销售额",
     );
   });
 
-  it("rejects unknown versions, missing fields, and mismatched snapshots", () => {
+  it("rejects missing labels and malformed approval flow ids", () => {
     expect(
-      parseDataQueryLabelsArtifact({ ...artifact(), version: 2 }),
-    ).toBeNull();
-    expect(
-      parseDataQueryLabelsArtifact({ ...artifact(), data_source_id: "" }),
+      parseDataQueryLabelsArtifact({ ...artifact(), labels: [] }),
     ).toBeNull();
     expect(
       parseDataQueryLabelsArtifact({
         ...artifact(),
-        approval: { ...artifact().approval, snapshot_id: "sha256:forged" },
+        approval: { ...artifact().approval, flow_id: "" },
       }),
     ).toBeNull();
     expect(
       parseDataQueryLabelsArtifact({
         ...artifact(),
-        approval: { ...artifact().approval, status: "approved", action: null },
+        approval: { ...artifact().approval, required: "yes" },
       }),
     ).toBeNull();
   });
@@ -87,47 +66,50 @@ describe("parseDataQueryLabelsArtifact", () => {
             label: "指标",
             value: "x",
             source: "database",
-            evidence_refs: "forged",
+            evidence: { forged: true },
           },
         ],
       }),
     ).toBeNull();
   });
 
-  it("builds and parses a bounded per-item review response", () => {
-    const parsed = parseDataQueryLabelsArtifact({
-      ...artifact(),
-      ambiguities: ["时间范围不明确"],
-      ambiguity_items: [
-        {
-          id: "ambiguity:time",
-          question: "时间范围不明确",
-          status: "pending",
-          options: [
-            { id: "accept", label: "按当前理解继续", value: "accept" },
-            { id: "modify", label: "修改这一项", value: "modify" },
-          ],
-        },
-      ],
-    });
-    const response = createDataQueryReviewResponse(
-      {
-        version: 1,
-        kind: "human_input_request",
-        source: "ask_intent_approval",
-        request_id: "data-query:req",
-        question: "确认",
-        input_mode: "choice_with_other",
-      },
-      parsed!,
-      [{ id: "ambiguity:time", decision: "accept" }],
-      "execute",
-    );
-
+  it("parses the flow-bound ask_intent_approval artifact", () => {
     expect(
-      parseDataQueryReviewDecisions(response)["ambiguity:time"]?.decision,
-    ).toBe("accept");
-    expect(response.value).toContain('"final_action":"execute"');
+      parseDataQueryIntentApprovalArtifact({
+        version: 1,
+        kind: "data_query_intent_approval",
+        service_name: "data_query",
+        flow_id: "ABCDEFGH",
+        human_input: { kind: "human_input_request" },
+        approval: {
+          version: 1,
+          flow_id: "ABCDEFGH",
+          status: "awaiting_confirmation",
+          action: null,
+          source: null,
+          request_id: "request-1",
+          tool_call_id: "call-1",
+        },
+      })?.flow_id,
+    ).toBe("ABCDEFGH");
+    expect(
+      parseDataQueryIntentApprovalArtifact({
+        version: 1,
+        kind: "data_query_intent_approval",
+        service_name: "data_query",
+        flow_id: "ABCDEFGH",
+        human_input: {},
+        approval: {
+          version: 1,
+          flow_id: "DIFFERENT",
+          status: "awaiting_confirmation",
+          action: null,
+          source: null,
+          request_id: "request-1",
+          tool_call_id: "call-1",
+        },
+      }),
+    ).toBeNull();
   });
 
   it("summarizes internal DataAgent payloads instead of exposing raw JSON text", () => {
@@ -155,7 +137,9 @@ describe("parseDataQueryLabelsArtifact", () => {
       summarizeDataQueryInternalPayloadText(
         '{"ok":false,"error":"当前查询阶段不允许重复发布标签。"}',
       ),
-    ).toBe("内部工具执行失败，已隐藏协议内容。(当前查询阶段不允许重复发布标签。)");
+    ).toBe(
+      "内部工具执行失败，已隐藏协议内容。(当前查询阶段不允许重复发布标签。)",
+    );
     expect(
       summarizeDataQueryInternalPayloadText(
         '{"version":1,"kind":"data_query_sql_response","validation":{"status":"pending"}}',

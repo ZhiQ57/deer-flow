@@ -150,6 +150,13 @@ export interface Translations {
     voiceInputNoSpeech: string;
     voiceInputFailed: string;
     mode: string;
+    approvalMode: string;
+    approvalModeAlways: string;
+    approvalModeAlwaysDescription: string;
+    approvalModeOnAmbiguity: string;
+    approvalModeOnAmbiguityDescription: string;
+    approvalModeAuto: string;
+    approvalModeAutoDescription: string;
     flashMode: string;
     flashModeDescription: string;
     reasoningMode: string;

@@ -1,7 +1,5 @@
 import type { Message } from "@langchain/langgraph-sdk";
 
-import type { HumanInputRequest, HumanInputResponse } from "./human-input";
-
 export type QueryLabelSource = "user" | "database" | "derived";
 
 export type QueryIntentLabel = {
@@ -9,58 +7,42 @@ export type QueryIntentLabel = {
   value: string;
   source: QueryLabelSource;
   normalized?: string;
-  evidence_refs: string[];
+  evidence?: string;
 };
 
-export type QueryIntentEvidence = {
-  ref: string;
-  kind: string;
-  summary: string;
-};
-
-export type QueryIntentReviewItem = {
-  id: string;
-  question: string;
-  status: "pending" | "accepted" | "modified";
-  options: { id: "accept" | "modify"; label: string; value: string }[];
-};
-
-export type QueryIntentApproval = {
-  version: 1;
-  snapshot_id: string;
-  status: "approved" | "awaiting_confirmation" | "revision_requested" | "cancelled";
-  action: "execute" | "sql_only" | "modify" | "cancel" | null;
-  source: "model" | "human" | "policy" | null;
-};
+export type QueryIntentEvidence = Record<string, unknown>;
 
 export type QueryIntentApprovalPolicy = {
-  version: 1;
-  snapshot_id: string;
+  flow_id: string;
   required: boolean;
-  mode: "auto" | "on_ambiguity" | "always";
   reason: string;
+  next_tool: string | null;
 };
 
 export type QueryIntentArtifact = {
-  version: 1;
-  kind: "data_query_labels";
-  service_name: "data_query";
-  snapshot_id: string;
-  data_source_id: string;
-  turn_id: string;
-  retrieval_digest: string;
-  binding_fingerprint: string;
   intent: string;
   summary?: string | null;
-  ambiguities: string[];
-  ambiguity_items: QueryIntentReviewItem[];
   labels: QueryIntentLabel[];
   evidence: QueryIntentEvidence[];
-  approval_required?: boolean;
-  approval_policy?: QueryIntentApprovalPolicy;
-  approval?: QueryIntentApproval;
-  approval_result?: QueryIntentApproval;
-  human_input?: unknown;
+  approval: QueryIntentApprovalPolicy;
+};
+
+export type QueryIntentApprovalArtifact = {
+  version: 1;
+  kind: "data_query_intent_approval";
+  service_name: "data_query";
+  flow_id: string;
+  human_input: unknown;
+  approval: {
+    version: 1;
+    flow_id: string;
+    status: "awaiting_confirmation" | "approved" | "cancelled";
+    action: "execute" | "sql_only" | "cancel" | null;
+    source: "human" | null;
+    request_id: string;
+    tool_call_id: string;
+  };
+  approval_result?: Record<string, unknown>;
 };
 
 export type QuerySqlResultArtifact = {
@@ -174,7 +156,9 @@ function parseJsonRecordText(text: string): Record<string, unknown> | null {
   }
 }
 
-function looksLikeEntityExtractPayload(value: Record<string, unknown>): boolean {
+function looksLikeEntityExtractPayload(
+  value: Record<string, unknown>,
+): boolean {
   const queryContext = isRecord(value.query_context)
     ? value.query_context
     : value;
@@ -224,8 +208,7 @@ export function summarizeDataQueryInternalPayloadText(
       const rawError = payload.error;
       if (typeof rawError === "string" && rawError.trim()) {
         const summary =
-          formatDataQueryInternalErrorCode(rawError.trim()) ??
-          rawError.trim();
+          formatDataQueryInternalErrorCode(rawError.trim()) ?? rawError.trim();
         return `内部工具执行失败，已隐藏协议内容。${summary ? `(${summary})` : ""}`;
       }
       return "内部工具执行失败，已隐藏协议内容。";
@@ -277,178 +260,47 @@ function parseLabel(value: unknown): QueryIntentLabel | null {
   )
     return null;
   if (
-    !Array.isArray(value.evidence_refs) ||
-    value.evidence_refs.length > 20 ||
-    value.evidence_refs.some((ref) => !isBoundedString(ref, 200))
-  )
-    return null;
-  if (
     value.normalized !== undefined &&
     value.normalized !== null &&
     !isBoundedString(value.normalized, 200)
+  )
+    return null;
+  if (
+    value.evidence !== undefined &&
+    value.evidence !== null &&
+    !isBoundedString(value.evidence, 500)
   )
     return null;
   return {
     label: value.label,
     value: value.value,
     source: value.source,
-    evidence_refs: value.evidence_refs,
     ...(value.normalized ? { normalized: value.normalized } : {}),
+    ...(value.evidence ? { evidence: value.evidence } : {}),
   };
 }
 
 function parseEvidence(value: unknown): QueryIntentEvidence | null {
-  if (!isRecord(value)) return null;
-  if (
-    !isBoundedString(value.ref, 200) ||
-    !isBoundedString(value.kind, 50) ||
-    !isBoundedString(value.summary, 500)
-  )
-    return null;
-  return { ref: value.ref, kind: value.kind, summary: value.summary };
+  return isRecord(value) ? value : null;
 }
 
-function parseReviewItems(
-  value: unknown,
-  ambiguities: string[],
-): QueryIntentReviewItem[] | null {
-  if (value === undefined) {
-    return ambiguities.map((question, index) => ({
-      id: `legacy-ambiguity-${index}`,
-      question,
-      status: "pending",
-      options: [
-        { id: "accept", label: "按当前理解继续", value: "accept" },
-        { id: "modify", label: "修改这一项", value: "modify" },
-      ],
-    }));
-  }
-  if (!Array.isArray(value) || value.length > 20) return null;
-  const items: QueryIntentReviewItem[] = [];
-  for (const item of value) {
-    if (
-      !isRecord(item) ||
-      !isBoundedString(item.id, 200) ||
-      !isBoundedString(item.question, 500)
-    )
-      return null;
-    if (
-      item.status !== "pending" &&
-      item.status !== "accepted" &&
-      item.status !== "modified"
-    )
-      return null;
-    if (
-      !Array.isArray(item.options) ||
-      item.options.length < 2 ||
-      item.options.length > 4
-    )
-      return null;
-    const options = item.options.map((option) => {
-      if (
-        !isRecord(option) ||
-        (option.id !== "accept" && option.id !== "modify") ||
-        !isBoundedString(option.label, 100) ||
-        !isBoundedString(option.value, 100)
-      )
-        return null;
-      return { id: option.id, label: option.label, value: option.value };
-    });
-    if (options.some((option) => option === null)) return null;
-    items.push({
-      id: item.id,
-      question: item.question,
-      status: item.status,
-      options: options as QueryIntentReviewItem["options"],
-    });
-  }
-  return items;
-}
-
-function parseApprovalPolicy(
-  value: unknown,
-  snapshotId: string,
-): QueryIntentApprovalPolicy | null {
+function parseApprovalPolicy(value: unknown): QueryIntentApprovalPolicy | null {
   if (!isRecord(value)) return null;
   if (
-    value.version !== 1 ||
-    value.snapshot_id !== snapshotId ||
+    !isBoundedString(value.flow_id, 200) ||
     typeof value.required !== "boolean" ||
-    (value.mode !== "auto" &&
-      value.mode !== "on_ambiguity" &&
-      value.mode !== "always") ||
-    !isBoundedString(value.reason, 500)
+    !isBoundedString(value.reason, 500) ||
+    (value.next_tool !== null &&
+      value.next_tool !== undefined &&
+      !isBoundedString(value.next_tool, 100))
   ) {
     return null;
   }
   return {
-    version: 1,
-    snapshot_id: value.snapshot_id,
+    flow_id: value.flow_id,
     required: value.required,
-    mode: value.mode,
     reason: value.reason,
-  };
-}
-
-function parseApproval(
-  value: unknown,
-  snapshotId: string,
-): QueryIntentApproval | null {
-  if (!isRecord(value)) return null;
-  if (value.version !== 1 || value.snapshot_id !== snapshotId) return null;
-  if (
-    value.status !== "approved" &&
-    value.status !== "awaiting_confirmation" &&
-    value.status !== "revision_requested" &&
-    value.status !== "cancelled"
-  ) {
-    return null;
-  }
-  if (
-    value.action !== null &&
-    value.action !== "execute" &&
-    value.action !== "sql_only" &&
-    value.action !== "modify" &&
-    value.action !== "cancel"
-  ) {
-    return null;
-  }
-  if (
-    value.source !== null &&
-    value.source !== "model" &&
-    value.source !== "human" &&
-    value.source !== "policy"
-  ) {
-    return null;
-  }
-  if (
-    value.status === "approved" &&
-    value.action !== "execute" &&
-    value.action !== "sql_only"
-  ) {
-    return null;
-  }
-  if (
-    value.status === "awaiting_confirmation" &&
-    (value.action !== null || value.source !== null)
-  ) {
-    return null;
-  }
-  if (
-    value.status === "revision_requested" &&
-    (value.action !== "modify" || value.source !== "human")
-  ) {
-    return null;
-  }
-  if (value.status === "cancelled" && value.action !== "cancel") {
-    return null;
-  }
-  return {
-    version: 1,
-    snapshot_id: value.snapshot_id,
-    status: value.status,
-    action: value.action,
-    source: value.source,
+    next_tool: typeof value.next_tool === "string" ? value.next_tool : null,
   };
 }
 
@@ -456,17 +308,7 @@ export function parseDataQueryLabelsArtifact(
   value: unknown,
 ): QueryIntentArtifact | null {
   if (!isRecord(value)) return null;
-  if (
-    value.version !== 1 ||
-    value.kind !== "data_query_labels" ||
-    value.service_name !== "data_query" ||
-    !isBoundedString(value.snapshot_id, 200) ||
-    !isBoundedString(value.data_source_id, 128) ||
-    !isBoundedString(value.turn_id, 200) ||
-    !isBoundedString(value.retrieval_digest, 200) ||
-    !isBoundedString(value.binding_fingerprint, 200) ||
-    !isBoundedString(value.intent, 100)
-  ) {
+  if (!isBoundedString(value.intent, 100)) {
     return null;
   }
   if (
@@ -475,17 +317,6 @@ export function parseDataQueryLabelsArtifact(
     !isBoundedString(value.summary, 500)
   )
     return null;
-  if (
-    !Array.isArray(value.ambiguities) ||
-    value.ambiguities.length > 20 ||
-    value.ambiguities.some((item) => !isBoundedString(item, 200))
-  )
-    return null;
-  const ambiguityItems = parseReviewItems(
-    value.ambiguity_items,
-    value.ambiguities,
-  );
-  if (ambiguityItems?.length !== value.ambiguities.length) return null;
   if (
     !Array.isArray(value.labels) ||
     value.labels.length === 0 ||
@@ -500,48 +331,75 @@ export function parseDataQueryLabelsArtifact(
     evidence.some((item) => item === null)
   )
     return null;
-  const approvalPolicy =
-    value.approval_policy === undefined
-      ? undefined
-      : parseApprovalPolicy(value.approval_policy, value.snapshot_id);
-  if (value.approval_policy !== undefined && approvalPolicy === null) return null;
-  const approval =
-    value.approval === undefined ? undefined : parseApproval(value.approval, value.snapshot_id);
-  if (value.approval !== undefined && approval === null) return null;
-  const approvalResult =
-    value.approval_result === undefined
-      ? undefined
-      : parseApproval(value.approval_result, value.snapshot_id);
-  if (value.approval_result !== undefined && approvalResult === null) return null;
+  const approval = parseApprovalPolicy(value.approval);
+  if (!approval) return null;
+  return {
+    intent: value.intent,
+    summary: value.summary === undefined ? undefined : value.summary,
+    labels: labels as QueryIntentLabel[],
+    evidence: evidence as QueryIntentEvidence[],
+    approval,
+  };
+}
+
+/**
+ * 解析 ask_intent_approval 工具返回的新审批 artifact。
+ *
+ * Args:
+ *   value: ToolMessage.artifact 原始值。
+ *
+ * Returns:
+ *   合法审批 artifact；格式不匹配时返回 null。
+ */
+export function parseDataQueryIntentApprovalArtifact(
+  value: unknown,
+): QueryIntentApprovalArtifact | null {
   if (
-    value.approval_required !== undefined &&
-    typeof value.approval_required !== "boolean"
+    !isRecord(value) ||
+    value.version !== 1 ||
+    value.kind !== "data_query_intent_approval" ||
+    value.service_name !== "data_query" ||
+    !isBoundedString(value.flow_id, 200) ||
+    !isRecord(value.approval)
   ) {
     return null;
   }
+
+  const approval = value.approval;
+  if (
+    approval.version !== 1 ||
+    approval.flow_id !== value.flow_id ||
+    (approval.status !== "awaiting_confirmation" &&
+      approval.status !== "approved" &&
+      approval.status !== "cancelled") ||
+    (approval.action !== null &&
+      approval.action !== "execute" &&
+      approval.action !== "sql_only" &&
+      approval.action !== "cancel") ||
+    (approval.source !== null && approval.source !== "human") ||
+    !isBoundedString(approval.request_id, 200) ||
+    !isBoundedString(approval.tool_call_id, 200)
+  ) {
+    return null;
+  }
+
   return {
     version: 1,
-    kind: "data_query_labels",
+    kind: "data_query_intent_approval",
     service_name: "data_query",
-    snapshot_id: value.snapshot_id,
-    data_source_id: value.data_source_id,
-    turn_id: value.turn_id,
-    retrieval_digest: value.retrieval_digest,
-    binding_fingerprint: value.binding_fingerprint,
-    intent: value.intent,
-    summary: value.summary === undefined ? undefined : value.summary,
-    ambiguities: value.ambiguities,
-    ambiguity_items: ambiguityItems,
-    labels: labels as QueryIntentLabel[],
-    evidence: evidence as QueryIntentEvidence[],
-    ...(typeof value.approval_required === "boolean"
-      ? { approval_required: value.approval_required }
-      : {}),
-    ...(approvalPolicy ? { approval_policy: approvalPolicy } : {}),
-    ...(approval ? { approval } : {}),
-    ...(approvalResult ? { approval_result: approvalResult } : {}),
-    ...(value.human_input !== undefined
-      ? { human_input: value.human_input }
+    flow_id: value.flow_id,
+    human_input: value.human_input,
+    approval: {
+      version: 1,
+      flow_id: approval.flow_id,
+      status: approval.status,
+      action: approval.action,
+      source: approval.source,
+      request_id: approval.request_id,
+      tool_call_id: approval.tool_call_id,
+    },
+    ...(isRecord(value.approval_result)
+      ? { approval_result: value.approval_result }
       : {}),
   };
 }
@@ -549,24 +407,46 @@ export function parseDataQueryLabelsArtifact(
 export function extractDataQueryLabelsArtifact(
   message: Message,
 ): QueryIntentArtifact | null {
-  if (
-    message.type !== "tool" ||
-    (message.name !== "publish_query_labels" && message.name !== "ask_intent_approval")
-  )
+  if (message.type !== "tool" || message.name !== "publish_query_labels")
     return null;
   return parseDataQueryLabelsArtifact(readMessageArtifact(message));
+}
+
+export function extractDataQueryIntentApprovalArtifact(
+  message: Message,
+): QueryIntentApprovalArtifact | null {
+  if (message.type !== "tool" || message.name !== "ask_intent_approval")
+    return null;
+  return parseDataQueryIntentApprovalArtifact(readMessageArtifact(message));
 }
 
 export function isDataQueryLabelsToolMessage(message: Message): boolean {
   return extractDataQueryLabelsArtifact(message) !== null;
 }
 
-export function isDataQueryIntentApprovalToolMessage(message: Message): boolean {
-  return message.type === "tool" && message.name === "ask_intent_approval" && extractDataQueryLabelsArtifact(message) !== null;
+export function isDataQueryIntentApprovalToolMessage(
+  message: Message,
+): boolean {
+  return extractDataQueryIntentApprovalArtifact(message) !== null;
 }
 
 export function findLatestDataQueryIntentMessage(messages: Message[]) {
-  return [...messages].reverse().find((message) => extractDataQueryLabelsArtifact(message) !== null) ?? null;
+  return (
+    [...messages]
+      .reverse()
+      .find((message) => extractDataQueryLabelsArtifact(message) !== null) ??
+    null
+  );
+}
+
+export function findLatestDataQueryIntentApprovalMessage(messages: Message[]) {
+  return (
+    [...messages]
+      .reverse()
+      .find(
+        (message) => extractDataQueryIntentApprovalArtifact(message) !== null,
+      ) ?? null
+  );
 }
 
 export function parseDataQuerySqlResultArtifact(
@@ -753,96 +633,4 @@ export function extractDataQuerySqlResultArtifact(
 
 export function isDataQuerySqlResultToolMessage(message: Message): boolean {
   return extractDataQuerySqlResultArtifact(message) !== null;
-}
-
-export type QueryIntentReviewDecision = {
-  id: string;
-  decision: "accept" | "modify";
-  value?: string;
-};
-
-export function createDataQueryReviewResponse(
-  request: HumanInputRequest,
-  artifact: QueryIntentArtifact,
-  decisions: QueryIntentReviewDecision[],
-  finalAction: "execute" | "sql_only" | "cancel",
-): HumanInputResponse {
-  return {
-    version: 1,
-    kind: "human_input_response",
-    source: request.source,
-    request_id: request.request_id,
-    response_kind: "text",
-    value: JSON.stringify(
-      {
-        kind: "data_query_review_response",
-        snapshot_id: artifact.snapshot_id,
-        final_action: finalAction,
-        items: decisions,
-      },
-      null,
-      0,
-    ),
-  };
-}
-
-export function parseDataQueryReviewFinalAction(
-  response: HumanInputResponse | null,
-): "execute" | "sql_only" | "cancel" | "modify" | null {
-  if (!response) return null;
-  if (response.response_kind === "option") {
-    return response.option_id === "execute" ||
-      response.option_id === "sql_only" ||
-      response.option_id === "cancel"
-      ? response.option_id
-      : null;
-  }
-  try {
-    const value: unknown = JSON.parse(response.value);
-    if (
-      isRecord(value) &&
-      value.kind === "data_query_review_response" &&
-      (value.final_action === "execute" ||
-        value.final_action === "sql_only" ||
-        value.final_action === "cancel")
-    )
-      return value.final_action;
-  } catch {
-    return "modify";
-  }
-  return "modify";
-}
-
-export function parseDataQueryReviewDecisions(
-  response: HumanInputResponse | null,
-): Record<string, QueryIntentReviewDecision> {
-  if (response?.response_kind !== "text") return {};
-  try {
-    const value: unknown = JSON.parse(response.value);
-    if (
-      !isRecord(value) ||
-      value.kind !== "data_query_review_response" ||
-      !Array.isArray(value.items)
-    )
-      return {};
-    return Object.fromEntries(
-      value.items
-        .filter(
-          (item): item is Record<string, unknown> =>
-            isRecord(item) &&
-            typeof item.id === "string" &&
-            (item.decision === "accept" || item.decision === "modify"),
-        )
-        .map((item) => [
-          item.id,
-          {
-            id: item.id as string,
-            decision: item.decision as "accept" | "modify",
-            ...(typeof item.value === "string" ? { value: item.value } : {}),
-          },
-        ]),
-    );
-  } catch {
-    return {};
-  }
 }

@@ -175,6 +175,16 @@ export const enUS: Translations = {
     voiceInputNoSpeech: "No speech was detected. Please try again.",
     voiceInputFailed: "Voice input failed. Please try again.",
     mode: "Mode",
+    approvalMode: "Approval mode",
+    approvalModeAlways: "Always approve",
+    approvalModeAlwaysDescription:
+      "Request human approval before every SQL generation",
+    approvalModeOnAmbiguity: "Approve on ambiguity",
+    approvalModeOnAmbiguityDescription:
+      "Request approval only when the query intent is ambiguous",
+    approvalModeAuto: "Automatic approval",
+    approvalModeAutoDescription:
+      "Let the system decide and continue automatically",
     flashMode: "Flash",
     flashModeDescription: "Fast and efficient, but may not be accurate",
     reasoningMode: "Reasoning",
