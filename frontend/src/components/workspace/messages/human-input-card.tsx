@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CheckIcon,
   CheckCircle2Icon,
   Loader2Icon,
   MessageCircleQuestionMarkIcon,
@@ -14,6 +15,9 @@ import { useI18n } from "@/core/i18n/hooks";
 import {
   createHumanInputOptionResponse,
   createHumanInputTextResponse,
+  createMultiQuestionChoiceResponse,
+  parseIntentApprovalAnswers,
+  type HumanInputAnswer,
   type HumanInputOption,
   type HumanInputRequest,
   type HumanInputResponse,
@@ -55,12 +59,23 @@ export function HumanInputCard({
   const [text, setText] = useState("");
   const [error, setError] = useState("");
   const [isComposing, setIsComposing] = useState(false);
+  const [selectedOptionIds, setSelectedOptionIds] = useState<
+    Record<string, string>
+  >({});
   const titleId = useId();
   const textInputId = useId();
   const allowText =
     request.input_mode === "free_text" ||
     request.input_mode === "choice_with_other";
   const options = request.options ?? [];
+  const questions = request.questions ?? [];
+  const answeredIntentApproval = parseIntentApprovalAnswers(answeredResponse);
+  const answeredOptionIds = Object.fromEntries(
+    (answeredIntentApproval?.answers ?? []).map((answer) => [
+      answer.question_id,
+      answer.option_id,
+    ]),
+  );
   const readOnly = !onSubmit;
   const isDisabled =
     disabled || pending || Boolean(answeredResponse) || readOnly;
@@ -109,6 +124,35 @@ export function HumanInputCard({
     }
   };
 
+  /**
+   * 提交多问题审批答案。
+   *
+   * Args:
+   *   event: 表单提交事件。
+   *
+   * Returns:
+   *   无返回值。
+   */
+  const handleMultiQuestionSubmit = (event: { preventDefault(): void }) => {
+    event.preventDefault();
+    const answers: HumanInputAnswer[] = [];
+    for (const question of questions) {
+      const optionId = selectedOptionIds[question.id];
+      const option = question.options.find((item) => item.id === optionId);
+      if (!option) {
+        setError(t.humanInput.emptyError);
+        return;
+      }
+      answers.push({
+        question_id: question.id,
+        option_id: option.id,
+        value: option.value,
+      });
+    }
+    setError("");
+    void submitResponse(createMultiQuestionChoiceResponse(request, answers));
+  };
+
   return (
     <section
       aria-labelledby={titleId}
@@ -155,11 +199,93 @@ export function HumanInputCard({
             ) : null}
           </div>
 
-          <div className="text-foreground text-sm leading-6">
-            <MarkdownContent content={request.question} isLoading={false} />
-          </div>
+          {request.question ? (
+            <div className="text-foreground text-sm leading-6">
+              <MarkdownContent content={request.question} isLoading={false} />
+            </div>
+          ) : null}
 
-          {options.length > 0 ? (
+          {request.input_mode === "multi_question_choice" ? (
+            <form className="space-y-4" onSubmit={handleMultiQuestionSubmit}>
+              {questions.map((question, questionIndex) => {
+                const selectedOptionId =
+                  answeredOptionIds[question.id] ??
+                  selectedOptionIds[question.id];
+                return (
+                  <fieldset
+                    key={question.id}
+                    className="border-border/70 space-y-3 rounded-md border p-3"
+                    disabled={isDisabled}
+                  >
+                    <legend className="px-1 text-sm font-medium">
+                      {questionIndex + 1}. {question.question}
+                    </legend>
+                    <div className="grid gap-2">
+                      {question.options.map((option) => {
+                        const selected = selectedOptionId === option.id;
+                        return (
+                          <Button
+                            key={option.id}
+                            aria-pressed={selected}
+                            className="min-h-11 w-full justify-start rounded-md px-3 py-2 text-left leading-5 whitespace-normal"
+                            disabled={isDisabled}
+                            type="button"
+                            variant={selected ? "secondary" : "outline"}
+                            onClick={() => {
+                              setError("");
+                              setSelectedOptionIds((current) => ({
+                                ...current,
+                                [question.id]: option.id,
+                              }));
+                            }}
+                          >
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="border-input flex size-4 shrink-0 items-center justify-center rounded-full border">
+                                {selected ? (
+                                  <CheckIcon className="size-3" />
+                                ) : null}
+                              </span>
+                              <span className="min-w-0 wrap-break-word whitespace-pre-wrap">
+                                {option.label}
+                              </span>
+                            </span>
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
+                );
+              })}
+              <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
+                {error ? (
+                  <p className="text-destructive text-sm">{error}</p>
+                ) : answeredIntentApproval ? (
+                  <p className="text-muted-foreground text-sm">
+                    {t.humanInput.answeredValue(
+                      answeredIntentApproval.answers
+                        .map((answer) => answer.value)
+                        .join("；"),
+                    )}
+                  </p>
+                ) : (
+                  <span />
+                )}
+                <Button
+                  className="min-w-24"
+                  disabled={isDisabled}
+                  type="submit"
+                >
+                  {pending ? (
+                    <Loader2Icon className="size-4 animate-spin" />
+                  ) : null}
+                  {t.humanInput.submit}
+                </Button>
+              </div>
+            </form>
+          ) : null}
+
+          {request.input_mode !== "multi_question_choice" &&
+          options.length > 0 ? (
             <div className="grid gap-2">
               {options.map((option) => (
                 <Button
@@ -178,7 +304,7 @@ export function HumanInputCard({
             </div>
           ) : null}
 
-          {allowText ? (
+          {request.input_mode !== "multi_question_choice" && allowText ? (
             <form className="space-y-2" onSubmit={handleTextSubmit}>
               <label className="sr-only" htmlFor={textInputId}>
                 {t.humanInput.otherLabel}
@@ -232,7 +358,8 @@ export function HumanInputCard({
                 </Button>
               </div>
             </form>
-          ) : answeredResponse ? (
+          ) : request.input_mode !== "multi_question_choice" &&
+            answeredResponse ? (
             <p className="text-muted-foreground text-sm" aria-live="polite">
               {t.humanInput.answeredValue(answeredResponse.value)}
             </p>

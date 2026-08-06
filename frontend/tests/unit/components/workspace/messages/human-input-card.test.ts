@@ -82,6 +82,60 @@ describe("HumanInputCard", () => {
     expect(html).not.toContain("**篇幅**");
   });
 
+  it("renders multiple questions and grouped options", () => {
+    const html = renderCard({
+      request: {
+        version: 1,
+        kind: "human_input_request",
+        source: "ask_intent_approval",
+        request_id: "data-query:req",
+        flow_id: "ABCDEFGH",
+        title: "确认数据查询意图",
+        context: "需要确认这些查询条件",
+        input_mode: "multi_question_choice",
+        questions: [
+          {
+            id: "question_1",
+            question: "时间范围是否是 2024 年全年？",
+            options: [
+              {
+                id: "question_1_option_1",
+                label: "是",
+                value: "是",
+              },
+              {
+                id: "question_1_option_2",
+                label: "否，最近一年",
+                value: "否，最近一年",
+              },
+            ],
+          },
+          {
+            id: "question_2",
+            question: "统计口径使用订单金额还是支付金额？",
+            options: [
+              {
+                id: "question_2_option_1",
+                label: "订单金额",
+                value: "订单金额",
+              },
+              {
+                id: "question_2_option_2",
+                label: "支付金额",
+                value: "支付金额",
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(html).toContain("时间范围是否是 2024 年全年？");
+    expect(html).toContain("统计口径使用订单金额还是支付金额？");
+    expect(html).toContain("否，最近一年");
+    expect(html).toContain("支付金额");
+  });
+
   it("does not submit text with Enter while IME composition is active", () => {
     expect(shouldSubmitHumanInputTextOnKeyDown(keyEvent())).toBe(true);
     expect(

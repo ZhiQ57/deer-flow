@@ -1,0 +1,21 @@
+# DataAgent 多问题审批前端改造计划
+
+- [X] 1. 梳理前端人机输入与 DataAgent 审批现有协议
+  - [X] 1.1 阅读 `human-input` 类型、解析、响应生成逻辑
+  - [X] 1.2 阅读 `HumanInputCard`、`QueryIntentCard` 与消息列表挂载方式
+  - [X] 1.3 确认 DataAgent 对话框审批模式控件的挂载位置
+- [X] 2. 更新 human-input 类型、解析与多问题响应协议
+  - [X] 2.1 增加 `multi_question_choice`、`questions`、`flow_id`
+  - [X] 2.2 支持多问题选项解析与 JSON 答案响应
+  - [X] 2.3 更新请求/响应文本与状态识别
+- [X] 3. 更新审批卡片及 DataAgent 回显结构
+  - [X] 3.1 按问题分组渲染选项并校验全部问题已作答
+  - [X] 3.2 提交 `flow_id`、`answers`、`final_action`
+  - [X] 3.3 适配新版 `publish_intent_label` artifact，移除过时字段依赖
+- [X] 4. 在 DataAgent 对话框增加审批模式占位控件
+  - [X] 4.1 仅对 DataAgent 显示三种审批模式入口
+  - [X] 4.2 提供 `always`、`on_ambiguity`、`auto` 选项并保留占位状态
+- [X] 5. 补充测试、运行检查并完成 review
+  - [X] 5.1 增加/更新单元测试
+  - [X] 5.2 运行 `pnpm check` 与相关测试
+  - [X] 5.3 更新计划完成状态并记录 review 结果

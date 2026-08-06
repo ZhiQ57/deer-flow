@@ -1,6 +1,7 @@
 import type { AIMessage, Message } from "@langchain/langgraph-sdk";
 
 import {
+  extractDataQueryIntentApprovalArtifact,
   isDataQueryInternalPayloadText,
   isDataQueryIntentApprovalToolMessage,
   isDataQueryLabelsToolMessage,
@@ -93,26 +94,33 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
           type: "assistant:clarification",
           messages: [message],
         });
-      } else if (isDataQueryLabelsToolMessage(message) || isDataQueryIntentApprovalToolMessage(message)) {
-        const artifact = extractDataQueryLabelsArtifact(message);
+      } else if (
+        isDataQueryLabelsToolMessage(message) ||
+        isDataQueryIntentApprovalToolMessage(message)
+      ) {
         // ADD: DataAgent 标签 artifact 独立成卡片，同时保留前置工具轨迹。
         lastOpenGroup()?.messages.push(message);
-        if (
-          isDataQueryIntentApprovalToolMessage(message) &&
-          artifact?.snapshot_id
-        ) {
-          const matchingGroup = [...groups]
-            .reverse()
-            .find((group) => {
-              if (group.type !== "assistant:query-intent") {
-                return false;
-              }
-              const latestArtifact = [...group.messages]
-                .reverse()
-                .map((item) => extractDataQueryLabelsArtifact(item))
-                .find((item): item is NonNullable<ReturnType<typeof extractDataQueryLabelsArtifact>> => item !== null);
-              return latestArtifact?.snapshot_id === artifact.snapshot_id;
-            });
+        const approvalArtifact =
+          extractDataQueryIntentApprovalArtifact(message);
+        if (approvalArtifact) {
+          const matchingGroup = [...groups].reverse().find((group) => {
+            if (group.type !== "assistant:query-intent") {
+              return false;
+            }
+            const latestArtifact = [...group.messages]
+              .reverse()
+              .map((item) => extractDataQueryLabelsArtifact(item))
+              .find(
+                (
+                  item,
+                ): item is NonNullable<
+                  ReturnType<typeof extractDataQueryLabelsArtifact>
+                > => item !== null,
+              );
+            return (
+              latestArtifact?.approval.flow_id === approvalArtifact.flow_id
+            );
+          });
           if (matchingGroup) {
             matchingGroup.messages.push(message);
             continue;

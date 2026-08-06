@@ -14,6 +14,7 @@ import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { GoalStatus } from "@/components/workspace/goal-status";
 import {
   InputBox,
+  type DataAgentApprovalMode,
   type InputBoxSubmitOptions,
 } from "@/components/workspace/input-box";
 import {
@@ -226,6 +227,14 @@ export default function AgentChatPage() {
       ),
     [thread.messages],
   );
+  const dataAgentApprovalMode: DataAgentApprovalMode | undefined =
+    agent?.service_ability?.type === "data_query"
+      ? agent.service_ability.confirmation_mode === "always" ||
+        agent.service_ability.confirmation_mode === "auto" ||
+        agent.service_ability.confirmation_mode === "on_ambiguity"
+        ? agent.service_ability.confirmation_mode
+        : "on_ambiguity"
+      : undefined;
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -373,6 +382,7 @@ export default function AgentChatPage() {
                     draftThreadId={isNewThread ? "new" : threadId}
                     draftAgentName={agent_name}
                     defaultModelName={agent?.model}
+                    dataAgentApprovalMode={dataAgentApprovalMode}
                     autoFocus={isWelcomeMode}
                     status={
                       thread.error

@@ -102,24 +102,51 @@ test("renders DataAgent intent and SQL artifacts as dedicated groups", () => {
       tool_call_id: "labels-1",
       content: "{}",
       artifact: {
-        version: 1,
-        kind: "data_query_labels",
-        service_name: "data_query",
-        snapshot_id: "sha256:snapshot",
-        data_source_id: "sales-pg",
-        turn_id: "human-1",
-        retrieval_digest: "sha256:retrieval",
-        binding_fingerprint: "sha256:binding",
         intent: "ranking",
-        ambiguities: [],
-        labels: [{ label: "指标", value: "销售额", source: "user", evidence_refs: [] }],
-        evidence: [{ ref: "evidence:sha256:metric", kind: "evidence", summary: "销售额口径" }],
+        labels: [{ label: "指标", value: "销售额", source: "user" }],
+        evidence: [],
+        approval: {
+          flow_id: "ABCDEFGH",
+          required: true,
+          reason: "需要人工审批",
+          next_tool: "ask_intent_approval",
+        },
+      },
+    },
+    {
+      id: "approval-result",
+      type: "tool",
+      name: "ask_intent_approval",
+      tool_call_id: "approval-1",
+      content: "{}",
+      artifact: {
+        version: 1,
+        kind: "data_query_intent_approval",
+        service_name: "data_query",
+        flow_id: "ABCDEFGH",
+        human_input: {
+          version: 1,
+          kind: "human_input_request",
+          source: "ask_intent_approval",
+          request_id: "request-1",
+          flow_id: "ABCDEFGH",
+          input_mode: "multi_question_choice",
+          questions: [
+            {
+              id: "question_1",
+              question: "确认时间范围？",
+              options: [{ id: "option_1", label: "是", value: "是" }],
+            },
+          ],
+        },
         approval: {
           version: 1,
-          snapshot_id: "sha256:snapshot",
-          status: "approved",
-          action: "execute",
-          source: "model",
+          flow_id: "ABCDEFGH",
+          status: "awaiting_confirmation",
+          action: null,
+          source: null,
+          request_id: "request-1",
+          tool_call_id: "approval-1",
         },
       },
     },
@@ -185,7 +212,8 @@ test("hides raw entity extraction payloads and other internal DataAgent JSON too
       type: "tool",
       name: "publish_query_labels",
       tool_call_id: "labels-1",
-      content: '{"version":1,"kind":"data_query_sql_response","validation":{"status":"pending"}}',
+      content:
+        '{"version":1,"kind":"data_query_sql_response","validation":{"status":"pending"}}',
     },
   ] as Message[];
 
@@ -194,8 +222,13 @@ test("hides raw entity extraction payloads and other internal DataAgent JSON too
   expect(isHiddenFromUIMessage(messages[3]!)).toBe(true);
 
   const groups = getMessageGroups(messages);
-  expect(groups.map((group) => group.type)).toEqual(["human", "assistant:processing"]);
-  expect(groups[1]?.messages.some((message) => message.type === "tool")).toBe(false);
+  expect(groups.map((group) => group.type)).toEqual([
+    "human",
+    "assistant:processing",
+  ]);
+  expect(groups[1]?.messages.some((message) => message.type === "tool")).toBe(
+    false,
+  );
 });
 
 describe("branchable assistant groups", () => {
