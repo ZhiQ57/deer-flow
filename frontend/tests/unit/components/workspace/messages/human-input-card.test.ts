@@ -3,10 +3,12 @@ import { createElement, type KeyboardEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import {
+  findMissingRequiredFields,
   HumanInputCard,
   shouldSubmitHumanInputTextOnKeyDown,
 } from "@/components/workspace/messages/human-input-card";
 import { I18nContext } from "@/core/i18n/context";
+import { enUS } from "@/core/i18n/locales/en-US";
 import {
   createMultiQuestionChoiceResponse,
   type HumanInputRequest,
@@ -132,16 +134,125 @@ describe("HumanInputCard", () => {
       request: {
         ...request,
         question:
-          "你想写什么样的小说？\n\n1. **题材/类型**：科幻、奇幻\n2. **篇幅**：短篇、中篇",
+          "What kind of report do you want?\n\n1. **Topic/type**: sales or finance\n2. **Length**: short or detailed",
         input_mode: "free_text",
         options: undefined,
       },
     });
 
-    expect(html).toContain("题材/类型");
-    expect(html).toContain("篇幅");
-    expect(html).not.toContain("**题材/类型**");
-    expect(html).not.toContain("**篇幅**");
+    expect(html).toContain("Topic/type");
+    expect(html).toContain("Length");
+    expect(html).not.toContain("**Topic/type**");
+    expect(html).not.toContain("**Length**");
+  });
+  it("renders a form request with labeled fields and required markers", () => {
+    const html = renderCard({
+      request: {
+        ...request,
+        version: 2,
+        request_id: "clarification:call-form",
+        question: "Please provide the expense details.",
+        input_mode: "form",
+        options: undefined,
+        fields: [
+          { name: "amount", label: "Amount", type: "number", required: true },
+          {
+            name: "receipts",
+            label: "Receipts",
+            type: "multi_select",
+            required: false,
+            options: [
+              { id: "receipts-option-1", label: "A-1", value: "A-1" },
+              { id: "receipts-option-2", label: "A-2", value: "A-2" },
+            ],
+          },
+          { name: "note", label: "Note", type: "textarea", required: false },
+          {
+            name: "design",
+            label: "DesignPriority",
+            type: "checkbox",
+            required: false,
+          },
+        ],
+      },
+    });
+
+    expect(html).toContain("Amount");
+    expect(html).toContain("*");
+    expect(html).toContain("Receipts");
+    expect(html).toContain("A-1");
+    expect(html).toContain("Note");
+    expect(html).toContain("Submit");
+    // Checkbox fields render as a single toggle row — the label must not be
+    // duplicated by an additional field label above the control.
+    expect(html.split("DesignPriority").length - 1).toBe(1);
+  });
+
+  it("associates form labels with controls and marks required fields", () => {
+    const html = renderCard({
+      request: {
+        ...request,
+        version: 2,
+        request_id: "clarification:call-form",
+        question: "Please provide the expense details.",
+        input_mode: "form",
+        options: undefined,
+        fields: [
+          { name: "amount", label: "Amount", type: "number", required: true },
+          { name: "note", label: "Note", type: "textarea", required: false },
+        ],
+      },
+    });
+
+    // Every visible label is linked to its control via htmlFor/id.
+    const htmlForIds = [...html.matchAll(/<label[^>]*for="([^"]+)"/g)].map(
+      (match) => match[1],
+    );
+    expect(htmlForIds.length).toBe(2);
+    for (const id of htmlForIds) {
+      expect(html).toContain(`id="${id}"`);
+    }
+    expect(html).toContain('aria-required="true"');
+  });
+
+  it("findMissingRequiredFields flags empty required values only", () => {
+    const fields = [
+      {
+        name: "amount",
+        label: "Amount",
+        type: "number" as const,
+        required: true,
+      },
+      {
+        name: "note",
+        label: "Note",
+        type: "text" as const,
+        required: false,
+      },
+      {
+        name: "receipts",
+        label: "Receipts",
+        type: "multi_select" as const,
+        required: true,
+        options: [{ id: "o1", label: "A-1", value: "A-1" }],
+      },
+    ];
+
+    expect(
+      findMissingRequiredFields(fields, {}).map((field) => field.name),
+    ).toEqual(["amount", "receipts"]);
+    expect(
+      findMissingRequiredFields(fields, {
+        amount: "  ",
+        receipts: [],
+      }).map((field) => field.name),
+    ).toEqual(["amount", "receipts"]);
+    expect(
+      findMissingRequiredFields(fields, {
+        amount: "300",
+        receipts: ["A-1"],
+      }),
+    ).toEqual([]);
   });
 
   it("renders multiple questions and grouped options", () => {
@@ -152,39 +263,39 @@ describe("HumanInputCard", () => {
         source: "ask_intent_approval",
         request_id: "data-query:req",
         flow_id: "ABCDEFGH",
-        title: "确认数据查询意图",
-        context: "需要确认这些查询条件",
+        title: "Confirm query intent",
+        context: "Please confirm these query conditions.",
         input_mode: "multi_question_choice",
         questions: [
           {
             id: "question_1",
-            question: "时间范围是否是 2024 年全年？",
+            question: "Should the time range be full year 2024?",
             options: [
               {
                 id: "question_1_option_1",
-                label: "是",
-                value: "是",
+                label: "Yes",
+                value: "Yes",
               },
               {
                 id: "question_1_option_2",
-                label: "否，最近一年",
-                value: "否，最近一年",
+                label: "No, use the latest year",
+                value: "No, use the latest year",
               },
             ],
           },
           {
             id: "question_2",
-            question: "统计口径使用订单金额还是支付金额？",
+            question: "Use order amount or payment amount?",
             options: [
               {
                 id: "question_2_option_1",
-                label: "订单金额",
-                value: "订单金额",
+                label: "Order amount",
+                value: "Order amount",
               },
               {
                 id: "question_2_option_2",
-                label: "支付金额",
-                value: "支付金额",
+                label: "Payment amount",
+                value: "Payment amount",
               },
             ],
           },
@@ -192,12 +303,11 @@ describe("HumanInputCard", () => {
       },
     });
 
-    expect(html).toContain("时间范围是否是 2024 年全年？");
-    expect(html).toContain("统计口径使用订单金额还是支付金额？");
-    expect(html).toContain("否，最近一年");
-    expect(html).toContain("支付金额");
+    expect(html).toContain("Should the time range be full year 2024?");
+    expect(html).toContain("Use order amount or payment amount?");
+    expect(html).toContain("No, use the latest year");
+    expect(html).toContain("Payment amount");
   });
-
   it("renders an other-answer input for every multi-question item", () => {
     const html = renderCard({
       request: {
@@ -260,6 +370,7 @@ function renderCard(props: Partial<Parameters<typeof HumanInputCard>[0]> = {}) {
         value: {
           locale: "en-US",
           setLocale: () => undefined,
+          t: enUS,
         },
       },
       createElement(HumanInputCard, {

@@ -105,6 +105,7 @@ tests/
 src/
 ├── app/                    # Next.js App Router pages
 │   ├── api/                # API routes
+│   ├── showcase/           # Allowlisted public read-only demos
 │   ├── workspace/          # Main workspace pages
 │   └── mock/               # Mock/demo pages
 ├── components/             # React components

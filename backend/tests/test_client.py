@@ -52,6 +52,7 @@ def mock_app_config():
     config.skills.container_path = "/mnt/skills"
     config.tool_search.enabled = False
     config.database.checkpoint_channel_mode = "full"
+    config.database.checkpoint_delta.snapshot_frequency = 10
     config.authorization = AuthorizationConfig(enabled=False)
     return config
 
@@ -144,6 +145,23 @@ class TestClientInit:
             ),
         ):
             DeerFlowClient()
+
+    def test_delta_snapshot_frequency_is_frozen_from_app_config(self, mock_app_config):
+        from typing import get_type_hints
+
+        from langgraph.channels import DeltaChannel
+
+        from deerflow.agents import thread_state
+
+        mock_app_config.database.checkpoint_channel_mode = "delta"
+        mock_app_config.database.checkpoint_delta.snapshot_frequency = 7
+        with patch("deerflow.client.get_app_config", return_value=mock_app_config):
+            DeerFlowClient()
+
+        schema = thread_state.get_thread_state_schema("delta")
+        hint = get_type_hints(schema, include_extras=True)["messages"]
+        channel = next(item for item in hint.__metadata__ if isinstance(item, DeltaChannel))
+        assert channel.snapshot_frequency == 7
 
 
 # ---------------------------------------------------------------------------
@@ -691,6 +709,47 @@ class TestStream:
         assert tool_events[0].data["content"] == "file.txt"
         assert tool_events[0].data["name"] == "bash"
         assert tool_events[0].data["tool_call_id"] == "tc-1"
+        assert "artifact" not in tool_events[0].data
+
+    def test_messages_mode_tool_message_preserves_human_input_artifact(self, client):
+        """Structured clarification data survives both embedded stream paths."""
+        artifact = {
+            "human_input": {
+                "request_id": "request-1",
+                "tool_call_id": "tc-1",
+                "question": "Which environment should be used?",
+                "options": [{"label": "Production", "value": "production"}],
+            }
+        }
+        tool_message = ToolMessage(
+            content="Which environment should be used?",
+            id="tm-1",
+            tool_call_id="tc-1",
+            name="ask_clarification",
+            artifact=artifact,
+        )
+        agent = MagicMock()
+        agent.stream.return_value = iter(
+            [
+                ("messages", (tool_message, {})),
+                ("values", {"messages": [HumanMessage(content="deploy", id="h-1"), tool_message]}),
+            ]
+        )
+
+        with (
+            patch.object(client, "_ensure_agent"),
+            patch.object(client, "_agent", agent),
+        ):
+            events = list(client.stream("deploy", thread_id="t-tool-artifact"))
+
+        tool_event = next(event for event in events if event.type == "messages-tuple" and event.data.get("type") == "tool")
+        values_event = next(event for event in events if event.type == "values")
+        serialized_tool_message = next(message for message in values_event.data["messages"] if message["type"] == "tool")
+
+        assert tool_event.data["artifact"] == artifact
+        assert serialized_tool_message["artifact"] == artifact
+        assert tool_event.data["artifact"] is artifact
+        assert serialized_tool_message["artifact"] is artifact
 
     def test_list_content_blocks(self, client):
         """stream() handles AIMessage with list-of-blocks content."""
@@ -1029,6 +1088,8 @@ class TestExtractText:
 
 class TestEnsureAgent:
     def test_authorization_filters_framework_tools_and_reuses_provider(self, client, mock_app_config):
+        from deerflow.authz.provider import AuthzDecision, AuthzReason
+
         class Provider:
             name = "test"
 
@@ -1036,10 +1097,13 @@ class TestEnsureAgent:
                 return [name for name in candidates if name == "safe_tool"]
 
             def authorize(self, request):
-                raise AssertionError("not called while assembling")
+                # Phase 3: model:use is now checked during assembly; allow it so
+                # the model name passes through. Tool-level authorize is still
+                # not invoked here (filter_resources drives tool assembly).
+                return AuthzDecision(allow=True, reasons=[AuthzReason(code="authz.allowed")])
 
             async def aauthorize(self, request):
-                raise AssertionError("not called while assembling")
+                return self.authorize(request)
 
         provider = Provider()
         mock_app_config.authorization = AuthorizationConfig(
@@ -1062,6 +1126,7 @@ class TestEnsureAgent:
             patch("deerflow.client.build_skill_search_setup", return_value=SimpleNamespace(describe_skill_tool=describe_tool, skill_names=frozenset({"example"}))),
             patch.object(client, "_get_tools", return_value=[safe_tool, denied_tool]),
             patch("deerflow.authz.tool_filter.resolve_authorization_provider", return_value=provider),
+            patch("deerflow.agents.lead_agent.agent.resolve_authorization_provider", return_value=provider),
             patch("deerflow.runtime.checkpointer.get_checkpointer", return_value=None),
         ):
             client._ensure_agent(client._get_runnable_config("t1"), context={"user_role": "user"})
@@ -1367,7 +1432,7 @@ class TestEnsureAgent:
         """_ensure_agent does not recreate if config key unchanged."""
         mock_agent = MagicMock()
         client._agent = mock_agent
-        client._agent_config_key = (None, True, False, False, None, None, None, None, None, None, "full", None)
+        client._agent_config_key = (None, True, False, False, None, None, None, None, "full", 10, None)
 
         config = client._get_runnable_config("t1")
         client._ensure_agent(config)
@@ -1894,10 +1959,8 @@ class TestSkillsManagement:
         skill = self._make_skill(enabled=True)
         updated_skill = self._make_skill(enabled=False)
 
-        ext_config = ExtensionsConfig()
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({}, f)
+            json.dump({"mcpServers": {}, "skills": {"untouched-skill": {"enabled": False}}}, f)
             tmp_path = Path(f.name)
 
         try:
@@ -1914,12 +1977,37 @@ class TestSkillsManagement:
                     side_effect=[[skill], [skill], [updated_skill], [updated_skill]],
                 ),
                 patch("deerflow.client.ExtensionsConfig.resolve_config_path", return_value=tmp_path),
-                patch("deerflow.client.get_extensions_config", return_value=ext_config),
                 patch("deerflow.client.reload_extensions_config"),
             ):
                 result = client.update_skill("test-skill", enabled=False)
             assert result["enabled"] is False
             assert client._agent is None  # M2: agent invalidated
+            persisted = json.loads(tmp_path.read_text(encoding="utf-8"))
+            assert persisted["skills"]["untouched-skill"] == {"enabled": False}
+        finally:
+            tmp_path.unlink()
+
+    def test_update_skill_persists_state_when_source_omits_skills(self, client):
+        skill = self._make_skill(enabled=True)
+        updated_skill = self._make_skill(enabled=False)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"mcpServers": {}}, f)
+            tmp_path = Path(f.name)
+
+        try:
+            with (
+                patch(
+                    "deerflow.skills.storage.local_skill_storage.LocalSkillStorage.load_skills",
+                    side_effect=[[skill], [skill], [updated_skill], [updated_skill]],
+                ),
+                patch("deerflow.client.ExtensionsConfig.resolve_config_path", return_value=tmp_path),
+                patch("deerflow.client.reload_extensions_config"),
+            ):
+                client.update_skill("test-skill", enabled=False)
+
+            persisted = json.loads(tmp_path.read_text(encoding="utf-8"))
+            assert persisted["skills"] == {"test-skill": {"enabled": False}}
         finally:
             tmp_path.unlink()
 
@@ -3750,6 +3838,35 @@ class TestSerializeMessage:
         result = DeerFlowClient._serialize_message(msg)
         assert result["type"] == "tool"
         assert isinstance(result["content"], str)
+        assert "artifact" not in result
+
+    def test_tool_message_event_preserves_native_artifact(self):
+        marker = object()
+        msg = ToolMessage(
+            content="result",
+            id="tm-1",
+            tool_call_id="tc-1",
+            name="tool",
+            artifact={"payload": marker},
+        )
+
+        result = DeerFlowClient._tool_message_event(msg)
+
+        assert result.data["artifact"] is msg.artifact
+
+    def test_tool_message_values_serialization_preserves_native_artifact(self):
+        marker = object()
+        msg = ToolMessage(
+            content="result",
+            id="tm-1",
+            tool_call_id="tc-1",
+            name="tool",
+            artifact={"payload": marker},
+        )
+
+        result = DeerFlowClient._serialize_message(msg)
+
+        assert result["artifact"] is msg.artifact
 
 
 # ===========================================================================

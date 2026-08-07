@@ -51,12 +51,25 @@ const HIDDEN_CONTROL_MESSAGE_NAMES = new Set([
 
 const HIDDEN_INTERNAL_TOOL_MESSAGE_NAMES = new Set(["entity_extract_tool"]);
 
-export function getMessageGroups(messages: Message[]): MessageGroup[] {
+export function getMessageGroups(
+  messages: Message[],
+  { isCurrentTurnLoading = false }: { isCurrentTurnLoading?: boolean } = {},
+): MessageGroup[] {
   if (messages.length === 0) {
     return [];
   }
 
   const groups: MessageGroup[] = [];
+  let currentTurnStartIndex = -1;
+  if (isCurrentTurnLoading) {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      if (message?.type === "human" && !isHiddenFromUIMessage(message)) {
+        currentTurnStartIndex = index;
+        break;
+      }
+    }
+  }
 
   // Returns the last group if it can still accept tool messages
   // (i.e. it's an in-flight processing group, not a terminal human/assistant group).
@@ -108,7 +121,7 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
     return null;
   }
 
-  for (const message of messages) {
+  for (const [messageIndex, message] of messages.entries()) {
     if (isHiddenFromUIMessage(message)) {
       continue;
     }
@@ -219,8 +232,20 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
       // panel above the bubble paints the identical reasoning a second time
       // (#3868). Intermediate reasoning (no content) and tool-calling steps
       // still belong in the processing group.
+      // A content-only message is not necessarily the final answer while its
+      // turn is still streaming: providers can append tool-call chunks to the
+      // same message later. Keep that unresolved message in the processing
+      // group so its visible text does not jump from an assistant bubble into
+      // the steps panel when the tool call arrives (#4304).
+      const isUnresolvedAssistantText =
+        currentTurnStartIndex >= 0 &&
+        messageIndex > currentTurnStartIndex &&
+        hasContent(message) &&
+        !hasToolCalls(message);
       const becomesAssistantBubble =
-        hasContent(message) && !hasToolCalls(message);
+        hasContent(message) &&
+        !hasToolCalls(message) &&
+        !isUnresolvedAssistantText;
 
       if (hasPresentFiles(message)) {
         groups.push({
@@ -236,7 +261,9 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
         });
       } else if (
         !becomesAssistantBubble &&
-        (hasReasoning(message) || hasToolCalls(message))
+        (hasReasoning(message) ||
+          hasToolCalls(message) ||
+          isUnresolvedAssistantText)
       ) {
         const lastGroup = groups[groups.length - 1];
         // Accumulate consecutive intermediate AI messages into one processing group.
@@ -295,6 +322,89 @@ export function getBranchableAssistantGroupIds(
   }
 
   return branchableGroupIds;
+}
+
+export type EditableTurn = {
+  humanMessage: Message;
+};
+
+function isTerminalAssistantTextMessage(message: Message | undefined): boolean {
+  return (
+    message?.type === "ai" &&
+    Boolean(extractTextFromMessage(message).trim()) &&
+    !hasToolCalls(message)
+  );
+}
+
+export function getLatestEditableTurn(
+  groups: MessageGroup[],
+  isCurrentTurnLoading: boolean,
+): EditableTurn | null {
+  if (isCurrentTurnLoading) {
+    return null;
+  }
+
+  let candidate: EditableTurn | null = null;
+  let currentHumanGroup: MessageGroup | null = null;
+  let currentTurnGroups: MessageGroup[] = [];
+  let lastAIGroup: MessageGroup | null = null;
+
+  const completeTurn = () => {
+    if (!currentHumanGroup) {
+      currentTurnGroups = [];
+      lastAIGroup = null;
+      return;
+    }
+
+    const humanMessage = currentHumanGroup?.messages.find(
+      (message) => message.type === "human" && message.id,
+    );
+    let assistantMessage: Message | undefined;
+    for (let i = (lastAIGroup?.messages.length ?? 0) - 1; i >= 0; i -= 1) {
+      const message = lastAIGroup?.messages[i];
+      if (message?.type === "ai" && message.id) {
+        assistantMessage = message;
+        break;
+      }
+    }
+
+    if (
+      currentHumanGroup &&
+      lastAIGroup?.type === "assistant" &&
+      humanMessage &&
+      isTerminalAssistantTextMessage(assistantMessage)
+    ) {
+      candidate = {
+        humanMessage,
+      };
+    } else {
+      candidate = null;
+    }
+
+    currentHumanGroup = null;
+    currentTurnGroups = [];
+    lastAIGroup = null;
+  };
+
+  for (const group of groups) {
+    if (group.type === "human") {
+      completeTurn();
+      currentHumanGroup = group;
+      currentTurnGroups = [group];
+      continue;
+    }
+
+    if (currentHumanGroup) {
+      currentTurnGroups.push(group);
+    }
+
+    if (group.messages.some((message) => message.type === "ai")) {
+      lastAIGroup = group;
+    }
+  }
+
+  completeTurn();
+  return candidate;
 }
 
 export function groupMessages<T>(
@@ -413,8 +523,13 @@ export function getAssistantTurnCopyData(
       .reverse()
       .filter((message) => message.type === "ai")
       .map((message) => {
+        // extractContentFromMessage never returns null, so fall back to
+        // reasoning on empty text (same rule as getMessageCopyData) —
+        // otherwise a reasoning-only turn loses its copy button entirely.
         const content = extractContentFromMessage(message);
-        return content ?? extractReasoningContentFromMessage(message) ?? "";
+        return content.length > 0
+          ? content
+          : (extractReasoningContentFromMessage(message) ?? "");
       })
       .find((content) => content.length > 0) ?? null
   );
@@ -456,18 +571,32 @@ export function extractTextFromMessage(message: Message) {
 const THINK_OPEN_TAG = "<think>";
 const THINK_TAG_RE = /<think>\s*([\s\S]*?)\s*<\/think>/g;
 
-function splitInlineReasoning(content: string) {
+interface InlineReasoningSplit {
+  content: string;
+  reasoning: string | null;
+}
+
+function splitInlineReasoning(content: string): InlineReasoningSplit {
   const reasoningParts: string[] = [];
 
   // First pass: strip every fully closed `<think>...</think>` pair and
-  // collect its body as reasoning.
-  let cleaned = content.replace(THINK_TAG_RE, (_, reasoning: string) => {
-    const normalized = reasoning.trim();
-    if (normalized) {
-      reasoningParts.push(normalized);
-    }
-    return "";
-  });
+  // collect its body as reasoning. A pair whose opener sits right after a
+  // backtick is the model talking about the tag literally inside markdown
+  // inline code (same guard as the streaming pass below) — leave it in the
+  // rendered content instead of hollowing out the code span.
+  let cleaned = content.replace(
+    THINK_TAG_RE,
+    (match: string, reasoning: string, offset: number) => {
+      if (content[offset - 1] === "`") {
+        return match;
+      }
+      const normalized = reasoning.trim();
+      if (normalized) {
+        reasoningParts.push(normalized);
+      }
+      return "";
+    },
+  );
 
   // Streaming-safe pass: a `<think>` opener whose `</think>` has not arrived
   // yet means the rest of the chunk is reasoning in flight. Route it into the
@@ -493,11 +622,29 @@ function splitInlineReasoning(content: string) {
   };
 }
 
+// The split is re-derived on every render: `hasContent`, `hasReasoning`,
+// `extractContentFromMessage` and `extractReasoningContentFromMessage` all run
+// over the whole message list on each stream chunk, so an unmemoized scan costs
+// O(total content) per chunk — quadratic across a long run. Cache per message
+// object, keyed by the exact content string it was derived from so a message
+// whose `content` is reassigned recomputes instead of serving a stale split.
+const inlineReasoningCache = new WeakMap<
+  object,
+  { content: string; split: InlineReasoningSplit }
+>();
+
 function splitInlineReasoningFromAIMessage(message: Message) {
   if (message.type !== "ai" || typeof message.content !== "string") {
     return null;
   }
-  return splitInlineReasoning(message.content);
+  const content = message.content;
+  const cached = inlineReasoningCache.get(message);
+  if (cached?.content === content) {
+    return cached.split;
+  }
+  const split = splitInlineReasoning(content);
+  inlineReasoningCache.set(message, { content, split });
+  return split;
 }
 
 export function extractContentFromMessage(message: Message) {
@@ -546,7 +693,7 @@ export function extractReasoningContentFromMessage(message: Message) {
     }
   }
   if (typeof message.content === "string") {
-    return splitInlineReasoning(message.content).reasoning;
+    return splitInlineReasoningFromAIMessage(message)?.reasoning ?? null;
   }
   return null;
 }
@@ -599,7 +746,9 @@ export function hasReasoning(message: Message) {
     return (part as unknown as { type: "thinking" })?.type === "thinking";
   }
   if (typeof message.content === "string") {
-    return splitInlineReasoning(message.content).reasoning !== null;
+    return (
+      (splitInlineReasoningFromAIMessage(message)?.reasoning ?? null) !== null
+    );
   }
   return false;
 }
@@ -659,6 +808,22 @@ export function findToolCallResult(toolCallId: string, messages: Message[]) {
 }
 
 export function isHiddenFromUIMessage(message: Message) {
+  if (message.additional_kwargs?.hide_from_ui === true) {
+    return true;
+  }
+  if (
+    typeof message.name === "string" &&
+    HIDDEN_CONTROL_MESSAGE_NAMES.has(message.name)
+  ) {
+    return true;
+  }
+  // Only the human branch consults the text. Extracting it up front made every
+  // caller pay a full content scan for every AI message it was about to
+  // discard, and this predicate runs over the whole message list on each
+  // stream chunk (grouping, dedup, human-input state).
+  if (message.type !== "human") {
+    return false;
+  }
   const content = extractTextFromMessage(message);
   if (message.type === "tool") {
     if (
@@ -678,12 +843,8 @@ export function isHiddenFromUIMessage(message: Message) {
     }
   }
   return (
-    message.additional_kwargs?.hide_from_ui === true ||
-    (typeof message.name === "string" &&
-      HIDDEN_CONTROL_MESSAGE_NAMES.has(message.name)) ||
-    (message.type === "human" &&
-      content.includes("<slash_skill_activation>") &&
-      stripUploadedFilesTag(content).length === 0)
+    content.includes("<slash_skill_activation>") &&
+    stripUploadedFilesTag(content).length === 0
   );
 }
 
@@ -807,7 +968,11 @@ export function parseUploadedFiles(content: string): FileInMessage[] {
 
   // Parse file list
   // Format: - filename (size)\n  Path: /path/to/file
-  const fileRegex = /- ([^\n(]+)\s*\(([^)]+)\)\s*\n\s*Path:\s*([^\n]+)/g;
+  // The filename itself may contain parentheses (e.g. "photo (1).png"), so
+  // the size group is anchored on the trailing "(<number> <unit>)" pair the
+  // backend emits instead of stopping the filename at the first "(".
+  const fileRegex =
+    /- (.+)\s*\(([\d.]+\s*(?:B|KB|MB|GB|TB))\)\s*\n\s*Path:\s*([^\n]+)/gi;
   const files: FileInMessage[] = [];
   let fileMatch;
 

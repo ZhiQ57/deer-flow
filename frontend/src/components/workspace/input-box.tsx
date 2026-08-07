@@ -74,7 +74,6 @@ import { useAuth } from "@/core/auth/AuthProvider";
 import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
 import { polishInputDraft } from "@/core/input-polish/api";
-import { hasOpenHumanInputRequest } from "@/core/messages/human-input";
 import { isHiddenFromUIMessage } from "@/core/messages/utils";
 import { useModels } from "@/core/models/hooks";
 import {
@@ -82,6 +81,7 @@ import {
   type SidecarContext,
 } from "@/core/sidecar";
 import { useSkills } from "@/core/skills/hooks";
+import { DEFAULT_MAX_SUGGESTIONS } from "@/core/suggestions/api";
 import { useSuggestionsConfig } from "@/core/suggestions/hooks";
 import type { AgentThreadContext, GoalState } from "@/core/threads";
 import { compactThreadContext } from "@/core/threads/api";
@@ -414,6 +414,8 @@ export function InputBox({
   const { data: suggestionsConfig } = useSuggestionsConfig();
   const suggestionsConfigLoaded = suggestionsConfig !== undefined;
   const suggestionsEnabled = suggestionsConfig?.enabled;
+  const maxFollowupSuggestions =
+    suggestionsConfig?.max_suggestions ?? DEFAULT_MAX_SUGGESTIONS;
   const [followupsHidden, setFollowupsHidden] = useState(false);
   const [followupsLoading, setFollowupsLoading] = useState(false);
   const [polishingInput, setPolishingInput] = useState(false);
@@ -431,6 +433,9 @@ export function InputBox({
     useState<string | null>(null);
   const lastGeneratedForAiIdRef = useRef<string | null>(null);
   const wasStreamingRef = useRef(false);
+  // Set when the user stops a streaming turn. Such a turn ends on a
+  // half-finished response, so we must NOT generate follow-up suggestions for it.
+  const stoppedByUserRef = useRef(false);
   const messagesRef = useRef(thread.messages);
 
   const clearVoiceRestartTimer = useCallback(() => {
@@ -1017,6 +1022,8 @@ export function InputBox({
         signal,
         agentName:
           typeof context.agent_name === "string" ? context.agent_name : null,
+        modelName:
+          typeof context.model_name === "string" ? context.model_name : null,
       });
       if (
         !isCurrentGoalRequest(compactRequestStateRef.current, request, threadId)
@@ -1055,6 +1062,7 @@ export function InputBox({
     }
   }, [
     context.agent_name,
+    context.model_name,
     queryClient,
     t.inputBox.compactFailed,
     t.inputBox.compactSkipped,
@@ -1159,6 +1167,16 @@ export function InputBox({
     ],
   );
 
+  const handleStopStreaming = useCallback(() => {
+    // Mark the in-progress turn as user-interrupted so the next
+    // streaming->ready transition does not suggest follow-ups for it.
+    stoppedByUserRef.current = true;
+    setFollowups([]);
+    setFollowupsHidden(true);
+    setFollowupsLoading(false);
+    onStop?.();
+  }, [onStop]);
+
   const handleSubmit = useCallback(
     async (message: PromptInputMessage) => {
       if (status === "streaming") {
@@ -1211,7 +1229,7 @@ export function InputBox({
         return handleCompactCommand();
       }
       if (submitAction.kind === "stop") {
-        onStop?.();
+        handleStopStreaming();
         return;
       }
       if (submitAction.kind === "empty") {
@@ -1226,7 +1244,7 @@ export function InputBox({
       abortVoiceInput,
       handleCompactCommand,
       handleGoalCommand,
-      onStop,
+      handleStopStreaming,
       selectedSlashSkill,
       status,
       submitThreadMessage,
@@ -1294,34 +1312,35 @@ export function InputBox({
     () => getGoalObjectiveCounter(textInput.value ?? ""),
     [textInput.value],
   );
-  const skillSuggestions = useMemo(
-    () =>
-      slashSkillQuery === null
-        ? []
-        : getMatchingSkillSuggestions(
-            skills,
-            slashSkillQuery,
-            builtinSlashCommands,
-          ),
-    [builtinSlashCommands, skills, slashSkillQuery],
-  );
+  const skillSuggestions = useMemo(() => {
+    if (slashSkillQuery === null) {
+      return [];
+    }
+    const matches = getMatchingSkillSuggestions(
+      skills,
+      slashSkillQuery,
+      builtinSlashCommands,
+    );
+    // Builtin commands own the whole composer line, so they cannot be combined
+    // with a skill activation: `/goal` behind a selected skill would submit as
+    // chat text instead of running the command. Drop them from the result
+    // rather than withholding them from the helper, which needs the list to
+    // reserve their names — a skill named after a builtin is unusable for the
+    // mirrored reason, its submitted text runs the command, not the skill.
+    return selectedSlashSkill
+      ? matches.filter(({ kind }) => kind === "skill")
+      : matches;
+  }, [builtinSlashCommands, selectedSlashSkill, skills, slashSkillQuery]);
+  // A selected skill does not close the catalog: `/` reopens it so a skill can
+  // be found by browsing and swapped without first clearing the chip.
   const showSkillSuggestions =
     !disabled &&
     textareaFocused &&
-    !selectedSlashSkill &&
     slashSkillQuery !== null &&
     skillSuggestions.length > 0 &&
     dismissedSkillSuggestionValue !== textInput.value;
   const isComposerDisabled = disabled === true;
   const isMockThread = isMock === true;
-  const hasOpenHumanInputCard = useMemo(
-    () =>
-      hasOpenHumanInputRequest(
-        thread.messages,
-        (message) => !isHiddenFromUIMessage(message),
-      ),
-    [thread.messages],
-  );
   const composerLocked = isComposerDisabled || polishingInput;
   const inputPolishUndoAvailable =
     !polishingInput &&
@@ -1330,7 +1349,6 @@ export function InputBox({
   const inputPolishDisabled =
     isComposerDisabled ||
     isMockThread ||
-    hasOpenHumanInputCard ||
     polishingInput ||
     (!inputPolishUndoAvailable &&
       (status === "streaming" ||
@@ -1903,6 +1921,16 @@ export function InputBox({
 
   const handleInlineSkillKeyDown = useCallback(
     (event: KeyboardEvent<HTMLSpanElement>) => {
+      // The catalog can be reopened from here, so its navigation keys must win
+      // over Enter-to-submit. Skip it mid-composition, where Enter belongs to
+      // the IME candidate rather than the list.
+      if (!isIMEComposing(event, inlineSkillComposingRef.current)) {
+        handleSkillSuggestionKeyDown(event);
+        if (event.defaultPrevented) {
+          return;
+        }
+      }
+
       handleSelectedSlashSkillKeyDown(event);
       if (event.defaultPrevented) {
         return;
@@ -1927,7 +1955,11 @@ export function InputBox({
 
       event.currentTarget.closest("form")?.requestSubmit();
     },
-    [handleSelectedSlashSkillKeyDown, updateInlineSkillTextInput],
+    [
+      handleSelectedSlashSkillKeyDown,
+      handleSkillSuggestionKeyDown,
+      updateInlineSkillTextInput,
+    ],
   );
 
   const clearSelectedSlashSkill = useCallback(() => {
@@ -1943,6 +1975,10 @@ export function InputBox({
     !showSkillSuggestions &&
     !selectedSlashSkill &&
     !followupsHidden &&
+    // Never show stale follow-up chips while a turn is streaming: a message
+    // sent before the previous response finished would otherwise leave the
+    // old chips (and the lone close button) overlapping the input box.
+    status !== "streaming" &&
     (followupsLoading || followups.length > 0);
 
   useEffect(() => {
@@ -1962,6 +1998,13 @@ export function InputBox({
     const wasStreaming = wasStreamingRef.current;
     wasStreamingRef.current = streaming;
     if (!wasStreaming || streaming) {
+      return;
+    }
+
+    // The turn was interrupted by the user, so skip generating follow-ups for
+    // this half-finished response.
+    if (stoppedByUserRef.current) {
+      stoppedByUserRef.current = false;
       return;
     }
 
@@ -2011,7 +2054,7 @@ export function InputBox({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         messages: recent,
-        n: 3,
+        n: maxFollowupSuggestions,
         model_name: context.model_name ?? undefined,
       }),
       signal: controller.signal,
@@ -2026,7 +2069,7 @@ export function InputBox({
         const suggestions = (data.suggestions ?? [])
           .map((s) => (typeof s === "string" ? s.trim() : ""))
           .filter((s) => s.length > 0)
-          .slice(0, 5);
+          .slice(0, maxFollowupSuggestions);
         setFollowups(suggestions);
       })
       .catch(() => {
@@ -2041,6 +2084,7 @@ export function InputBox({
     context.model_name,
     disabled,
     isMock,
+    maxFollowupSuggestions,
     status,
     suggestionsConfigLoaded,
     suggestionsEnabled,
@@ -2756,7 +2800,7 @@ export function InputBox({
               onClick={(e) => {
                 if (status === "streaming") {
                   e.preventDefault();
-                  onStop?.();
+                  handleStopStreaming();
                 }
               }}
             />
