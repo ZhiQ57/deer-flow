@@ -1162,16 +1162,27 @@ export function MessageList({
               const intentMessage = findLatestDataQueryIntentMessage(
                 group.messages,
               );
-              const approvalMessage = findLatestDataQueryIntentApprovalMessage(
-                group.messages,
-              );
               const artifact = intentMessage
                 ? extractDataQueryLabelsArtifact(intentMessage)
                 : null;
+              if (!artifact) return null;
+              return (
+                <div key={group.id} className="w-full">
+                  <QueryIntentCard artifact={artifact} />
+                  {renderTokenUsage({
+                    messages: group.messages,
+                    turnUsageMessages,
+                  })}
+                </div>
+              );
+            } else if (group.type === "assistant:query-intent-approval") {
+              const approvalMessage = findLatestDataQueryIntentApprovalMessage(
+                group.messages,
+              );
               const humanInputRequest = approvalMessage
                 ? extractHumanInputRequest(approvalMessage)
                 : null;
-              if (!artifact && !humanInputRequest) return null;
+              if (!humanInputRequest) return null;
               const answeredResponse = humanInputRequest
                 ? (humanInputState.answeredResponses.get(
                     humanInputRequest.request_id,
@@ -1180,48 +1191,11 @@ export function MessageList({
               const pending = humanInputRequest
                 ? pendingHumanInputRequestIds.has(humanInputRequest.request_id)
                 : false;
-              if (!artifact && humanInputRequest) {
-                return (
-                  <div key={group.id} className="w-full">
-                    <HumanInputCard
-                      answeredResponse={answeredResponse}
-                      disabled={
-                        thread.isLoading ||
-                        pending ||
-                        Boolean(answeredResponse) ||
-                        humanInputState.latestOpenRequestId !==
-                          humanInputRequest.request_id ||
-                        !onSubmitHumanInput
-                      }
-                      pending={pending}
-                      request={humanInputRequest}
-                      onSubmit={
-                        onSubmitHumanInput
-                          ? (response) =>
-                              handleSubmitHumanInput(
-                                humanInputRequest,
-                                response,
-                              )
-                          : undefined
-                      }
-                    />
-                    {renderTokenUsage({
-                      messages: group.messages,
-                      turnUsageMessages,
-                    })}
-                  </div>
-                );
-              }
-              if (!artifact) return null;
               return (
                 <div key={group.id} className="w-full">
-                  <QueryIntentCard
-                    artifact={artifact}
-                    request={humanInputRequest}
+                  <HumanInputCard
                     answeredResponse={answeredResponse}
-                    pending={pending}
                     disabled={
-                      !humanInputRequest ||
                       thread.isLoading ||
                       pending ||
                       Boolean(answeredResponse) ||
@@ -1229,8 +1203,10 @@ export function MessageList({
                         humanInputRequest.request_id ||
                       !onSubmitHumanInput
                     }
+                    pending={pending}
+                    request={humanInputRequest}
                     onSubmit={
-                      humanInputRequest && onSubmitHumanInput
+                      onSubmitHumanInput
                         ? (response) =>
                             handleSubmitHumanInput(humanInputRequest, response)
                         : undefined

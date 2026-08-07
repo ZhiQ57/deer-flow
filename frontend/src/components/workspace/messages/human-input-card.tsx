@@ -6,10 +6,11 @@ import {
   Loader2Icon,
   MessageCircleQuestionMarkIcon,
 } from "lucide-react";
-import { useId, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/core/i18n/hooks";
 import {
@@ -40,6 +41,19 @@ export function shouldSubmitHumanInputTextOnKeyDown(
   );
 }
 
+/**
+ * 渲染通用人机输入审批卡片。
+ *
+ * Args:
+ *   request: 后端下发的人机输入请求。
+ *   disabled: 是否禁用交互。
+ *   pending: 当前是否处于提交中。
+ *   answeredResponse: 已落盘的隐藏响应。
+ *   onSubmit: 提交回调。
+ *
+ * Returns:
+ *   人机输入卡片。
+ */
 export function HumanInputCard({
   request,
   disabled = false,
@@ -62,13 +76,16 @@ export function HumanInputCard({
   const [selectedOptionIds, setSelectedOptionIds] = useState<
     Record<string, string>
   >({});
+  const [questionTexts, setQuestionTexts] = useState<Record<string, string>>(
+    {},
+  );
   const titleId = useId();
   const textInputId = useId();
   const allowText =
     request.input_mode === "free_text" ||
     request.input_mode === "choice_with_other";
   const options = request.options ?? [];
-  const questions = request.questions ?? [];
+  const questions = useMemo(() => request.questions ?? [], [request.questions]);
   const answeredIntentApproval = parseIntentApprovalAnswers(answeredResponse);
   const answeredOptionIds = Object.fromEntries(
     (answeredIntentApproval?.answers ?? []).map((answer) => [
@@ -86,6 +103,34 @@ export function HumanInputCard({
       : readOnly
         ? t.humanInput.readOnly
         : null;
+
+  useEffect(() => {
+    if (!answeredIntentApproval) {
+      return;
+    }
+
+    const nextSelectedOptionIds: Record<string, string> = {};
+    const nextQuestionTexts: Record<string, string> = {};
+
+    for (const answer of answeredIntentApproval.answers) {
+      const question = questions.find((item) => item.id === answer.question_id);
+      if (!question) {
+        continue;
+      }
+
+      const matchedOption = question.options.find(
+        (option) => option.id === answer.option_id,
+      );
+      if (matchedOption) {
+        nextSelectedOptionIds[answer.question_id] = matchedOption.id;
+      } else {
+        nextQuestionTexts[answer.question_id] = answer.value;
+      }
+    }
+
+    setSelectedOptionIds(nextSelectedOptionIds);
+    setQuestionTexts(nextQuestionTexts);
+  }, [answeredIntentApproval, questions]);
 
   const submitResponse = async (response: HumanInputResponse) => {
     if (isDisabled || !onSubmit) {
@@ -124,6 +169,8 @@ export function HumanInputCard({
     }
   };
 
+  const getOtherAnswerOptionId = (questionId: string) => `${questionId}:other`;
+
   /**
    * 提交多问题审批答案。
    *
@@ -136,7 +183,18 @@ export function HumanInputCard({
   const handleMultiQuestionSubmit = (event: { preventDefault(): void }) => {
     event.preventDefault();
     const answers: HumanInputAnswer[] = [];
+
     for (const question of questions) {
+      const freeTextValue = questionTexts[question.id]?.trim();
+      if (freeTextValue) {
+        answers.push({
+          question_id: question.id,
+          option_id: getOtherAnswerOptionId(question.id),
+          value: freeTextValue,
+        });
+        continue;
+      }
+
       const optionId = selectedOptionIds[question.id];
       const option = question.options.find((item) => item.id === optionId);
       if (!option) {
@@ -149,6 +207,7 @@ export function HumanInputCard({
         value: option.value,
       });
     }
+
     setError("");
     void submitResponse(createMultiQuestionChoiceResponse(request, answers));
   };
@@ -211,14 +270,22 @@ export function HumanInputCard({
                 const selectedOptionId =
                   answeredOptionIds[question.id] ??
                   selectedOptionIds[question.id];
+                const answerDraft = questionTexts[question.id] ?? "";
+                const questionTextInputId = `${textInputId}-${question.id}`;
+
                 return (
                   <fieldset
                     key={question.id}
                     className="border-border/70 space-y-3 rounded-md border p-3"
                     disabled={isDisabled}
                   >
-                    <legend className="px-1 text-sm font-medium">
-                      {questionIndex + 1}. {question.question}
+                    <legend className="flex items-center gap-2 px-1 text-sm font-medium">
+                      <span className="bg-primary/10 text-primary flex size-5 shrink-0 items-center justify-center rounded-full text-xs font-semibold">
+                        {questionIndex + 1}
+                      </span>
+                      <span className="min-w-0 break-words">
+                        {question.question}
+                      </span>
                     </legend>
                     <div className="grid gap-2">
                       {question.options.map((option) => {
@@ -237,6 +304,10 @@ export function HumanInputCard({
                                 ...current,
                                 [question.id]: option.id,
                               }));
+                              setQuestionTexts((current) => ({
+                                ...current,
+                                [question.id]: "",
+                              }));
                             }}
                           >
                             <span className="flex min-w-0 items-center gap-2">
@@ -253,6 +324,34 @@ export function HumanInputCard({
                         );
                       })}
                     </div>
+                    <div className="space-y-2">
+                      <div className="text-muted-foreground text-xs">
+                        {t.humanInput.otherLabel}
+                      </div>
+                      <Input
+                        aria-invalid={Boolean(error)}
+                        aria-label={`${question.question} - ${t.humanInput.otherLabel}`}
+                        className="h-10 text-sm"
+                        disabled={isDisabled}
+                        id={questionTextInputId}
+                        placeholder={t.humanInput.otherPlaceholder}
+                        value={answerDraft}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setError("");
+                          setQuestionTexts((current) => ({
+                            ...current,
+                            [question.id]: value,
+                          }));
+                          if (value.trim()) {
+                            setSelectedOptionIds((current) => ({
+                              ...current,
+                              [question.id]: "",
+                            }));
+                          }
+                        }}
+                      />
+                    </div>
                   </fieldset>
                 );
               })}
@@ -264,7 +363,7 @@ export function HumanInputCard({
                     {t.humanInput.answeredValue(
                       answeredIntentApproval.answers
                         .map((answer) => answer.value)
-                        .join("；"),
+                        .join("，"),
                     )}
                   </p>
                 ) : (

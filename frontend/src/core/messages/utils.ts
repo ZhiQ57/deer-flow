@@ -1,12 +1,10 @@
 import type { AIMessage, Message } from "@langchain/langgraph-sdk";
 
 import {
-  extractDataQueryIntentApprovalArtifact,
   isDataQueryInternalPayloadText,
   isDataQueryIntentApprovalToolMessage,
   isDataQueryLabelsToolMessage,
   isDataQuerySqlResultToolMessage,
-  extractDataQueryLabelsArtifact,
 } from "./data-query";
 
 interface GenericMessageGroup<T = string> {
@@ -27,6 +25,8 @@ interface AssistantClarificationGroup extends GenericMessageGroup<"assistant:cla
 
 interface AssistantQueryIntentGroup extends GenericMessageGroup<"assistant:query-intent"> {}
 
+interface AssistantQueryIntentApprovalGroup extends GenericMessageGroup<"assistant:query-intent-approval"> {}
+
 interface AssistantQueryResultGroup extends GenericMessageGroup<"assistant:query-result"> {}
 
 interface AssistantSubagentGroup extends GenericMessageGroup<"assistant:subagent"> {}
@@ -38,6 +38,7 @@ export type MessageGroup =
   | AssistantPresentFilesGroup
   | AssistantClarificationGroup
   | AssistantQueryIntentGroup
+  | AssistantQueryIntentApprovalGroup
   | AssistantQueryResultGroup
   | AssistantSubagentGroup;
 
@@ -67,6 +68,7 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
       last.type !== "assistant" &&
       last.type !== "assistant:clarification" &&
       last.type !== "assistant:query-intent" &&
+      last.type !== "assistant:query-intent-approval" &&
       last.type !== "assistant:query-result"
     ) {
       return last;
@@ -141,41 +143,20 @@ export function getMessageGroups(messages: Message[]): MessageGroup[] {
           type: "assistant:clarification",
           messages: [message],
         });
-      } else if (
-        isDataQueryLabelsToolMessage(message) ||
-        isDataQueryIntentApprovalToolMessage(message)
-      ) {
-        // ADD: DataAgent 标签 artifact 独立成卡片，同时保留前置工具轨迹。
+      } else if (isDataQueryLabelsToolMessage(message)) {
+        // DataAgent 标签卡独立成组，同时保留前置工具轨迹。
         lastOpenGroup()?.messages.push(message);
-        const approvalArtifact =
-          extractDataQueryIntentApprovalArtifact(message);
-        if (approvalArtifact) {
-          const matchingGroup = [...groups].reverse().find((group) => {
-            if (group.type !== "assistant:query-intent") {
-              return false;
-            }
-            const latestArtifact = [...group.messages]
-              .reverse()
-              .map((item) => extractDataQueryLabelsArtifact(item))
-              .find(
-                (
-                  item,
-                ): item is NonNullable<
-                  ReturnType<typeof extractDataQueryLabelsArtifact>
-                > => item !== null,
-              );
-            return (
-              latestArtifact?.approval.flow_id === approvalArtifact.flow_id
-            );
-          });
-          if (matchingGroup) {
-            matchingGroup.messages.push(message);
-            continue;
-          }
-        }
         groups.push({
           id: message.id,
           type: "assistant:query-intent",
+          messages: [message],
+        });
+      } else if (isDataQueryIntentApprovalToolMessage(message)) {
+        // 审批请求单独成组，避免后续轮次误绑定到历史标签卡。
+        lastOpenGroup()?.messages.push(message);
+        groups.push({
+          id: message.id,
+          type: "assistant:query-intent-approval",
           messages: [message],
         });
       } else if (isDataQuerySqlResultToolMessage(message)) {

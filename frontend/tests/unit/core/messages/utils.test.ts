@@ -180,6 +180,7 @@ test("renders DataAgent intent and SQL artifacts as dedicated groups", () => {
     "human",
     "assistant:processing",
     "assistant:query-intent",
+    "assistant:query-intent-approval",
     "assistant:query-result",
   ]);
 });

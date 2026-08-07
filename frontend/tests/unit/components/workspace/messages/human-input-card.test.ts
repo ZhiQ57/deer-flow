@@ -136,6 +136,45 @@ describe("HumanInputCard", () => {
     expect(html).toContain("支付金额");
   });
 
+  it("renders an other-answer input for every multi-question item", () => {
+    const html = renderCard({
+      request: {
+        version: 1,
+        kind: "human_input_request",
+        source: "ask_intent_approval",
+        request_id: "data-query:req-english",
+        flow_id: "ABCDEFGH",
+        title: "Confirm query intent",
+        context: "Please confirm each query condition.",
+        input_mode: "multi_question_choice",
+        questions: [
+          {
+            id: "question_1",
+            question: "Should the time range be full year 2024?",
+            options: [
+              { id: "question_1_option_1", label: "Yes", value: "Yes" },
+            ],
+          },
+          {
+            id: "question_2",
+            question: "Use order amount or payment amount?",
+            options: [
+              {
+                id: "question_2_option_1",
+                label: "Order amount",
+                value: "Order amount",
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(html.match(/Type another answer\.\.\./g)?.length).toBe(2);
+    expect(html).toContain("Should the time range be full year 2024?");
+    expect(html).toContain("Use order amount or payment amount?");
+  });
+
   it("does not submit text with Enter while IME composition is active", () => {
     expect(shouldSubmitHumanInputTextOnKeyDown(keyEvent())).toBe(true);
     expect(

@@ -11,61 +11,22 @@ import {
   formatQueryIntentLabel,
   type QueryIntentArtifact,
 } from "@/core/messages/data-query";
-import {
-  parseIntentApprovalAnswers,
-  type HumanInputRequest,
-  type HumanInputResponse,
-} from "@/core/messages/human-input";
-
-import {
-  HumanInputCard,
-  type HumanInputSubmitResult,
-} from "./human-input-card";
 
 /**
- * 渲染 DataAgent 查询意图与可选人工审批卡片。
+ * 渲染数据查询意图标签卡片。
  *
  * Args:
- *   artifact: publish_query_labels 返回的新标签 artifact。
- *   request: ask_intent_approval 返回的人机输入请求。
- *   answeredResponse: 已持久化的人机输入响应。
- *   pending: 当前审批是否正在提交。
- *   disabled: 是否禁止继续操作。
- *   onSubmit: 审批响应提交函数。
+ *   artifact: publish_query_labels 产出的结构化意图标签。
  *
  * Returns:
- *   查询意图卡片。
+ *   查询意图标签卡片。
  */
 export function QueryIntentCard({
   artifact,
-  request = null,
-  answeredResponse = null,
-  pending = false,
-  disabled = false,
-  onSubmit,
 }: {
   artifact: QueryIntentArtifact;
-  request?: HumanInputRequest | null;
-  answeredResponse?: HumanInputResponse | null;
-  pending?: boolean;
-  disabled?: boolean;
-  onSubmit?: (
-    response: HumanInputResponse,
-  ) => HumanInputSubmitResult | Promise<HumanInputSubmitResult>;
 }) {
-  const answeredApproval = parseIntentApprovalAnswers(answeredResponse);
-  const cancelled = answeredApproval?.final_action === "cancel";
-  const approved =
-    Boolean(answeredApproval) && answeredApproval?.final_action !== "cancel";
-  const statusLabel = cancelled
-    ? "已取消"
-    : approved
-      ? "已确认"
-      : request
-        ? "待审批"
-        : artifact.approval.required
-          ? "等待审批"
-          : "自动通过";
+  const approvalRequired = artifact.approval.required;
 
   return (
     <section
@@ -77,13 +38,13 @@ export function QueryIntentCard({
           <DatabaseIcon className="text-primary size-4 shrink-0" />
           <h2 className="truncate text-sm font-medium">查询意图</h2>
         </div>
-        <Badge variant={approved ? "outline" : "secondary"}>
-          {approved ? (
-            <CheckCircle2Icon className="mr-1 size-3" />
-          ) : (
+        <Badge variant={approvalRequired ? "secondary" : "outline"}>
+          {approvalRequired ? (
             <ShieldQuestionIcon className="mr-1 size-3" />
+          ) : (
+            <CheckCircle2Icon className="mr-1 size-3" />
           )}
-          {statusLabel}
+          {approvalRequired ? "待审批" : "自动通过"}
         </Badge>
       </div>
 
@@ -117,17 +78,6 @@ export function QueryIntentCard({
           {artifact.approval.reason}
         </p>
       </div>
-
-      {request ? (
-        <HumanInputCard
-          key={request.request_id}
-          answeredResponse={answeredResponse}
-          disabled={disabled}
-          pending={pending}
-          request={request}
-          onSubmit={onSubmit}
-        />
-      ) : null}
     </section>
   );
 }
