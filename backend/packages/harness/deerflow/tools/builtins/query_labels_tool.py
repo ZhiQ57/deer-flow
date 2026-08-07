@@ -14,6 +14,7 @@ class QueryLabelInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     label: str = Field(min_length=1, max_length=100, description="标签类型，例如指标、时间、地区、业务口径。")
+    value: str = Field(min_length=1, max_length=200, description="标签值`")
     source: Literal["user", "database", "derived"] = Field(description="标签来源：user-用户原文、database-数据库真实值、derived-基于上下文证据推导")
     # ADD: 可选保留模型在普通工具上下文中看到的证据引用.
     evidence_refs: list[str] = Field(default_factory=list, max_length=20, description="[可选]推理证据引用, 格式必须是: `[数字]. 证据源`")

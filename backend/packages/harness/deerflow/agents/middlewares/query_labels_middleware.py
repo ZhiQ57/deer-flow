@@ -169,11 +169,7 @@ class QueryLabelsMiddleware(AgentMiddleware):
         # labels 归一化
         normalized_labels: list[Mapping[str, Any]] = []
         for index, item in enumerate(labels):
-            if hasattr(item, "model_dump"):
-                item = item.model_dump(exclude_none=True)
-            if not isinstance(item, Mapping):
-                raise ValueError(f"labels[{index}] 必须是对象。")
-            normalized_labels.append(dict(item))
+            normalized_labels.append(self._normalize_query_label(item, index=index))
         
         # ADD: 计算本次标签发布后的审批决策。
         approval = self._decide_query_approval(self._service_ability, args)
@@ -200,6 +196,51 @@ class QueryLabelsMiddleware(AgentMiddleware):
         # )
         return artifact
 
+    @staticmethod
+    def _normalize_query_label(item: Any, *, index: int) -> dict[str, Any]:
+        """规范化模型提交的单个查询意图标签。"""
+        if hasattr(item, "model_dump"):
+            item = item.model_dump(exclude_none=True)
+
+        if not isinstance(item, Mapping):
+            raise ValueError(f"labels[{index}] 必须是对象。")
+
+        label = str(item.get("label") or "").strip()
+        value = str(item.get("value") or item.get("label_value") or "").strip()
+        source = item.get("source")
+
+        if not label:
+            raise ValueError(f"labels[{index}].label 不能为空。")
+        if not value:
+            raise ValueError(f"labels[{index}].value 不能为空。")
+        if source not in {"user", "database", "derived"}:
+            raise ValueError(f"labels[{index}].source 必须是 user、database 或 derived。")
+        if len(label) > 50:
+            raise ValueError(f"labels[{index}].label 不能超过 50 个字符。")
+        if len(value) > 200:
+            raise ValueError(f"labels[{index}].value 不能超过 200 个字符。")
+
+        normalized: dict[str, Any] = {
+            "label": label,
+            "value": value,
+            "source": source,
+        }
+
+        normalized_value = item.get("normalized")
+        if isinstance(normalized_value, str) and normalized_value.strip():
+            normalized["normalized"] = normalized_value.strip()[:200]
+
+        evidence = item.get("evidence")
+        if isinstance(evidence, str) and evidence.strip():
+            normalized["evidence"] = evidence.strip()[:500]
+
+        evidence_refs = item.get("evidence_refs")
+        if "evidence" not in normalized and isinstance(evidence_refs, list):
+            refs = [str(ref).strip() for ref in evidence_refs if str(ref).strip()]
+            if refs:
+                normalized["evidence"] = "；".join(refs)[:500]
+
+        return normalized
 
 
     @staticmethod
