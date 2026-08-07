@@ -7,9 +7,10 @@ import {
   shouldSubmitHumanInputTextOnKeyDown,
 } from "@/components/workspace/messages/human-input-card";
 import { I18nContext } from "@/core/i18n/context";
-import type {
-  HumanInputRequest,
-  HumanInputResponse,
+import {
+  createMultiQuestionChoiceResponse,
+  type HumanInputRequest,
+  type HumanInputResponse,
 } from "@/core/messages/human-input";
 
 const request: HumanInputRequest = {
@@ -55,6 +56,67 @@ describe("HumanInputCard", () => {
 
     expect(html).toContain("Answered");
     expect(html).toContain("Answered: staging");
+    expect(html).toContain("disabled");
+  });
+
+  it("renders answered multi-question approval text without looping", () => {
+    const requestWithQuestions: HumanInputRequest = {
+      version: 1,
+      kind: "human_input_request",
+      source: "ask_intent_approval",
+      request_id: "data-query:req",
+      flow_id: "ABCDEFGH",
+      title: "Confirm query intent",
+      context: "Please confirm each query condition.",
+      input_mode: "multi_question_choice",
+      questions: [
+        {
+          id: "question_1",
+          question: "Should the time range be full year 2024?",
+          options: [
+            { id: "question_1_option_1", label: "Yes", value: "Yes" },
+            { id: "question_1_option_2", label: "No", value: "No" },
+          ],
+        },
+        {
+          id: "question_2",
+          question: "Use order amount or payment amount?",
+          options: [
+            {
+              id: "question_2_option_1",
+              label: "Order amount",
+              value: "Order amount",
+            },
+            {
+              id: "question_2_option_2",
+              label: "Payment amount",
+              value: "Payment amount",
+            },
+          ],
+        },
+      ],
+    };
+    const response = createMultiQuestionChoiceResponse(requestWithQuestions, [
+      {
+        question_id: "question_1",
+        option_id: "question_1_option_1",
+        value: "Yes",
+      },
+      {
+        question_id: "question_2",
+        option_id: "question_2_option_2",
+        value: "Payment amount",
+      },
+    ]);
+
+    const html = renderCard({
+      request: requestWithQuestions,
+      answeredResponse: response,
+    });
+
+    expect(html).toContain("Answered:");
+    expect(html).toContain("Yes");
+    expect(html).toContain("Payment amount");
     expect(html).toContain("disabled");
   });
 

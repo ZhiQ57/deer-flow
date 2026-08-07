@@ -41,6 +41,25 @@ export function shouldSubmitHumanInputTextOnKeyDown(
   );
 }
 
+function areStringRecordsEqual(
+  left: Record<string, string>,
+  right: Record<string, string>,
+) {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  for (const key of leftKeys) {
+    if (left[key] !== right[key]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 /**
  * 渲染通用人机输入审批卡片。
  *
@@ -86,12 +105,19 @@ export function HumanInputCard({
     request.input_mode === "choice_with_other";
   const options = request.options ?? [];
   const questions = useMemo(() => request.questions ?? [], [request.questions]);
-  const answeredIntentApproval = parseIntentApprovalAnswers(answeredResponse);
-  const answeredOptionIds = Object.fromEntries(
-    (answeredIntentApproval?.answers ?? []).map((answer) => [
-      answer.question_id,
-      answer.option_id,
-    ]),
+  const answeredIntentApproval = useMemo(
+    () => parseIntentApprovalAnswers(answeredResponse),
+    [answeredResponse],
+  );
+  const answeredOptionIds = useMemo(
+    () =>
+      Object.fromEntries(
+        (answeredIntentApproval?.answers ?? []).map((answer) => [
+          answer.question_id,
+          answer.option_id,
+        ]),
+      ),
+    [answeredIntentApproval],
   );
   const readOnly = !onSubmit;
   const isDisabled =
@@ -128,8 +154,16 @@ export function HumanInputCard({
       }
     }
 
-    setSelectedOptionIds(nextSelectedOptionIds);
-    setQuestionTexts(nextQuestionTexts);
+    setSelectedOptionIds((current) =>
+      areStringRecordsEqual(current, nextSelectedOptionIds)
+        ? current
+        : nextSelectedOptionIds,
+    );
+    setQuestionTexts((current) =>
+      areStringRecordsEqual(current, nextQuestionTexts)
+        ? current
+        : nextQuestionTexts,
+    );
   }, [answeredIntentApproval, questions]);
 
   const submitResponse = async (response: HumanInputResponse) => {
