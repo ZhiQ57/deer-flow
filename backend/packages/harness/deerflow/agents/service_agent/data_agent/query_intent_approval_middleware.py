@@ -315,11 +315,12 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
 
         for index, message in enumerate(messages):
             if isinstance(message, ToolMessage) and message.name == _TOOL_NAME:
-                artifact = cls._tool_artifact(message)
+                artifact = getattr(message, "artifact", None)
+
                 if not isinstance(artifact, Mapping):
                     continue
 
-                human_input = artifact.get("human_input")
+                human_input = artifact["human_input"]
                 if not isinstance(human_input, Mapping):
                     continue
 
@@ -383,6 +384,7 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
         pending.sort(key=lambda item: item["index"])
         latest = pending[-1]
         return latest["request_artifact"], latest["response"]
+
     @staticmethod
     def _parse_review_response(
         response: Mapping[str, Any],

@@ -83,7 +83,7 @@ def resolve_service_ability_safely(agent_config: AgentConfig | None) -> ServiceA
         name = agent_config.get("service_name")   # 字典
     else:
         name = getattr(agent_config, "service_name", None)  # 对象
-
+        # TODO 这里分为两种情况, 一种是 系统外层读取 config.yaml , 一种是 读取 service_bility 参数.
     try:
         # 根据注册表获取智能体的能力配置
         service_ability = SERVICE_ABILITY_REGISTRY.get(name)
@@ -145,5 +145,4 @@ def merge_service_states(
         active[service_name] = merged
 
     return list(active.values())
-
 

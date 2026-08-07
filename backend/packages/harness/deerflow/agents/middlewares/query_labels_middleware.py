@@ -323,7 +323,6 @@ class QueryLabelsMiddleware(AgentMiddleware):
 
 
     # ADD: 判断意图是否需要人工审批
-    @staticmethod
     def _decide_query_approval(
         self,
         config: DataAgentServiceAbilityConfig | None,
