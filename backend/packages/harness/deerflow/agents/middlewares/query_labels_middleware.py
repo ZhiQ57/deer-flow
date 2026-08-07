@@ -23,13 +23,7 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
-from deerflow.agents.service_agent.state import (
-    build_query_label_snapshot,
-    build_query_review_items,
-    get_active_service_state,
-    make_service_state,
-)
-from deerflow.agents.service_agent.config import DataQueryServiceAbilityConfig
+from deerflow.agents.service_agent.data_agent.service_config import DataAgentServiceAbilityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -332,8 +326,8 @@ class QueryLabelsMiddleware(AgentMiddleware):
     @staticmethod
     def _decide_query_approval(
         self,
-        config: DataQueryServiceAbilityConfig | None,
-        args: Mapping[str, Any],
+        config: DataAgentServiceAbilityConfig | None,
+        args: Any,
     ) -> dict[str, Any]:
         """根据审批配置和模型判断，生成本轮标签发布后的审批决策。"""
         model_requested_approval = bool(args.get("approval_required"))

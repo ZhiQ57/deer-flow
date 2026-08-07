@@ -8,7 +8,9 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from deerflow.agents.service_agent.registry import resolve_service_ability_safely
+from deerflow.agents.service_agent.registry import (
+    resolve_nested_service_ability_safely,
+)
 from deerflow.config.agents_api_config import get_agents_api_config
 from deerflow.config.agents_config import (
     AgentConfig,
@@ -185,8 +187,9 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
     soul: str | None = None
     if include_soul:
         soul = load_agent_soul(agent_cfg.name, user_id=user_id) or ""
-    # ADD: API 只投影可公开字段，绝不把 DSN、Secret 或连接参数返回给前端。
-    service_ability = resolve_service_ability_safely(agent_cfg.service_ability)
+
+    # 从 AgentConfig.service_ability 嵌套块解析并投影脱敏能力元数据。
+    service_ability = resolve_nested_service_ability_safely(agent_cfg)
 
     return AgentResponse(
         name=agent_cfg.name,

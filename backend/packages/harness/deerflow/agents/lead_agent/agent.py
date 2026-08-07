@@ -65,7 +65,7 @@ from deerflow.tracing import build_tracing_callbacks
 logger = logging.getLogger(__name__)
 
 _BOOTSTRAP_SKILL_NAMES = {"bootstrap"}
-_NON_INTERACTIVE_DISABLED_TOOL_NAMES = frozenset({"ask_clarification"})
+
 
 # Channels whose inbound messages originate from untrusted external
 # commenters (anyone on a GitHub repo, etc.) and whose run context is
@@ -575,7 +575,6 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
     max_total_subagents = cfg.get("max_total_subagents", _default_max_total_subagents(resolved_app_config))
     is_bootstrap = cfg.get("is_bootstrap", False)
-    non_interactive = bool(cfg.get("non_interactive", False))
     agent_name = validate_agent_name(cfg.get("agent_name"))  # cfg.get("agent_name")可读取配置的智能体名称
 
     # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
@@ -586,18 +585,13 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     service_ability = resolve_nested_service_ability_safely(agent_config if agent_config else None)
 
     # ADD: 只有 custom-agent 显式 allowlist SQL SubAgent 时才开启现有 task 工具。
-    sql_subagent_allowed = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents and service_ability.config.sql_subagent_name in agent_config.allowable_subagents)
-    if sql_subagent_allowed:
-        subagent_enabled = True
-    # ADD: 只向运行上下文注入脱敏能力投影，DSN 配置和 Secret 引用不得进入 Harness 工具上下文。
-    if service_ability is not None:
+    subagent_enabled = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents)
+
+    if subagent_enabled:
         context = config.setdefault("context", {})
         if isinstance(context, dict):
-            context["data_query_service_ability"] = service_ability.public_metadata()
-            context["data_query_sql_subagent_allowed"] = sql_subagent_allowed
             context["subagent_enabled"] = subagent_enabled
-            # ADD: 将可信运行模式传给 DataAgent 标签门禁，非交互运行不得进入 human-input 等待。
-            context["non_interactive"] = non_interactive
+
     available_skills = _available_skill_names(agent_config, is_bootstrap)
     available_subagents = _available_subagents(agent_config, subagent_enabled)
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
@@ -692,8 +686,6 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         )
         raw_tools = get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, app_config=resolved_app_config) + [setup_agent]
         configured_tools = raw_tools
-        if non_interactive:
-            configured_tools = [tool for tool in configured_tools if tool.name not in _NON_INTERACTIVE_DISABLED_TOOL_NAMES]
         authorization_candidates = [*configured_tools]
         if skill_setup.describe_skill_tool:
             authorization_candidates.append(skill_setup.describe_skill_tool)
@@ -779,8 +771,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         raw_tools = service_ability.filter_tools(raw_tools)
         raw_tools.extend(service_ability.build_tools())
     configured_tools = raw_tools + extra_tools
-    if non_interactive:
-        configured_tools = [tool for tool in configured_tools if tool.name not in _NON_INTERACTIVE_DISABLED_TOOL_NAMES]
+
     authorization_candidates = [*configured_tools]
     if skill_setup.describe_skill_tool:
         authorization_candidates.append(skill_setup.describe_skill_tool)

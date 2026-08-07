@@ -123,6 +123,8 @@ class DataAgentServiceAbilityConfig(BaseModel):
     def public_metadata(self) -> dict[str, Any]:
         """返回可以暴露给 Agents API 和运行 metadata 的脱敏摘要。"""
         return {
+            "enable_subagent_sql_execution": self.enable_subagent_sql_execution,
+
             "type": self.type,
             "version": self.version,
             "enabled": True,

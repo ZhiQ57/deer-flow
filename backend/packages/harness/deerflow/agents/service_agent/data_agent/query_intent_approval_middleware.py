@@ -18,7 +18,7 @@ from langgraph.types import Command
 
 from deerflow.agents.human_input import read_human_input_response
 
-from .service_config import DataQueryServiceAbilityConfig
+from .service_config import DataAgentServiceAbilityConfig
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ class QueryIntentApprovalMiddleware(AgentMiddleware):
        替换审批请求，把最终审批结果写回工具消息历史.
     """
 
-    def __init__(self, config: DataQueryServiceAbilityConfig) -> None:
+    def __init__(self, config: DataAgentServiceAbilityConfig) -> None:
         """初始化查询意图审批 middleware。
 
         Args:

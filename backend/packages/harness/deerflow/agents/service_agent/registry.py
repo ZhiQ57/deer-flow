@@ -65,7 +65,7 @@ def resolve_nested_service_ability_safely(agent_config: AgentConfig | None) -> S
 
 
 
-def resolve_service_ability_safely(app_config: AgentConfig | None) -> ServiceAbilityAdapter | None:
+def resolve_service_ability_safely(agent_config: AgentConfig | None) -> ServiceAbilityAdapter | None:
     """安全解析 custom-agent 的 service ability
 
     Args:
@@ -75,24 +75,24 @@ def resolve_service_ability_safely(app_config: AgentConfig | None) -> ServiceAbi
         已解析 service_ability 能力
     """
 
-    if app_config is None:
+    if agent_config is None:
         return None
 
     # 读取智能体名称
-    if isinstance(app_config, Mapping):
-        name = app_config.get("service_name")   # 字典
+    if isinstance(agent_config, Mapping):
+        name = agent_config.get("service_name")   # 字典
     else:
-        name = getattr(app_config, "service_name", None)  # 对象
+        name = getattr(agent_config, "service_name", None)  # 对象
 
     try:
         # 根据注册表获取智能体的能力配置
         service_ability = SERVICE_ABILITY_REGISTRY.get(name)
-        if service_ability is None or app_config is None:
+        if service_ability is None or agent_config is None:
             return None
 
         # 解析能力配置
         # 例如: config = DataQueryServiceAbilityConfig.model_validate(app_config.service_ability)
-        config = service_ability.config_cls.model_validate(app_config)
+        config = service_ability.config_cls.model_validate(agent_config)
 
         # 实例化适配器
         return service_ability.adapter_cls(config)

@@ -13,7 +13,7 @@ from langgraph.graph.message import add_messages
 
 import deerflow.checkpoint_patches as _checkpoint_patches  # noqa: F401 - import-time saver fixes
 from deerflow.agents.goal_state import GoalState
-from deerflow.agents.service_agent.data_agent_thread_state import normalize_service_state_version
+
 from deerflow.config.database_config import CheckpointChannelMode
 from deerflow.subagents.status_contract import SUBAGENT_STATUS_VALUES
 
