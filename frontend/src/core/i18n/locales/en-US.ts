@@ -58,6 +58,8 @@ export const enUS: Translations = {
   },
 
   sqlExecution: {
+    unavailable:
+      "SQL execution is not enabled for this conversation. Check the DataAgent configuration or contact an administrator.",
     execute: "Execute",
     executing: "Executing...",
     title: "SQL Result",

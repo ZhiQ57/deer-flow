@@ -58,6 +58,7 @@ export const zhCN: Translations = {
   },
 
   sqlExecution: {
+    unavailable: "当前会话未开启 SQL 执行权限，请检查 DataAgent 配置或联系管理员。",
     execute: "执行",
     executing: "执行中...",
     title: "SQL 执行结果",

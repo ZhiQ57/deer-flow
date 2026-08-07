@@ -47,6 +47,7 @@ export interface Translations {
   };
 
   sqlExecution: {
+    unavailable: string;
     execute: string;
     executing: string;
     title: string;

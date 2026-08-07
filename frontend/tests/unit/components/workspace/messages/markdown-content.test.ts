@@ -170,7 +170,7 @@ describe("MarkdownContent SQL execution", () => {
     expect(html).toContain('data-streamdown="code-block-copy-button"');
   });
 
-  it("does not show execute for a normal agent or a streaming SQL fence", () => {
+  it("shows execute for an unavailable agent but not for a streaming SQL fence", () => {
     const normalAgent = renderToStaticMarkup(
       createElement(
         TestI18nProvider,
@@ -208,7 +208,10 @@ describe("MarkdownContent SQL execution", () => {
       ),
     );
 
-    expect(normalAgent).not.toContain('data-testid="sql-execute-button"');
+    expect(normalAgent).toContain('data-testid="sql-execute-button"');
+    expect(normalAgent).toContain(
+      "SQL execution is not enabled for this conversation",
+    );
     expect(streaming).not.toContain('data-testid="sql-execute-button"');
   });
 });
