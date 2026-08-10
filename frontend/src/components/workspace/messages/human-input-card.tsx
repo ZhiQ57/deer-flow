@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  CheckIcon,
   CheckCircle2Icon,
   CheckIcon,
   Loader2Icon,
@@ -249,11 +248,6 @@ function FormFieldInput({
     />
   );
 }
-
-
-
-
-
 export function HumanInputCard({
   request,
   disabled = false,
@@ -669,8 +663,6 @@ export function HumanInputCard({
             </form>
           ) : null}
 
-          {request.input_mode !== "multi_question_choice" &&
-          options.length > 0 ? (
           {isForm ? (
             <form className="space-y-4" onSubmit={handleFormSubmit}>
               {fields.map((field, index) => {
@@ -837,11 +829,12 @@ export function HumanInputCard({
                 </Button>
               </div>
             </form>
-          ) : request.input_mode !== "multi_question_choice" &&
-            answeredResponse ? (
           ) : null}
 
-          {!allowText && !isForm && answeredResponse ? (
+          {request.input_mode !== "multi_question_choice" &&
+          !allowText &&
+          !isForm &&
+          answeredResponse ? (
             <p className="text-muted-foreground text-sm" aria-live="polite">
               {t.humanInput.answeredValue(answeredResponse.value)}
             </p>
