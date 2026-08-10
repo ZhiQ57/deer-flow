@@ -59,7 +59,7 @@ coverage/
 
 .claude/
 skills/custom/*
-logs/
+# logs/
 log/
 debug.log
 

@@ -1,0 +1,7 @@
+﻿$env:NEXT_PUBLIC_BACKEND_BASE_URL=''
+$env:NEXT_PUBLIC_LANGGRAPH_BASE_URL=''
+$env:DEER_FLOW_INTERNAL_GATEWAY_BASE_URL='http://localhost:8001'
+$env:DEER_FLOW_TRUSTED_ORIGINS='http://localhost:3000,http://localhost:2026'
+$env:SKIP_ENV_VALIDATION='1'
+Set-Location 'D:\A-PythonWork\AOpenGithub\deer-flow\frontend'
+pnpm dev *> 'D:\A-PythonWork\AOpenGithub\deer-flow\logs\frontend.log'
