@@ -46,6 +46,8 @@ coverage/
 
 # .deer-flow
 .deer-flow/*
+*/.deer-flow/*
+*/.deer-flow/skills_view/*
 
 */.deer-flow/data/*
 */.deer-flow/logs/*

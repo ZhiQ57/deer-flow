@@ -35,7 +35,8 @@ Get-NetTCPConnection -LocalPort 8001,3000,2026 -State Listen -ErrorAction Silent
 
 ```powershell
 Set-Location "$Root\backend"
-uv sync --all-packages --extra redis
+uv sync --all-packages
+uv sync --all-packages --extra postgres
 ```
 
 5. 前端依赖已安装：
