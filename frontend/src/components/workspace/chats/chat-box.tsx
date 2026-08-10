@@ -30,6 +30,11 @@ import { useArtifacts } from "../artifacts/context";
 import { useMaybeBrowserView } from "../browser-view/context";
 import { useThread } from "../messages/context";
 import { useMaybeSidecar } from "../sidecar/context";
+import {
+  SqlExecutionProvider,
+  SqlResultPanel,
+  useMaybeSqlExecution,
+} from "../sql-execution";
 
 function RightPanelLoading() {
   return (
@@ -67,12 +72,6 @@ const SidecarPanel = dynamic(
     import("../sidecar/sidecar-panel").then((module) => module.SidecarPanel),
   { loading: RightPanelLoading },
 );
-import { SidecarPanel, useMaybeSidecar } from "../sidecar";
-import {
-  SqlExecutionProvider,
-  SqlResultPanel,
-  useMaybeSqlExecution,
-} from "../sql-execution";
 
 const RIGHT_PANEL_ANIMATION_MS = 280;
 const RIGHT_PANEL_DEFAULT_SIZE = "40%";
