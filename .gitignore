@@ -27,7 +27,7 @@ results.jsonl
 backend/scripts/benchmark/*.jsonl
 
 # Environment variables
-.env
+# .env
 
 # Configuration files
 config.yaml

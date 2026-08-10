@@ -96,7 +96,6 @@ $env:DEER_FLOW_CONFIG_PATH = "$Root\config.yaml"
 $env:DEER_FLOW_EXTENSIONS_CONFIG_PATH = "$Root\extensions_config.json"
 $env:DEER_FLOW_STREAM_BRIDGE_REDIS_URL = "redis://localhost:6379/0"
 $env:GATEWAY_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
-
 Set-Location "$Root\backend"
 uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
 ```
