@@ -8,6 +8,7 @@ import pytest
 
 from app.gateway.modules.sql_execution.run_context import (
     prepare_sql_execution_run_context,
+    register_sql_execution_run_context,
 )
 from app.gateway.modules.sql_execution.runtime_registry import sql_execution_runtime_registry
 
@@ -40,7 +41,8 @@ async def test_prepare_run_context_injects_only_safe_binding() -> None:
         ),
         patch.object(sql_execution_runtime_registry, "register_run") as register_run,
     ):
-        await prepare_sql_execution_run_context(config, run_id="run-1")
+        prepared = await prepare_sql_execution_run_context(config)
+        register_sql_execution_run_context(prepared, run_id="run-1")
 
     assert config["context"]["data_query_binding"] == binding
     assert "data_query_service_ability" not in config["context"]

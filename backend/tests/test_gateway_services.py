@@ -1257,6 +1257,119 @@ async def test_start_run_checkpoint_validation_failure_does_not_admit_run(_stub_
 
 
 @pytest.mark.asyncio
+async def test_start_run_prepares_registers_and_releases_sql_context(_stub_app_config):
+    """Run 准入前准备 SQL 上下文，准入后同步注册，并在成功后释放。"""
+    from unittest.mock import patch
+
+    from app.gateway.services import start_run
+    from deerflow.runtime import RunManager
+    from deerflow.runtime.runs.store.memory import MemoryRunStore
+
+    events: list[tuple[str, object | None]] = []
+    prepared_context = object()
+
+    async def prepare(_config):
+        """记录 SQL 上下文准备。
+
+        Args:
+            _config: 待注入绑定的运行配置。
+        Returns:
+            测试用待注册上下文。
+        """
+        events.append(("prepare", None))
+        return prepared_context
+
+    def register(context, *, run_id):
+        """记录 SQL 上下文注册。
+
+        Args:
+            context: 测试用待注册上下文。
+            run_id: 已持久化的运行标识。
+        Returns:
+            无返回值。
+        """
+        events.append(("register", (context, run_id)))
+
+    async def run_agent(*_args, **_kwargs):
+        """记录 Agent 运行。
+
+        Args:
+            _args: 未使用的位置参数。
+            _kwargs: 未使用的关键字参数。
+        Returns:
+            无返回值。
+        """
+        events.append(("run", None))
+
+    def release(run_id):
+        """记录 SQL 上下文释放。
+
+        Args:
+            run_id: 已结束的运行标识。
+        Returns:
+            无返回值。
+        """
+        events.append(("release", run_id))
+
+    run_manager = RunManager(store=MemoryRunStore())
+    request = _make_start_run_request(run_manager)
+
+    with (
+        patch("app.gateway.services.resolve_agent_factory", return_value=object()),
+        patch("app.gateway.services.prepare_sql_execution_run_context", side_effect=prepare),
+        patch("app.gateway.services.register_sql_execution_run_context", side_effect=register),
+        patch("app.gateway.services.release_sql_execution_run_context", release),
+        patch("app.gateway.services.run_agent", side_effect=run_agent),
+    ):
+        record = await start_run(_run_create_request(), "thread-sql-context-success", request)
+        assert record.task is not None
+        await record.task
+
+    assert events == [
+        ("prepare", None),
+        ("register", (prepared_context, record.run_id)),
+        ("run", None),
+        ("release", record.run_id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_run_releases_sql_context_when_worker_fails(_stub_app_config):
+    """后台任务异常退出时也必须释放 SQL 上下文。"""
+    from unittest.mock import AsyncMock, Mock, patch
+
+    from app.gateway.services import start_run
+    from deerflow.runtime import RunManager
+    from deerflow.runtime.runs.store.memory import MemoryRunStore
+
+    prepared_context = object()
+    prepare = AsyncMock(return_value=prepared_context)
+    register = Mock()
+    release = Mock()
+    run_manager = RunManager(store=MemoryRunStore())
+    request = _make_start_run_request(run_manager)
+
+    with (
+        patch("app.gateway.services.resolve_agent_factory", return_value=object()),
+        patch("app.gateway.services.prepare_sql_execution_run_context", prepare),
+        patch("app.gateway.services.register_sql_execution_run_context", register),
+        patch("app.gateway.services.release_sql_execution_run_context", release),
+        patch(
+            "app.gateway.services.run_agent",
+            new=AsyncMock(side_effect=RuntimeError("agent failed")),
+        ),
+    ):
+        record = await start_run(_run_create_request(), "thread-sql-context-error", request)
+        assert record.task is not None
+        with pytest.raises(RuntimeError, match="agent failed"):
+            await record.task
+
+    prepare.assert_awaited_once()
+    register.assert_called_once_with(prepared_context, run_id=record.run_id)
+    release.assert_called_once_with(record.run_id)
+
+
+@pytest.mark.asyncio
 async def test_pending_cancel_bypasses_thread_metadata_and_logs_failure(_stub_app_config, caplog):
     from unittest.mock import AsyncMock, patch
 
@@ -1290,6 +1403,7 @@ async def test_pending_cancel_bypasses_thread_metadata_and_logs_failure(_stub_ap
     with (
         patch("app.gateway.services.resolve_agent_factory", return_value=object()),
         patch("app.gateway.services.run_agent", side_effect=fake_run_agent),
+        patch("app.gateway.services.release_sql_execution_run_context") as release_sql_context,
     ):
         record = await start_run(body, "thread-cancel-log-meta", request)
         await asyncio.wait_for(metadata_started.wait(), timeout=1)
@@ -1299,6 +1413,7 @@ async def test_pending_cancel_bypasses_thread_metadata_and_logs_failure(_stub_ap
         await asyncio.sleep(0)
 
     assert "thread metadata store failed after cancellation" in caplog.text
+    release_sql_context.assert_called_once_with(record.run_id)
 
 
 @pytest.mark.asyncio

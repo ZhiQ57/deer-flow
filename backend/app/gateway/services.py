@@ -31,6 +31,7 @@ from app.gateway.internal_auth import (
 )
 from app.gateway.modules.sql_execution.run_context import (
     prepare_sql_execution_run_context,
+    register_sql_execution_run_context,
     release_sql_execution_run_context,
 )
 from app.gateway.run_models import RunCreateRequest
@@ -1155,8 +1156,16 @@ async def start_run(
             internal_owner_user=internal_owner_user,
             request_context=getattr(body, "context", None),
         )
-        await prepare_sql_execution_run_context(config, run_id=record.run_id)
+        prepared_sql_context = await prepare_sql_execution_run_context(config)
+
         async def run_after_metadata(record: RunRecord) -> None:
+            """完成线程元数据准备后执行 Agent。
+
+            Args:
+                record: 已持久化并挂载后台任务的运行记录。
+            Returns:
+                无返回值。
+            """
             metadata_task = asyncio.create_task(
                 _ensure_thread_metadata(
                     run_ctx,
@@ -1246,14 +1255,13 @@ async def start_run(
 
                 worker = run_after_metadata(record)
                 try:
-                    # No await is allowed between durable admission and task
-                    # attachment. Metadata setup runs inside the attached
-                    # worker so a pending cancellation can bypass stalled
-                    # thread-store IO and still reach run_agent's startup
-                    # barrier / stream finalization.
+                    # SQL 解析在准入前完成；此处仅同步注册，保持持久化准入与任务挂载之间无 await。
+                    register_sql_execution_run_context(prepared_sql_context, run_id=record.run_id)
                     record.task = asyncio.create_task(worker)
+                    record.task.add_done_callback(lambda _completed_task, run_id=record.run_id: release_sql_execution_run_context(run_id))
                 except Exception as exc:
                     worker.close()
+                    release_sql_execution_run_context(record.run_id)
                     await run_mgr.fail_start_if_pending(
                         record.run_id,
                         error=f"Failed to attach run worker: {exc}",

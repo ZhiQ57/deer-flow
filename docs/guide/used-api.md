@@ -10,6 +10,7 @@
 - **确认协议**：需要人工确认时，模型调用 DataAgent-only `ask_intent_approval`。后端复用 human-input v1，把请求和最终人工响应写回真实 `ToolMessage` 与 `service_states`。
 - **SQL SubAgent**：父 Agent 只能通过现有 `task` 委派 `service_ability.sql_subagent_name`。`SqlStageMiddleware` 将 task prompt 替换为严格 JSON envelope，并要求当前 snapshot 已获批准或策略自动放行。
 - **数据源绑定**：Gateway 生成无密钥 `data_query_binding` 注入 Harness runtime context。DSN、`dsn_env`、`secret://` 引用和请求级 Secret 都只留在 Gateway。
+- **Run 上下文生命周期**：`prepare_sql_execution_run_context()` 在 Run 持久化准入前解析绑定并返回待注册上下文；`register_sql_execution_run_context()` 在取得 `run_id` 后同步登记，任务完成回调通过 `release_sql_execution_run_context()` 覆盖成功、失败和取消释放。持久化准入与任务挂载之间禁止新增 `await`。
 - **Gateway SQL 模块**：`app.gateway.modules.sql_execution` 负责 contracts、binding、validator、drivers、result_budget、error_classifier、runtime_registry、run_context、router 和 tool_provider。`deerflow-harness` 不解析 DSN/Secret，不导入数据库驱动/sqlglot，不执行业务 SQL。
 - **公开 SQL API**：`POST /api/threads/{thread_id}/sql/execute` 只接受 `source=manual_ui`，按当前认证用户、线程 owner 和 custom-agent 配置解析数据源；不接受内部认证头、run_id、snapshot_id、DSN、Secret、Schema 或 retrieval。
 - **内部 SQL API**：SQL SubAgent 工具只通过 Gateway trusted internal route 调用 `/api/internal/threads/{thread_id}/sql/validate` 与 `/execute`。请求体只包含候选 SQL、run/snapshot 身份和 validation digest。
