@@ -67,6 +67,7 @@ export function TokenUsageIndicator({
     [backendUsage, messages, pendingMessages, threadId],
   );
   const preset = getTokenUsageViewPreset(preferences);
+  const cacheMetrics = getPromptCacheMetrics(usage);
   const contextPercentage = formatContextUsagePercentage(
     contextUsage?.percentage,
   );
