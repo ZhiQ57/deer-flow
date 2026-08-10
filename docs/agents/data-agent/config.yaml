@@ -1,0 +1,35 @@
+name: data-agent
+description: 面向 Text2SQL / NL2SQL 的专业数据分析智能体，优先通过 TableRAG MCP 检索业务口径、候选表字段、字段值和 Join Graph 后再生成 SQL。
+model: Qwen3.6-plus
+tool_groups:
+  - file:read
+allowable_subagents:
+  - sql-subagent
+skills:
+  - table-rag-agent
+  - data-analysis
+  - chart-visualization
+service_ability:
+  type: data_query
+  version: 1
+  # data_query v1 只支持完整 TableRAG -> SQL 闭环；停用时移除整个 service_ability。
+  enable_sql_rag: true
+  table_rag_config: tablerag.yaml
+  data_source_id: text2sql-mysql-local
+  source_binding_mode: logical_data_source
+  confirmation_mode: on_ambiguity
+  min_auto_confidence: 0.85
+  sql_subagent_name: sql-subagent
+  sql_execution:
+    enabled: true
+    database_type: mysql
+    dsn_env: DATA_AGENT_MYSQL_DSN
+    readonly: true
+    statement_timeout_seconds: 30
+    max_execution_attempts: 3
+    max_rows: 500
+    max_cell_chars: 2000
+    max_result_chars: 100000
+    allowed_schemas: [text2sql]
+    allowed_tables: []
+    allowed_columns: []
