@@ -3,10 +3,10 @@
 database_type: "pg"
 
 index_database:
-  dsn: "postgresql://postgres:postgres@127.0.0.1:55433/text2sql?connect_timeout=10"
+  dsn: "postgresql://myuser:text2sql.123456@127.0.0.1:5434/text2sql?connect_timeout=10"
 
 source_database:
-  dsn: "postgresql://postgres:postgres@127.0.0.1:55433/text2sql?connect_timeout=10"
+  dsn: "postgresql://myuser:text2sql.123456@127.0.0.1:5434/text2sql?connect_timeout=10"
 
 index_store:
   tables:

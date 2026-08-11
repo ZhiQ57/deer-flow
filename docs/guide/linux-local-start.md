@@ -194,7 +194,7 @@ PONG
 新开一个终端窗口，执行：
 
 ```bash
-export ROOT="$HOME/deer-flow"
+export ROOT="$HOME/workspace/code/deer-flow"
 export LAN_IP="$(hostname -I | awk '{print $1}')"
 
 export PYTHONIOENCODING="utf-8"
@@ -204,12 +204,12 @@ export DEER_FLOW_PROJECT_ROOT="$ROOT"
 export DEER_FLOW_HOME="$ROOT/backend/.deer-flow"
 export DEER_FLOW_CONFIG_PATH="$ROOT/config.yaml"
 export DEER_FLOW_EXTENSIONS_CONFIG_PATH="$ROOT/extensions_config.json"
-export DATABASE_URL="postgresql://myuser:123456@127.0.0.1:55432/deerflow"
+export DATABASE_URL="postgresql://deerflow:deerflow.123456@127.0.0.1:5433/deerflow"
 export DEER_FLOW_STREAM_BRIDGE_REDIS_URL="redis://127.0.0.1:6379/0"
 export GATEWAY_CORS_ORIGINS="http://$LAN_IP:3000,http://$LAN_IP:2026,http://localhost:3000,http://127.0.0.1:3000"
 
 cd "$ROOT/backend"
-uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
+uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop asyncio:SelectorEventLoop
 ```
 
 本机验证：
@@ -240,7 +240,7 @@ curl -i "http://$LAN_IP:8001/health"
 export LAN_IP="$(hostname -I | awk '{print $1}')"
 export DEER_FLOW_DEV_ALLOWED_ORIGINS="$LAN_IP"
 
-export ROOT="$HOME/deer-flow"
+export ROOT="$HOME/workspace/code/deer-flow"
 export LAN_IP="$(hostname -I | awk '{print $1}')"
 
 # 标准局域网入口走 Nginx 当前域名 /api，不让浏览器直连 8001。
@@ -256,7 +256,7 @@ export DEER_FLOW_TRUSTED_ORIGINS="http://$LAN_IP:3000,http://$LAN_IP:2026,http:/
 export DEER_FLOW_DEV_ALLOWED_ORIGINS="$LAN_IP"
 export SKIP_ENV_VALIDATION="1"
 
-cd "$ROOT"
+cd "$ROOT/frontend"
 corepack pnpm dev --turbo --hostname 0.0.0.0 --port 3000
 ```
 
