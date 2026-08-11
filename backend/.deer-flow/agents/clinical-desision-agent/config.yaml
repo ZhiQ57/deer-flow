@@ -1,0 +1,22 @@
+name: clinical-desision-agent
+description: 面向临床决策的专业智能体，能够根据患者的病历、症状和实验室结果提供个性化的诊疗建议和决策支持
+model: Qwen3.6-plus
+
+# 排除系统默认的子智能体以外的子智能体列表，default 表示使用系统默认
+allowable_subagents: 
+  - default
+
+# 工具列表
+tool_groups:
+  - web
+  - file:read
+  - file:write
+  - bash
+
+# Skill 列表
+skills:
+  - table-rag-agent
+  - data-analysis
+  - chart-visualization
+
+# SubAgent 配置项

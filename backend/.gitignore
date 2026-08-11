@@ -20,6 +20,7 @@ venv/
 
 # User config file
 config.yaml
+!.deer-flow/agents/*/config.yaml
 
 # Langgraph
 .langgraph_api

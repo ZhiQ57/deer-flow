@@ -47,6 +47,11 @@ coverage/
 # .deer-flow
 .deer-flow/*
 */.deer-flow/*
+!*/.deer-flow/
+!*/.deer-flow/agents/
+!*/.deer-flow/agents/*/
+!*/.deer-flow/agents/*/*.yaml
+!*/.deer-flow/agents/*/*.md
 */.deer-flow/skills_view/*
 
 */.deer-flow/data/*

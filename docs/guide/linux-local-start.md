@@ -237,6 +237,9 @@ curl -i "http://$LAN_IP:8001/health"
 再新开一个终端窗口，执行：
 
 ```bash
+export LAN_IP="$(hostname -I | awk '{print $1}')"
+export DEER_FLOW_DEV_ALLOWED_ORIGINS="$LAN_IP"
+
 export ROOT="$HOME/deer-flow"
 export LAN_IP="$(hostname -I | awk '{print $1}')"
 
@@ -247,10 +250,14 @@ export NEXT_PUBLIC_LANGGRAPH_BASE_URL=""
 # Next.js 服务端内部访问 Gateway。
 export DEER_FLOW_INTERNAL_GATEWAY_BASE_URL="http://127.0.0.1:8001"
 export DEER_FLOW_TRUSTED_ORIGINS="http://$LAN_IP:3000,http://$LAN_IP:2026,http://localhost:3000,http://localhost:2026"
+
+# Next.js dev 模式允许局域网 IP 加载 /_next/*、字体和 HMR 资源。
+# 否则页面会只渲染 SSR HTML，浏览器端不会完成 hydration。
+export DEER_FLOW_DEV_ALLOWED_ORIGINS="$LAN_IP"
 export SKIP_ENV_VALIDATION="1"
 
 cd "$ROOT"
-python3 scripts/pnpm.py exec next dev --turbo --hostname 0.0.0.0 --port 3000
+corepack pnpm dev --turbo --hostname 0.0.0.0 --port 3000
 ```
 
 本机验证：
@@ -519,6 +526,36 @@ curl -I "http://$(hostname -I | awk '{print $1}'):2026"
 
 如果本机能访问、局域网不能访问，通常是 Linux 防火墙、云服务器安全组、路由隔离或访问了错误网卡 IP。
 
-### 10.9 局域网部署的安全边界是什么？
+### 10.9 `/setup` 页面一直显示 `Loading...` 怎么办？
+
+先确认 setup 状态接口返回正常：
+
+```bash
+curl -sS "http://$LAN_IP:2026/api/v1/auth/setup-status"
+echo
+```
+
+正常首次部署应返回：
+
+```json
+{"needs_setup":true,"registration_enabled":true}
+```
+
+如果接口正常但页面仍卡在 `Loading...`，通常是 Next.js dev 模式拦截了局域网 origin 加载 `/_next/*`、字体或 HMR 资源，导致页面只拿到 SSR HTML，没有完成浏览器端 hydration。前端启动前必须设置：
+
+```bash
+export DEER_FLOW_DEV_ALLOWED_ORIGINS="$LAN_IP"
+```
+
+然后重启前端：
+
+```bash
+cd "$ROOT"
+python3 scripts/pnpm.py exec next dev --turbo --hostname 0.0.0.0 --port 3000
+```
+
+如果浏览器控制台还有 `Immersive Translate`、翻译插件、广告拦截插件相关报错，请先用无痕窗口或禁用插件验证，避免插件脚本干扰页面初始化。
+
+### 10.10 局域网部署的安全边界是什么？
 
 本文方式适合可信局域网开发和测试。`0.0.0.0` 会让同一网络中能访问该机器 IP 的设备连接服务；不要在公网机器上直接开放这些端口。公网部署应使用正式域名、HTTPS、访问控制和更严格的反向代理策略。

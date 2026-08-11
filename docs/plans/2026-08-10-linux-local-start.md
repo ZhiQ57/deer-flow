@@ -18,3 +18,9 @@
    - [X] 4.2 在 Linux 手册中补充 PostgreSQL Docker 启动、验证和 `config.yaml` 配置。
    - [X] 4.3 同步调整 Gateway 环境变量、端口检查、运行状态、停止服务和常见问题。
    - [X] 4.4 复查文档差异和 git 状态。
+
+5. 补充 Next.js 局域网开发源配置
+   - [X] 5.1 确认前端 `allowedDevOrigins` 对应的环境变量。
+   - [X] 5.2 在 Linux 手册前端启动步骤中加入 `DEER_FLOW_DEV_ALLOWED_ORIGINS`。
+   - [X] 5.3 补充 `/setup` 一直 Loading 的排查说明。
+   - [X] 5.4 复查文档差异和 git 状态。
