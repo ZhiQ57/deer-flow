@@ -11,6 +11,8 @@
 - 后端直连验证入口：`http://<Linux局域网IP>:8001/health`
 
 > 注意：不要使用 `make docker-start` 启动本项目，否则会把 frontend/gateway 也放进 Docker 容器。本文方式只用 Docker 跑 PostgreSQL、Redis 和 Nginx。
+>
+> 如果希望把前端和 Gateway 也交给 Docker，并映射服务器上的本地源码自动启动，请改用 [Linux Docker 源码映射部署手册](linux-docker-source-deploy.md)。
 
 ## 1. 前置条件
 

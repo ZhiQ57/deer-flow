@@ -1,0 +1,124 @@
+# DeerFlow Linux 源码映射部署
+#
+# 用途：
+#   - 复用 docs/guide/linux-local-start.md 已创建的 PostgreSQL、Redis、Nginx 容器；
+#   - 仅启动源码映射版 frontend 和 gateway；
+#   - 使用 Linux host network，让容器内的 gateway/frontend 可以直接访问
+#     宿主机上的 PostgreSQL、Redis，并继续被现有 Nginx 代理。
+#
+# 启动：
+#   docker compose --env-file .env \
+#     -p deer-flow-source \
+#     -f docker/docker-compose-source-host.yaml \
+#     up -d --build --remove-orphans
+#
+# AioSandboxProvider（纯 DooD）模式还要追加：
+#   -f docker/docker-compose.dood.yaml
+#
+# 该文件是 Linux 源码映射/开发部署方式，不是生产优化镜像部署方式。
+
+services:
+  # ── Gateway API：映射宿主机 backend 源码 ───────────────────────────────────
+  gateway:
+    build:
+      context: ../
+      dockerfile: backend/Dockerfile
+      target: dev
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
+        UV_IMAGE: ${UV_IMAGE:-ghcr.io/astral-sh/uv:0.7.20}
+        UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.org/simple}
+        UV_EXTRAS: ${UV_EXTRAS:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+        LARK_CLI_NPM_VERSION: ${LARK_CLI_NPM_VERSION:-1.0.65}
+    container_name: deer-flow-source-gateway
+    command: ["sh", "/usr/local/bin/dev-entrypoint.sh"]
+    volumes:
+      # 修改启动脚本后，重启容器即可生效，不需要重新构建镜像。
+      - ./dev-entrypoint.sh:/usr/local/bin/dev-entrypoint.sh:ro
+      # 映射完整 backend 源码；dev-entrypoint 会在启动时同步依赖。
+      - ../backend:/app/backend
+      # 这些命名卷避免源码映射覆盖容器内的虚拟环境和 uv 缓存。
+      - source-gateway-venv:/app/backend/.venv
+      - source-gateway-uv-cache:/root/.cache/uv
+      # 配置和运行时目录从服务器仓库中读取，并持久化到宿主机。
+      - ../:/app/project
+      - ../skills:/app/skills
+      - ../logs:/app/logs
+    working_dir: /app
+    environment:
+      CI: "true"
+      DEER_FLOW_PROJECT_ROOT: /app
+      DEER_FLOW_HOME: /app/backend/.deer-flow
+      DEER_FLOW_CONFIG_PATH: /app/project/config.yaml
+      DEER_FLOW_EXTENSIONS_CONFIG_PATH: /app/project/extensions_config.json
+      # Linux host network 下，127.0.0.1 指向宿主机网络命名空间，
+      # 因此可以复用已有的 Redis/PostgreSQL 容器端口映射。
+      DEER_FLOW_STREAM_BRIDGE_REDIS_URL: ${DEER_FLOW_STREAM_BRIDGE_REDIS_URL:-redis://127.0.0.1:6379/0}
+      DEER_FLOW_CHANNELS_LANGGRAPH_URL: http://127.0.0.1:8001/api
+      DEER_FLOW_CHANNELS_GATEWAY_URL: http://127.0.0.1:8001
+      DEER_FLOW_INTERNAL_AUTH_TOKEN: ${DEER_FLOW_INTERNAL_AUTH_TOKEN:-}
+      # AioSandboxProvider + DooD 时，Docker daemon 需要看到宿主机上的
+      # 运行时目录；LocalSandboxProvider 不依赖这两个变量。
+      DEER_FLOW_HOST_BASE_DIR: ${DEER_FLOW_HOST_BASE_DIR:-}
+      DEER_FLOW_SANDBOX_HOST: ${DEER_FLOW_SANDBOX_HOST:-host.docker.internal}
+      PROVISIONER_API_KEY: ${PROVISIONER_API_KEY:-}
+      NO_PROXY: ${NO_PROXY:-}${NO_PROXY:+,}localhost,127.0.0.1,::1,host.docker.internal
+      no_proxy: ${no_proxy:-}${no_proxy:+,}localhost,127.0.0.1,::1,host.docker.internal
+    env_file:
+      - ../.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # 仅适用于 Linux。这样可以直接访问已有的 127.0.0.1:55432/6379。
+    network_mode: host
+    restart: unless-stopped
+
+  # ── Frontend：映射宿主机 frontend 源码 ────────────────────────────────────
+  frontend:
+    build:
+      context: ../
+      dockerfile: frontend/Dockerfile
+      target: dev
+      args:
+        PNPM_STORE_PATH: ${PNPM_STORE_PATH:-/root/.local/share/pnpm/store}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+    container_name: deer-flow-source-frontend
+    command:
+      - sh
+      - -c
+      - |
+        cd /app/frontend
+        pnpm install --frozen-lockfile
+        exec pnpm run dev --hostname 0.0.0.0 --port 3000
+    volumes:
+      # 映射完整 frontend 源码；依赖和 Next.js 构建缓存使用命名卷。
+      - ../frontend:/app/frontend
+      - source-frontend-node-modules:/app/frontend/node_modules
+      - source-frontend-next:/app/frontend/.next
+      - ../logs:/app/logs
+    working_dir: /app
+    environment:
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+      CI: "true"
+      SKIP_ENV_VALIDATION: "1"
+      # 浏览器通过现有 Nginx 的同源 /api 访问 Gateway。
+      NEXT_PUBLIC_BACKEND_BASE_URL: ""
+      NEXT_PUBLIC_LANGGRAPH_BASE_URL: ""
+      # Next.js SSR 在 host network 下通过本机 8001 访问 Gateway。
+      DEER_FLOW_INTERNAL_GATEWAY_BASE_URL: http://127.0.0.1:8001
+      DEER_FLOW_TRUSTED_ORIGINS: ${DEER_FLOW_TRUSTED_ORIGINS:-http://localhost:2026}
+      # 通过局域网 IP 或域名访问时，必须在 .env 中改成实际入口主机。
+      DEER_FLOW_DEV_ALLOWED_ORIGINS: ${DEER_FLOW_DEV_ALLOWED_ORIGINS:-localhost}
+    env_file:
+      - ../frontend/.env
+    network_mode: host
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+volumes:
+  source-gateway-venv:
+  source-gateway-uv-cache:
+  source-frontend-node-modules:
+  source-frontend-next:
