@@ -1,6 +1,6 @@
 name: data-agent
 description: 面向 Text2SQL / NL2SQL 的专业数据分析智能体.
-model: Qwen3.6-plus
+model: 使用 Qwen / Deepseek / glm 系列国产模型
 
 # 排除系统默认的子智能体以外的子智能体列表，default 表示使用系统默认
 allowable_subagents: 

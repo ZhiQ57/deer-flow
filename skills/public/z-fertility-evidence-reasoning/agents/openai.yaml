@@ -1,0 +1,3 @@
+interface:
+  display_name: "辅助生殖循证推理"
+  short_description: "用于辅助生殖与不孕不育病例的医生复核型循证推理支持"

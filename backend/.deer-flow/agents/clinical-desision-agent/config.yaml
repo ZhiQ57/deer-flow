@@ -1,8 +1,8 @@
 name: clinical-desision-agent
-description: 面向临床决策的专业智能体，能够根据患者的病历、症状和实验室结果提供个性化的诊疗建议和决策支持
-model: Qwen3.6-plus
+description: 面向辅助生殖临床场景的 AI 临床诊断助手(AI Clinical Assistant), 提供临床信息获取、医学研究、患者数据理解、文档整理、临床沟通支持、知识检索等工作
+model: 使用 Qwen / Deepseek / glm 系列国产模型
 
-# 排除系统默认的子智能体以外的子智能体列表，default 表示使用系统默认
+# 使用的子智能体列表，default 表示使用系统默认, 可以定制化设计.
 allowable_subagents: 
   - default
 
@@ -18,5 +18,6 @@ skills:
   - table-rag-agent
   - data-analysis
   - chart-visualization
+  - fertility-evidence-reasoning
 
 # SubAgent 配置项

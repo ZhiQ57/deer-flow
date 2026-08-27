@@ -1,0 +1,3 @@
+interface:
+  display_name: "Medical Intake Record"
+  short_description: "患者问诊引导与结构化病历生成"
