@@ -239,38 +239,27 @@ DEER_FLOW_HOST_BASE_DIR=/opt/deer-flow/backend/.deer-flow
 
 ## 6. 首次启动前端和 Gateway
 
-建议从仓库根目录定义一个 Compose 函数，避免每条命令重复写项目名和文件路径：
-
 ```bash
-export ROOT="/opt/deer-flow"
-cd "$ROOT"
+cd ~/.../deer-flow
 
-dc() {
-  docker compose \
-    --env-file "$ROOT/.env" \
-    -p deer-flow-source \
-    -f "$ROOT/docker/docker-compose-source-host.yaml" \
-    "$@"
-}
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --build --remove-orphans
 ```
+
+-p: `deer-flow-source` 项目名称
 
 如果是纯 DooD sandbox，使用带 overlay 的函数：
 
 ```bash
-dc() {
-  docker compose \
-    --env-file "$ROOT/.env" \
-    -p deer-flow-source \
-    -f "$ROOT/docker/docker-compose-source-host.yaml" \
-    -f "$ROOT/docker/docker-compose.dood.yaml" \
-    "$@"
-}
-```
-
-首次启动：
-
-```bash
-dc up -d --build --remove-orphans
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  -f docker/docker-compose.dood.yaml \
+  up -d --build --remove-orphans
 ```
 
 这条命令会完成以下工作：
@@ -281,12 +270,6 @@ dc up -d --build --remove-orphans
 4. 启动时执行 `uv sync --all-packages` 和 `pnpm install --frozen-lockfile`。
 5. 启动 Gateway reload 和 Next.js dev server。
 6. 将容器设置为 `unless-stopped`。
-
-检查容器：
-
-```bash
-dc ps
-```
 
 检查服务端口：
 
@@ -306,43 +289,42 @@ http://<服务器IP>:2026
 
 ## 7. 代码更新和重新部署
 
-### 7.1 `docker compose update` 不是有效命令
-
-Docker Compose 没有 `update` 子命令。服务器拉取代码后，使用下面命令重新构建并启动：
+### 7.1 重新启动
 
 ```bash
-git pull --ff-only
-dc up -d --build --force-recreate --remove-orphans
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d
 ```
 
-`--force-recreate` 会重新创建前后端容器，但不会删除命名卷，也不会停止或删除现有 PostgreSQL、Redis、Nginx 容器。
-
-推荐的完整更新流程：
-
+查看日志：
 ```bash
-cd "$ROOT"
-git fetch origin
-git pull --ff-only
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  logs -f
+```
 
-# 可选：查看本次更新内容
-git log -1 --oneline
-
-# 重新构建并启动源码映射服务
-dc up -d --build --force-recreate --remove-orphans
-
-# 检查状态
-dc ps
+检查服务状态：
+```bash
 curl -fsS http://127.0.0.1:8001/health
 curl -fsS http://127.0.0.1:2026/health
 ```
 
-### 7.2 哪些更新需要 `--build`
-
-即使源码是 bind mount，也建议每次 `git pull` 后使用：
-
+停止服务：
 ```bash
-dc up -d --build --force-recreate --remove-orphans
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  down
 ```
+
+
+### 7.2 确保彻底按照最新代码重建
 
 以下文件发生变化时尤其需要 `--build`：
 
@@ -354,7 +336,26 @@ dc up -d --build --force-recreate --remove-orphans
 - `frontend/pnpm-lock.yaml`
 - `docker/docker-compose-source-host.yaml`
 
-本方案的启动命令会重新执行 `uv sync` 和 `pnpm install`，所以 Python 或 Node 依赖变化会在容器启动阶段同步到命名卷。
+推荐开发阶段使用：
+```bash
+cd ~/.../deer-flow
+
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  build --no-cache
+```
+
+然后:
+```bash
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --remove-orphans
+```
+
 
 ### 7.3 只修改业务源码时
 
