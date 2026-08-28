@@ -24,7 +24,7 @@
 http://<服务器IP>:2026
 ```
 
-> 注意：源码映射模式使用 Next.js dev server 和 Gateway reload，适合服务器开发、联调和频繁更新。正式生产环境建议使用仓库已有的 `make up`，把前端构建产物烘焙进镜像，而不是把源码目录挂载进生产容器。
+> 注意：源码映射模式使用 Next.js dev server。Gateway 默认不启用 reload，代码更新后重启容器即可。正式生产环境建议使用仓库已有的 `make up`，把前端构建产物烘焙进镜像，而不是把源码目录挂载进生产容器。
 
 ## 1. 与现有本地启动方式的关系
 
@@ -177,6 +177,7 @@ docker compose -p deer-flow-dev \
 ```dotenv
 DATABASE_URL=postgresql://<数据库用户>:<数据库密码>@127.0.0.1:55432/deerflow
 DEER_FLOW_STREAM_BRIDGE_REDIS_URL=redis://127.0.0.1:6379/0
+UV_EXTRAS=postgres
 ```
 
 并确认 `config.yaml` 引用了数据库环境变量：
@@ -189,6 +190,8 @@ database:
 ```
 
 如果当前 `DATABASE_URL` 使用的是别的用户名、密码或数据库名，保持它与 `deerflow-postgres` 容器实际创建的账号一致。不要直接照抄示例中的凭据。
+
+`UV_EXTRAS=postgres` 用于安装 `asyncpg` 和 `langgraph-checkpoint-postgres`。不配置时，Gateway 使用 PostgreSQL 会启动失败。
 
 ### 5.2 前端入口和局域网访问
 
@@ -268,7 +271,7 @@ docker compose \
 2. 将服务器上的 `backend/` 映射到 Gateway 容器。
 3. 将服务器上的 `frontend/` 映射到 Frontend 容器。
 4. 启动时执行 `uv sync --all-packages` 和 `pnpm install --frozen-lockfile`。
-5. 启动 Gateway reload 和 Next.js dev server。
+5. 启动 Gateway 和 Next.js dev server。
 6. 将容器设置为 `unless-stopped`。
 
 检查服务端口：
@@ -359,10 +362,14 @@ docker compose \
 
 ### 7.3 只修改业务源码时
 
-前后端目录已经映射到容器，Gateway reload 和 Next.js dev server 通常会自动发现源码变化。若更新后需要立即清理进程状态，可以执行：
+前后端目录已经映射到容器。Gateway 更新后重启容器，Next.js 会自动发现源码变化。
 
 ```bash
-dc restart gateway frontend
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  restart gateway frontend
 ```
 
 如果修改了配置、依赖、Dockerfile 或 Compose 文件，使用完整的 `up -d --build --force-recreate`。
@@ -372,8 +379,17 @@ dc restart gateway frontend
 如果还要拉取更新后的基础镜像：
 
 ```bash
-dc build --pull gateway frontend
-dc up -d --force-recreate --remove-orphans
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  build --pull gateway frontend
+
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --force-recreate --remove-orphans
 ```
 
 ## 8. 日常运维命令
@@ -381,19 +397,35 @@ dc up -d --force-recreate --remove-orphans
 查看前端和 Gateway 状态：
 
 ```bash
-dc ps
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  ps
 ```
 
 查看前端实时日志：
 
 ```bash
-dc logs -f frontend
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  logs -f frontend
 ```
 
-Gateway 的开发入口会把日志写入仓库的 `logs/gateway.log`，查看方式：
+旧的 Docker 开发 Compose 会把 Gateway 日志写入仓库的 `logs/gateway.log`：
 
 ```bash
 tail -f "$ROOT/logs/gateway.log"
+```
+
+源码映射 Compose 已将 Gateway 日志直接输出到 Docker 日志，可直接查看：
+
+```bash
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  logs -f --tail 200 gateway
 ```
 
 查看现有 Nginx 日志：
@@ -405,13 +437,21 @@ docker logs --tail 100 deer-flow-nginx-host
 停止本文新增的前后端容器：
 
 ```bash
-dc stop
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  stop
 ```
 
 停止并删除本文 Compose 创建的前后端容器，但保留命名卷：
 
 ```bash
-dc down
+docker compose \
+  --env-file .env \
+  -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  down
 ```
 
 服务器重启后，Docker 会自动拉起已经创建过且未被手动停止的容器：
@@ -420,11 +460,47 @@ dc down
 docker ps
 ```
 
-`restart: unless-stopped` 不负责首次创建容器；首次部署仍需要先执行一次 `dc up -d`。
+`restart: unless-stopped` 不负责首次创建容器；首次部署仍需要先执行一次 `docker compose up -d`。
 
 ## 9. 常见问题
 
-### 9.1 `bind: address already in use`
+### 9.1 `gateway.log` 只有 `Will watch for changes`
+
+这不是 PostgreSQL 依赖报错。说明 `uv sync` 已完成，但 Uvicorn reload 进程没有启动 Gateway worker。
+
+源码映射 Compose 默认关闭 Gateway reload，代码更新后执行：
+
+```bash
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --build --force-recreate gateway
+```
+
+查看当前容器日志：
+
+```bash
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  ps -a
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  logs --tail 200 gateway
+```
+
+检查 Gateway 是否监听：
+
+```bash
+curl -i http://127.0.0.1:8001/health
+```
+
+如果仍然失败，直接检查容器状态和退出原因：
+
+```bash
+docker inspect deer-flow-source-gateway \
+  --format 'status={{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}} error={{.State.Error}}'
+```
+
+### 9.2 `bind: address already in use`
 
 检查端口占用：
 
@@ -444,15 +520,19 @@ docker ps --format "table {{.Names}}\t{{.Ports}}\t{{.Status}}"
 
 ```bash
 sudo fuser -k 8001/tcp 3000/tcp
-dc up -d --build --force-recreate
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --build --force-recreate
 ```
 
-### 9.2 Nginx 返回 `502 Bad Gateway`
+### 9.3 Nginx 返回 `502 Bad Gateway`
 
 按顺序检查：
 
 ```bash
-dc ps
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  ps
 curl -i http://127.0.0.1:8001/health
 curl -I http://127.0.0.1:3000
 docker exec deer-flow-nginx-host nginx -T 2>/dev/null \
@@ -462,7 +542,7 @@ docker logs --tail 100 deer-flow-nginx-host
 
 如果 `8001` 或 `3000` 直连失败，先看对应服务日志；如果直连成功但 `2026` 仍然 502，通常是 Nginx 配置没有指向 `host.docker.internal`，或者 Nginx 容器缺少 `host-gateway` 映射。
 
-### 9.3 Gateway 报 PostgreSQL 连接失败
+### 9.4 Gateway 报 PostgreSQL 连接失败
 
 确认本文 Compose 文件仍然使用：
 
@@ -479,22 +559,46 @@ docker exec deerflow-postgres pg_isready
 确认容器内环境变量存在且与数据库账号一致：
 
 ```bash
-dc exec gateway sh -lc 'python -c "import os; print(bool(os.getenv(\"DATABASE_URL\")))"'
+docker port deerflow-postgres
+grep '^DATABASE_URL=' .env
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  exec gateway sh -lc 'python -c "import os; print(bool(os.getenv(\"DATABASE_URL\")))"'
+```
+
+如果使用 `linux-local-start.md` 创建的 PostgreSQL 容器，映射端口应以 `docker port` 输出为准，常见值是 `127.0.0.1:55432`，不要写成容器内部端口 `5432`。检查 PostgreSQL 依赖：
+
+```bash
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  exec gateway sh -lc 'cd /app/backend && uv run python -c "import asyncpg; import langgraph.checkpoint.postgres; print(\"postgres-extra-ok\")"'
+```
+
+如果依赖检查失败，重建 Gateway：
+
+```bash
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --build --force-recreate gateway
 ```
 
 如果 `DATABASE_URL` 使用了容器内不存在的地址或错误凭据，修改项目根目录 `.env` 后重新执行：
 
 ```bash
-dc up -d --force-recreate gateway
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --force-recreate gateway
 ```
 
-### 9.4 Gateway 报 Redis 连接失败
+### 9.5 Gateway 报 Redis 连接失败
 
 确认：
 
 ```bash
 docker exec deer-flow-redis redis-cli ping
-dc exec gateway sh -lc 'python -c "import os; print(os.getenv(\"DEER_FLOW_STREAM_BRIDGE_REDIS_URL\", \"<未设置>\"))"'
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  exec gateway sh -lc 'python -c "import os; print(os.getenv(\"DEER_FLOW_STREAM_BRIDGE_REDIS_URL\", \"<未设置>\"))"'
 ```
 
 host network 模式下默认应为：
@@ -506,10 +610,12 @@ redis://127.0.0.1:6379/0
 修改 `.env` 后重建 Gateway：
 
 ```bash
-dc up -d --force-recreate gateway
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --force-recreate gateway
 ```
 
-### 9.5 页面一直 `Loading...` 或按钮没有反应
+### 9.6 页面一直 `Loading...` 或按钮没有反应
 
 通过服务器 IP 或域名访问时，确认根目录 `.env` 包含实际入口：
 
@@ -521,16 +627,20 @@ DEER_FLOW_DEV_ALLOWED_ORIGINS=<服务器IP>
 然后重启前端：
 
 ```bash
-dc up -d --force-recreate frontend
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --force-recreate frontend
 ```
 
 同时检查浏览器开发者工具和：
 
 ```bash
-dc logs --tail 200 frontend
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  logs --tail 200 frontend
 ```
 
-### 9.6 AIO sandbox 无法启动
+### 9.7 AIO sandbox 无法启动
 
 确认：
 
@@ -544,25 +654,37 @@ dc logs --tail 200 frontend
 
 ```bash
 docker info
-dc config
-dc exec gateway sh -lc 'test -S /var/run/docker.sock && echo docker-socket-ok'
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  -f docker/docker-compose.dood.yaml \
+  config
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  -f docker/docker-compose.dood.yaml \
+  exec gateway sh -lc 'test -S /var/run/docker.sock && echo docker-socket-ok'
 ```
 
 如果当前并不需要 AIO sandbox，改用 `LocalSandboxProvider` 并移除 DooD overlay。
 
-### 9.7 `git pull` 后页面代码没有变化
+### 9.8 `git pull` 后页面代码没有变化
 
 确认挂载生效：
 
 ```bash
-dc exec frontend sh -lc 'pwd; test -f /app/frontend/package.json && echo frontend-source-mounted'
-dc exec gateway sh -lc 'pwd; test -f /app/backend/pyproject.toml && echo backend-source-mounted'
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  exec frontend sh -lc 'pwd; test -f /app/frontend/package.json && echo frontend-source-mounted'
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  exec gateway sh -lc 'pwd; test -f /app/backend/pyproject.toml && echo backend-source-mounted'
 ```
 
 再执行一次完整更新：
 
 ```bash
-dc up -d --build --force-recreate --remove-orphans
+docker compose --env-file .env -p deer-flow-source \
+  -f docker/docker-compose-source-host.yaml \
+  up -d --build --force-recreate --remove-orphans
 ```
 
 如果只是浏览器缓存，使用无痕窗口或强制刷新验证。

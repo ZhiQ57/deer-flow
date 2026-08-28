@@ -57,6 +57,23 @@ def test_entrypoint_excludes_runtime_state_from_uvicorn_reload():
     assert "--reload-exclude=/app/backend/.deer-flow" in content
 
 
+def test_entrypoint_can_keep_gateway_output_in_docker_logs():
+    """源码映射 Compose 应能关闭 gateway.log 重定向，保留 Docker 日志。"""
+    content = ENTRYPOINT.read_text(encoding="utf-8")
+
+    assert 'DEER_FLOW_LOG_TO_FILE:-1' in content
+    assert 'DEER_FLOW_LOG_TO_FILE=0' in content
+
+
+def test_entrypoint_can_disable_gateway_reload():
+    """源码映射部署可以关闭 Uvicorn reload 文件监控。"""
+    content = ENTRYPOINT.read_text(encoding="utf-8")
+
+    assert 'DEER_FLOW_GATEWAY_RELOAD:-1' in content
+    assert "DEER_FLOW_GATEWAY_RELOAD" in content
+    assert "--reload" in content
+
+
 def test_gateway_vscode_launch_uses_supported_uvicorn_loop():
     """Gateway 调试配置只能使用 Uvicorn CLI 支持的事件循环名称。"""
     content = VSCODE_LAUNCH.read_text(encoding="utf-8")

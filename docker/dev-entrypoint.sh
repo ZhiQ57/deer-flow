@@ -12,7 +12,7 @@
 #   3. `uv sync --all-packages` so workspace member extras (deerflow-harness's
 #      postgres extra in particular) are installed — see PR #2584.
 #   4. Self-heal: if the first sync fails, recreate .venv and retry once.
-#   5. Hand off to uvicorn with reload, replacing this shell so uvicorn becomes
+#   5. Hand off to uvicorn, replacing this shell so uvicorn becomes
 #      PID 1 inside the container.
 #
 # Anchored at /bin/sh (not bash) since alpine-based base images may not ship
@@ -28,10 +28,9 @@ if [ "${1:-}" = "--print-extras" ]; then
     PRINT_EXTRAS_ONLY=1
 fi
 
-# Mirror the legacy command's behavior: redirect both stdout and stderr to the
-# host-mounted log file (../logs/gateway.log → /app/logs/gateway.log). Skip
-# the redirect under --print-extras so the test runner can capture stdout.
-if [ "$PRINT_EXTRAS_ONLY" = "0" ]; then
+# 默认将 stdout/stderr 写入宿主机挂载的 gateway.log；源码映射 Compose 可通过
+# DEER_FLOW_LOG_TO_FILE=0 保留 Docker 日志，便于直接使用 docker compose logs 查看。
+if [ "$PRINT_EXTRAS_ONLY" = "0" ] && [ "${DEER_FLOW_LOG_TO_FILE:-1}" != "0" ]; then
     exec >/app/logs/gateway.log 2>&1
 fi
 
@@ -92,6 +91,11 @@ if ! uv sync --all-packages --extra redis $EXTRAS_FLAGS; then
 fi
 
 # ── Hand off to uvicorn ─────────────────────────────────────────────────────
+
+if [ "${DEER_FLOW_GATEWAY_RELOAD:-1}" = "0" ]; then
+    PYTHONPATH=. exec uv run uvicorn app.gateway.app:app \
+        --host 0.0.0.0 --port 8001
+fi
 
 PYTHONPATH=. exec uv run uvicorn app.gateway.app:app \
     --host 0.0.0.0 --port 8001 \

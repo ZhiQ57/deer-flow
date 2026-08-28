@@ -28,7 +28,7 @@ services:
         APT_MIRROR: ${APT_MIRROR:-}
         UV_IMAGE: ${UV_IMAGE:-ghcr.io/astral-sh/uv:0.7.20}
         UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.org/simple}
-        UV_EXTRAS: ${UV_EXTRAS:-}
+        UV_EXTRAS: postgres,${UV_EXTRAS:-}
         NPM_REGISTRY: ${NPM_REGISTRY:-}
         LARK_CLI_NPM_VERSION: ${LARK_CLI_NPM_VERSION:-1.0.65}
     container_name: deer-flow-source-gateway
@@ -52,6 +52,14 @@ services:
       DEER_FLOW_HOME: /app/backend/.deer-flow
       DEER_FLOW_CONFIG_PATH: /app/project/config.yaml
       DEER_FLOW_EXTENSIONS_CONFIG_PATH: /app/project/extensions_config.json
+      # PostgreSQL 配置需要 harness 的 postgres extra；源码映射模式默认启用。
+      UV_EXTRAS: postgres,${UV_EXTRAS:-}
+      # 源码目录和命名卷可能不在同一文件系统，直接复制避免 hardlink 警告。
+      UV_LINK_MODE: copy
+      # 源码映射模式直接输出 Docker 日志，避免只在宿主机 gateway.log 中查日志。
+      DEER_FLOW_LOG_TO_FILE: "0"
+      # 源码更新后通过 Compose 重启 Gateway，不使用 reload 文件监控。
+      DEER_FLOW_GATEWAY_RELOAD: "0"
       # Linux host network 下，127.0.0.1 指向宿主机网络命名空间，
       # 因此可以复用已有的 Redis/PostgreSQL 容器端口映射。
       DEER_FLOW_STREAM_BRIDGE_REDIS_URL: ${DEER_FLOW_STREAM_BRIDGE_REDIS_URL:-redis://127.0.0.1:6379/0}

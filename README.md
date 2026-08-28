@@ -253,6 +253,8 @@ make docker-logs    # View logs
 
 `make docker-start` starts `provisioner` only when `config.yaml` uses provisioner mode (`sandbox.use: deerflow.community.aio_sandbox:AioSandboxProvider` with `provisioner_url`).
 
+For a Linux server deployment that reuses existing PostgreSQL, Redis, and Nginx containers while bind-mounting the local source tree, see the [Linux Docker source-mapped deployment guide](docs/guide/linux-docker-source-deploy.md).
+
 Docker builds use the upstream `uv` registry by default. If you need faster mirrors in restricted networks, export `UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` and `NPM_REGISTRY=https://registry.npmmirror.com` before running `make docker-init` or `make docker-start`.
 
 Local AIO sandbox control traffic is always direct: loopback/private addresses,

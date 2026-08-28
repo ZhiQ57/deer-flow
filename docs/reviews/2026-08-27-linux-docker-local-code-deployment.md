@@ -12,6 +12,7 @@
 - `backend/`、`frontend/` 使用 bind mount 映射服务器源码。
 - Python 虚拟环境、uv 缓存、Node 依赖和 Next.js 缓存使用命名卷，避免源码挂载覆盖依赖。
 - 文档明确了首次启动、自动重启、代码更新、日志、故障排查和 DooD sandbox 注意事项。
+- 源码映射 Gateway 强制安装 `postgres` extra，直接输出 Docker 日志，并默认关闭 Uvicorn reload；代码更新后通过 Compose 重启 Gateway。
 
 ## 2. 变更文件
 
@@ -49,6 +50,17 @@ git diff --check
 
 结果：通过。
 
+已执行：
+
+```text
+uv run --directory backend pytest \
+  tests/test_docker_source_compose.py \
+  tests/test_dev_entrypoint.py::test_entrypoint_can_keep_gateway_output_in_docker_logs \
+  tests/test_dev_entrypoint.py::test_entrypoint_can_disable_gateway_reload -q
+```
+
+结果：`3 passed`。
+
 ## 4. 需要部署时确认的事项
 
 1. 服务器必须是 Linux Docker Engine；`network_mode: host` 不适合作为 Windows、macOS Docker Desktop 的通用方案。
@@ -56,4 +68,4 @@ git diff --check
 3. 现有 Nginx 容器必须配置 `host.docker.internal:8001`、`host.docker.internal:3000`，并带有 `host-gateway` 映射。
 4. `config.yaml` 使用 AioSandboxProvider 纯 DooD 模式时，必须显式追加 `docker-compose.dood.yaml` 并配置宿主机绝对路径 `DEER_FLOW_HOST_BASE_DIR`。
 5. `docker compose update` 不是有效的 Compose 命令，代码更新后应执行 `git pull --ff-only` 和 `docker compose up -d --build --force-recreate --remove-orphans`。
-6. 本方案使用开发镜像和 reload，适合源码频繁更新的开发/联调环境；生产环境应使用仓库已有的生产 Compose 方案。
+6. 本方案使用开发镜像和源码映射；Gateway 默认不使用 reload，代码更新后执行 Compose 重启或重建；生产环境应使用仓库已有的生产 Compose 方案。

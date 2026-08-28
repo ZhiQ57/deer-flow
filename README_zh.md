@@ -232,6 +232,8 @@ make docker-start   # 启动服务（会根据 config.yaml 自动判断 sandbox 
 
 如果 `config.yaml` 使用的是 provisioner 模式（`sandbox.use: deerflow.community.aio_sandbox:AioSandboxProvider` 且配置了 `provisioner_url`），`make docker-start` 才会启动 `provisioner`。
 
+Linux 服务器复用现有 PostgreSQL、Redis、Nginx 容器并映射本地代码时，使用 [Linux Docker 源码映射部署手册](docs/guide/linux-docker-source-deploy.md)。
+
 **生产模式**（本地构建镜像，并挂载运行期配置与数据）：
 
 ```bash

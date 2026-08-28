@@ -207,7 +207,7 @@ export DEER_FLOW_HOME="$ROOT/backend/.deer-flow"
 export DEER_FLOW_CONFIG_PATH="$ROOT/config.yaml"
 export TABLERAG_CONFIG="$ROOT/tablerag.yaml"
 export DEER_FLOW_EXTENSIONS_CONFIG_PATH="$ROOT/extensions_config.json"
-export DATABASE_URL="postgresql://deerflow:deerflow.123456@127.0.0.1:5433/deerflow"
+export DATABASE_URL="postgresql://deerflow:deerflow.123456@127.0.0.1:55432/deerflow"
 export DEER_FLOW_STREAM_BRIDGE_REDIS_URL="redis://127.0.0.1:6379/0"
 export GATEWAY_CORS_ORIGINS="http://$LAN_IP:3000,http://$LAN_IP:2026,http://localhost:3000,http://127.0.0.1:3000"
 
