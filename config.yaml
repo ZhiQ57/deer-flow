@@ -103,11 +103,11 @@ models:
   #     extra_body:
   #       thinking:
   #         type: disabled
-  - name: GLM-5.2-NVFP4-local
-    display_name: GLM-5.2-NVFP4-local
+  - name: Qwen3.8-27B-FP8-Local
+    display_name: Qwen3.8-27B-FP8-Local
     use: deerflow.models.qwen_provider:QwenChatModel
-    model: GLM-5.2-NVFP4
-    api_base: http://10.1.30.41:8005/v1
+    model: qwen3.8-27b-fp8
+    api_base: http://10.1.30.41:30000/v1
     api_key: $DASHSCOPE_API_KEY
     timeout: 600.0
     max_retries: 2
@@ -1134,11 +1134,11 @@ uploads:
   # markitdown  — always use MarkItDown (original behaviour, no extra dependency).
   pdf_converter: auto
 
-# sandbox:
-  # use: deerflow.sandbox.local:LocalSandboxProvider
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvider
 
   # allow_host_bash 表示本地执行 Shell 指令的权限, 开启后, AI拥有了执行任意命令的能力, 可能会造成安全风险, 所以默认关闭, 按需开启.
-  # allow_host_bash: false
+  allow_host_bash: true
   # Optional: Mount additional host directories into the sandbox.
   # Each mount maps a host path to a virtual container path accessible by the agent.
   # Note: with LocalSandboxProvider under `make up` (docker-compose), host_path is
@@ -1172,8 +1172,8 @@ uploads:
 # On macOS: Automatically prefers Apple Container if available, falls back to Docker
 # On other platforms: Uses Docker
 # Uncomment to use:
-sandbox:
-  use: deerflow.community.aio_sandbox:AioSandboxProvider
+# sandbox:
+#   use: deerflow.community.aio_sandbox:AioSandboxProvider
 #
 #   # Optional: Container image to use (works with both Docker and Apple Container)
 #   # Default: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest

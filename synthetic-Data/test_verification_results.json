@@ -1,0 +1,68 @@
+{
+  "metadata": {
+    "version": 1,
+    "generated_at": "2026-09-10T20:34:31.745859",
+    "test_mode": true,
+    "test_limit": 1,
+    "total_samples_in_dataset": 1028
+  },
+  "summary": {
+    "total": 1,
+    "agent_query_success": 1,
+    "needs_approval": 1,
+    "golden_execution_success": 1,
+    "comparison_total": 0,
+    "exact_match": 0,
+    "row_content_match": 0
+  },
+  "results": [
+    {
+      "sample_index": 1,
+      "record_id": "2",
+      "input": "帮我查一下系统配置里类型为1的那条记录，我想看看新鲜周期相关的配置，时间范围就2024年1月1日到2024年12月31日吧。",
+      "golden_sql": "SELECT `s`.`Id`, `s`.`CreateDateTime`, `s`.`CreateUser`, `s`.`Name`, `s`.`TenantId`, `s`.`Type`, `s`.`UpdateDateTime`, `s`.`UpdateUser`, `s`.`Value` FROM `syssetting` AS `s` WHERE `s`.`Type` = 1 LIMIT 1",
+      "golden_metric": "按原发继发比例-新鲜周期（InfertilityTypeFreshCycleStatisticsList）",
+      "needs_approval": true,
+      "approval_reason": "存在未消解歧义，需要人类审批,请调用 ask_intent_approval 工具",
+      "agent_query": {
+        "success": true,
+        "thread_id": "data-agent-text2sql-verify-0001-0ca26d1b",
+        "generated_sql": "SELECT 1+1）均返回 MCP 语法错误 syntax error, unexpected IDENTIFIER, expecting SELECT, 0，表明阻塞源于工具路由或环境配置而非 SQL 逻辑错误。\n- [other | 0.90] 已确认 sqltable_rag 工具为项目核心检索手段，支持 hybrid-search 及多模态（证据/表/字段/值）检索，用于统一 TableRAG 数据提取。\n- [other | 0.80] User engages in data analysis and statistical projects requiring precise date-range filtering and multi-database SQL querying (MySQL and PostgreSQL).\n- [preference | 0.80] Prefers using sub-agents to execute SQL queries.\n</memory>",
+        "result_rows": null,
+        "result_columns": null,
+        "result_row_count": null
+      },
+      "golden_execution": {
+        "success": true,
+        "columns": [
+          "Id",
+          "CreateDateTime",
+          "CreateUser",
+          "Name",
+          "TenantId",
+          "Type",
+          "UpdateDateTime",
+          "UpdateUser",
+          "Value"
+        ],
+        "rows": [
+          [
+            "1111111",
+            "2024-01-01T00:00:00",
+            "system",
+            "",
+            "system",
+            1,
+            "2026-07-21T10:26:06.481129",
+            "111111",
+            "{\"IdCard\":\"身份证\",\"CycleFreshType\":\"新鲜周期\",\"CycleIUIType\":\"人授周期\",\"CycleFETType\":\"冻融周期\",\"CycleFPType\":\"生育力保存\",\"CycleFetalReductionType\":\"减胎周期\",\"CycleAIHScheme\":\"AIH\",\"CycleAIDScheme\":\"AID\",\"NaturalMedicalSchemeList\":[\"自然周期\"],\"PromoteDischargeMedicalSchemeList\":[\"促排周期(GN)\",\"促排周期(CC)\",\"促排周期(LE)\",\"促排周期(CC+GN)\",\"促排周期(LE+GN)\"],\"CycleSchemeList\":[\"IVF\",\"ICSI\",\"IVF+ICSI\",\"RICSI\",\"LICSI\"],\"CycleIvfScheme\":\"Ivf\",\"CycleIcsiScheme\":\"Icsi\",\"CycleHalfScheme\":\"Half\",\"CycleRicsiScheme\":\"Ricsi\",\"CycleLicsiScheme\":\"Licsi\",\"AllEmbryoFrozenCycleOutcome\":\"全胚冷冻\",\"EtProcedureRecordCleavageEmbryoType\":\"胚胎\",\"EtProcedureRecordBlastomeraEmbryoType\":\"囊胚\",\"ComplicationSevereOhss\":\"重度\",\"ComplicationModerateOhss\":\"中度\",\"CycleMonitorAppointmentProject\":\"周期监测\",\"CycleDiseaseFilterStrList\":[\"无\"],\"SpermDonation\":\"供精\",\"SpermSample\":\"夫精\",\"EpididymisTestisType\":\"手术\",\"EpididymisTestisPesaSurgery\":\"PESA\",\"EpididymisTestisTesaSurgery\":\"TESA\",\"NextFollowUpDay\":7,\"FollowUpStageNextDayConfig\":{\"生化妊娠\":0,\"妊娠早期\":0,\"妊娠中期\":0,\"妊娠结局\":0},\"PregnancyOutcomeMiscarriageType\":\"已流产\",\"PregnancyOutcomeDeliveryType\":\"已分娩\",\"PregnancyOutcomeInducedLabourType\":\"已引产\",\"EarlyPregnancyHeterotopicPregnancyType\":\"宫内外混合妊娠\",\"EarlyPregnancyUterinePregnancyType\":\"宫内妊娠\",\"EarlyPregnancyEctopicPregnancyType\":\"异位妊娠\",\"PregnancyOutcomePretermBirthType\":\"早产\",\"EmbryoPNList\":[\"0PN\",\"1PN\",\"2PN\",\"3PN\",\"4PN\",\"多PN\"],\"EmbryoLevelList\":[\"I\",\"II\",\"III\",\"IV\"],\"BlastomeraUnit\":\"C\",\"MaturityM1\":\"MI\",\"MaturityM2\":\"MII\",\"MaturityGv\":\"Gv\",\"MaturityDegeneration\":\"退化\",\"MaturityDead\":\"死卵\",\"MaturityAbnormal\":\"异常\",\"MedicalIdString\":\"MedicalIdString\",\"CycleIdString\":\"CycleIdString\",\"IsOpenWorkScheduleAppointment\":false,\"ConsumableValidityType\":3,\"ConsumableValidityValue\":1,\"BillNoticeDay\":30,\"MedicineFrequencyList\":[{\"Item1\":\"qd\",\"Item2\":1},{\"Item1\":\"bid\",\"Item2\":2},{\"Item1\":\"tid\",\"Item2\":3},{\"Item1\":\"qid\",\"Item2\":4},{\"Item1\":\"qod\",\"Item2\":1},{\"Item1\":\"q3d\",\"Item2\":1},{\"Item1\":\"q4h\",\"Item2\":6},{\"Item1\":\"q8h\",\"Item2\":3},{\"Item1\":\"q12\",\"Item2\":2},{\"Item1\":\"once\",\"Item2\":1},{\"Item1\":\"qn\",\"Item2\":1}],\"MedicineUnitGChangeList\":[{\"Item1\":\"u\",\"Item2\":1500000},{\"Item1\":\"iu\",\"Item2\":1500000},{\"Item1\":\"mg\",\"Item2\":1000},{\"Item1\":\"ug\",\"Item2\":1000000}],\"GnCountUnit\":\"u\",\"CycleGnRhaMedicationType\":\"GnRha\",\"CycleGnRhantiMedicationType\":\"GnRhanti\",\"CycleGnMedicationType\":\"Gn\",\"CycleHcgMedicationType\":\"HCG\",\"CycleCcMedicationType\":\"CC\",\"CycleLeMedicationType\":\"LE\",\"CycleHmgMedicationType\":\"HMG\",\"DiseaseTypeValueList\":[\"弱阳性\",\"阳性(+)\"],\"CarrierLimit\":false,\"BracketPatientLimit\":true,\"ConsumableFreezeLiquidCategory\":\"冷冻液\",\"ConsumableThawLiquidCategory\":\"解冻液\",\"DefaultInducedOvulationHours\":36,\"FreezePeriodMonth\":3,\"MouthRenewalAmount\":100}"
+          ]
+        ],
+        "row_count": 1,
+        "execution_time_sec": 0.018
+      },
+      "comparison": null,
+      "total_time_sec": 69.17
+    }
+  ]
+}

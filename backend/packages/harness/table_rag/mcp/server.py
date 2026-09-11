@@ -97,6 +97,8 @@ def create_mcp_server(
         column_names: list[str] | None = None,
     ) -> dict[str, Any]:
         """执行 operation 指定的统一 TableRAG 操作。"""
+        if queries is not None and len(queries) > 8:
+            queries = queries[:8]
         return service.execute(
             operation=operation,
             query=query,

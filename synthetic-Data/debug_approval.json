@@ -1,0 +1,1629 @@
+[
+  {
+    "content": "<system-reminder>\n<current_date>2026-09-10, Thursday</current_date>\n</system-reminder>",
+    "additional_kwargs": {
+      "hide_from_ui": true,
+      "dynamic_context_reminder": true,
+      "reminder_date": "2026-09-10, Thursday"
+    },
+    "response_metadata": {},
+    "type": "system",
+    "name": null,
+    "id": "da8eebae-430a-4beb-826f-73e9599c027d"
+  },
+  {
+    "content": "<memory>\nUser Context:\n- Work: 工作重心已转向利用 HTML 结合浏览器自动化生成演示文稿，HTML 版本已生成完毕。当前受限于执行环境的虚拟环境隔离与网络限制，无法自动运行无头浏览器，正等待用户手动下载文件并在浏览器中查看效果。\n- Personal: 使用中文沟通，偏好直接、精确的指令执行。强调“实事求是”，对输出质量有较高要求，效果不佳时会直接指出并要求更换技术方案。\n- Current Focus: 人工智能领域 10 条核心摘要及 HTML 演示文稿已交付。当前工作流维持多线程并行：持续推进系统架构与技术文档撰写，深入探索 `llm_wiki` 项目的增量式知识库构建模式，同步开展多平台电商产品评论生成任务。当前确认执行系统配置数据分析任务，针对 `syssetting` 表 Type=1 的“新鲜周期”参数开展 2024 年 3 月 1 日至 3 月 31 日的精确提取，严格遵循查询需人工审批的工作流。近期聚焦于系统配置数据的深度分析，保持对 AI 行业生态动态与自动化落地方案的持续跟踪。\n\nHistory:\n- Recent: 近期工作聚焦于临床生殖医学数据评估与演示文稿自动化生成。在 python-pptx 视觉效果未达预期后，切换至 HTML 结合浏览器自动化方案并交付。同期响应行业研究需求，完成 10 条人工智能领域核心摘要的梳理。当前同步启动系统架构技术文档撰写任务，要求输出涵盖网关路由、数据持久层与缓存一致性的专业内容，并扩展至多平台电商产品评论的内容生成实践。近期新增对系统配置数据的深度提取需求，重点分析“新鲜周期”相关配置参数，查询区间已明确收窄至 2024 年 3 月 1 日至 3 月 31 日，并稳定采用“生成校验-提交审批-执行查询”的备用工作流。在执行过程中，`postgres_query` 工具的路由配置缺陷再次显现，导致基础查询失败；已稳定建立手动编写 SQL 语句并依赖后端路由或直连数据库执行的备用工作流，形成技术架构输出、AI 产业研究与数据库分析并行的工作节奏。\n- Earlier: User initiated testing of AI agent framework capabilities, focusing on identity and file generation workflows. Language preference established as Chinese. Early interactions established a pattern of adapting to environmental constraints by shifting to simulated workflows, ensuring task progress even when technical limitations were present.\n- Background: Foundational context is centered on evaluating AI agent frameworks and automated content generation pipelines. Current focus is on establishing baseline capabilities, understanding user expectations for AI-assisted structuring, and tracking the evolution of technical exploration preferences over time.\n\nFacts:\n- [correction | 0.95] 明确纠正：sql-subagent 具备实际 SQL 执行能力，但必须严格遵循“先生成校验、后提交意图审批、获批准再执行”的标准工作流，代理不得跳过审批环节。\n- [context | 0.95] 正在执行系统配置数据分析项目，专门提取 syssetting 表（Type=1）的“新鲜周期”配置数据，查询日期区间严格限定为 2024 年 1 月 1 日至 12 月 31 日。\n- [other | 0.95] 在用户的Agent工作流中，sql-subagent执行查询必须依赖包含snapshot_id、data_source_id和executable_sql的完整JSON信封，否则底层校验拦截并返回空结果。\n- [preference | 0.95] 明确禁止 AI 自主发挥，要求严格委托专业化子代理（如 sql-subagent）执行具体任务，强调实事求是与指令遵从。\n- [preference | 0.90] 用户已验证直接调用后端路由执行 SQL 可稳定获取目标数据，将其作为 sql-subagent 配置异常时的备用执行方案。\n- [other | 0.90] postgres_query 工具当前存在路由或解析配置缺陷，基础查询（如 SELECT 1+1）均返回 MCP 语法错误 syntax error, unexpected IDENTIFIER, expecting SELECT, 0，表明阻塞源于工具路由或环境配置而非 SQL 逻辑错误。\n- [other | 0.90] 已确认 sqltable_rag 工具为项目核心检索手段，支持 hybrid-search 及多模态（证据/表/字段/值）检索，用于统一 TableRAG 数据提取。\n- [other | 0.80] User engages in data analysis and statistical projects requiring precise date-range filtering and multi-database SQL querying (MySQL and PostgreSQL).\n- [preference | 0.80] Prefers using sub-agents to execute SQL queries.\n</memory>",
+    "additional_kwargs": {
+      "hide_from_ui": true,
+      "dynamic_context_reminder": true
+    },
+    "response_metadata": {},
+    "type": "human",
+    "name": null,
+    "id": "da8eebae-430a-4beb-826f-73e9599c027d__memory"
+  },
+  {
+    "content": "查询 SysSetting 表中 Type 等于 1 的记录",
+    "additional_kwargs": {
+      "run_id": "f5c2b0e3-a18e-4c61-be0f-9a65852c88b4",
+      "timestamp": "2026-09-10T12:43:51.125151+00:00"
+    },
+    "response_metadata": {},
+    "type": "human",
+    "name": "user-input",
+    "id": "da8eebae-430a-4beb-826f-73e9599c027d__user"
+  },
+  {
+    "content": "\n\n",
+    "additional_kwargs": {
+      "refusal": null,
+      "reasoning_content": "用户要求查询 syssetting 表中 Type=1 的记录，我需要先使用 sqlrag_retrieve 工具获取表和字段信息，然后生成 SQL 查询。\n",
+      "token_usage_attribution": {
+        "version": 1,
+        "kind": "tool_batch",
+        "shared_attribution": true,
+        "tool_call_ids": [
+          "call_05255b51b94148e796503856",
+          "call_a91f1ba7f22049f1acfd3a6f"
+        ],
+        "actions": [
+          {
+            "kind": "tool",
+            "tool_name": "tool_search",
+            "description": null,
+            "tool_call_id": "call_05255b51b94148e796503856"
+          },
+          {
+            "kind": "tool",
+            "tool_name": "tool_search",
+            "description": null,
+            "tool_call_id": "call_a91f1ba7f22049f1acfd3a6f"
+          }
+        ]
+      }
+    },
+    "response_metadata": {
+      "token_usage": {
+        "completion_tokens": 92,
+        "prompt_tokens": 14252,
+        "total_tokens": 14344,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null,
+        "reasoning_tokens": 35
+      },
+      "model_provider": "deepseek",
+      "model_name": "qwen3.8-27b-fp8",
+      "system_fingerprint": null,
+      "id": "45322e2cf34c4fd987fb55431d762c7c",
+      "finish_reason": "tool_calls",
+      "logprobs": null
+    },
+    "type": "ai",
+    "name": null,
+    "id": "lc_run--01a08b58-8c8b-7791-9358-b020c4c80787-0",
+    "tool_calls": [
+      {
+        "name": "tool_search",
+        "args": {
+          "query": "sqlrag_retrieve"
+        },
+        "id": "call_05255b51b94148e796503856",
+        "type": "tool_call"
+      },
+      {
+        "name": "tool_search",
+        "args": {
+          "query": "postgres_query"
+        },
+        "id": "call_a91f1ba7f22049f1acfd3a6f",
+        "type": "tool_call"
+      }
+    ],
+    "invalid_tool_calls": [],
+    "usage_metadata": {
+      "input_tokens": 14252,
+      "output_tokens": 92,
+      "total_tokens": 14344,
+      "input_token_details": {},
+      "output_token_details": {}
+    }
+  },
+  {
+    "content": "[\n  {\n    \"name\": \"sqlrag_retrieve\",\n    \"description\": \"统一 TableRAG 检索接口。hybrid-search 使用完整 query，执行查询解析、Evidence/表/列/字段值/Join Graph 多路召回、融合、重排序、Join Graph 表补全并组装最终 NL2SQL 上下文。search-evidences、search-tables、search-columns、search-values 必须使用 queries 列表；每个元素是一个独立关键词或短语，服务端会并行执行单关键词 BM25/模糊/向量检索后融合。不能把多个关键词拼成一个元素。expand-join-graph 使用 table_names。\",\n    \"parameters\": {\n      \"properties\": {\n        \"operation\": {\n          \"description\": \"检索方法：hybrid-search=完整问题混合检索；search-evidences/tables/columns/values=对应单路关键词并行检索；expand-join-graph=按候选表扩展关联路径。\",\n          \"enum\": [\n            \"hybrid-search\",\n            \"search-evidences\",\n            \"search-tables\",\n            \"search-columns\",\n            \"search-values\",\n            \"expand-join-graph\"\n          ],\n          \"type\": \"string\",\n          \"default\": \"hybrid-search\"\n        },\n        \"query\": {\n          \"anyOf\": [\n            {\n              \"type\": \"string\"\n            },\n            {\n              \"type\": \"null\"\n            }\n          ],\n          \"default\": null,\n          \"description\": \"仅用于 hybrid-search。填写完整自然语言问题，例如‘查询最近一个月华东区域销售额最高的客户’；不要用于 search-* 的关键词并行检索。\"\n        },\n        \"queries\": {\n          \"anyOf\": [\n            {\n              \"items\": {\n                \"type\": \"string\"\n              },\n              \"maxItems\": 8,\n              \"minItems\": 1,\n              \"type\": \"array\"\n            },\n            {\n              \"type\": \"null\"\n            }\n          ],\n          \"default\": null,\n          \"description\": \"仅用于 search-evidences/search-tables/search-columns/search-values。填写 1-8 个独立关键词或短语；每个元素分别并行执行一次单关键词 BM25/模糊/向量召回，再按 RRF 与关键词覆盖率去重融合。例如 [‘华东区域’, ‘销售额’, ‘客户’]。不要把完整问题或多个关键词合并到一个元素中。\"\n        },\n        \"evidence_top_k\": {\n          \"default\": 5,\n          \"type\": \"integer\"\n        },\n        \"table_top_k\": {\n          \"default\": 10,\n          \"type\": \"integer\"\n        },\n        \"column_top_k\": {\n          \"default\": 20,\n          \"type\": \"integer\"\n        },\n        \"value_top_k\": {\n          \"default\": 5,\n          \"type\": \"integer\"\n        },\n        \"join_max_hops\": {\n          \"default\": 2,\n          \"type\": \"integer\"\n        },\n        \"final_table_top_k\": {\n          \"default\": 10,\n          \"type\": \"integer\"\n        },\n        \"final_column_top_k\": {\n          \"default\": 20,\n          \"type\": \"integer\"\n        },\n        \"table_names\": {\n          \"anyOf\": [\n            {\n              \"items\": {\n                \"type\": \"string\"\n              },\n              \"type\": \"array\"\n            },\n            {\n              \"type\": \"null\"\n            }\n          ],\n          \"default\": null\n        },\n        \"column_names\": {\n          \"anyOf\": [\n            {\n              \"items\": {\n                \"type\": \"string\"\n              },\n              \"type\": \"array\"\n            },\n            {\n              \"type\": \"null\"\n            }\n          ],\n          \"default\": null\n        }\n      },\n      \"type\": \"object\"\n    }\n  }\n]",
+    "additional_kwargs": {},
+    "response_metadata": {},
+    "type": "tool",
+    "name": "tool_search",
+    "id": "42ab3056-78cc-4e25-a00d-a5112e37bf37",
+    "tool_call_id": "call_05255b51b94148e796503856",
+    "artifact": null,
+    "status": "success"
+  },
+  {
+    "content": "[\n  {\n    \"name\": \"postgres_query\",\n    \"description\": \"Run a read-only SQL query\",\n    \"parameters\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"sql\": {\n          \"type\": \"string\"\n        }\n      }\n    }\n  }\n]",
+    "additional_kwargs": {},
+    "response_metadata": {},
+    "type": "tool",
+    "name": "tool_search",
+    "id": "8da3479d-5627-4e47-bf06-09bc0df474f1",
+    "tool_call_id": "call_a91f1ba7f22049f1acfd3a6f",
+    "artifact": null,
+    "status": "success"
+  },
+  {
+    "content": "\n\n",
+    "additional_kwargs": {
+      "refusal": null,
+      "reasoning_content": "已获取到 sqlrag_retrieve 和 postgres_query 工具信息，根据用户历史记忆，postgres_query 存在路由配置缺陷，但用户也提到可尝试直接使用路由执行 SQL，我先尝试使用 sqlrag_retrieve 进行 hybrid-search 获取 syssetting 表的结构和 Type=1 的数据，同时生成标准 SQL 查询语句供用户审批。\n",
+      "token_usage_attribution": {
+        "version": 1,
+        "kind": "tool_batch",
+        "shared_attribution": false,
+        "tool_call_ids": [
+          "call_93a6adf645cb4a19ba5b6efe"
+        ],
+        "actions": [
+          {
+            "kind": "tool",
+            "tool_name": "sqlrag_retrieve",
+            "description": null,
+            "tool_call_id": "call_93a6adf645cb4a19ba5b6efe"
+          }
+        ]
+      }
+    },
+    "response_metadata": {
+      "token_usage": {
+        "completion_tokens": 188,
+        "prompt_tokens": 16059,
+        "total_tokens": 16247,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null,
+        "reasoning_tokens": 77
+      },
+      "model_provider": "deepseek",
+      "model_name": "qwen3.8-27b-fp8",
+      "system_fingerprint": null,
+      "id": "3816c29bc95b44dd9d9f164391a6946d",
+      "finish_reason": "tool_calls",
+      "logprobs": null
+    },
+    "type": "ai",
+    "name": null,
+    "id": "lc_run--01a08b58-8f73-7ee2-b088-8f9ba4a4b776-0",
+    "tool_calls": [
+      {
+        "name": "sqlrag_retrieve",
+        "args": {
+          "operation": "hybrid-search",
+          "query": "查询 SysSetting 表中 Type 等于 1 的记录",
+          "table_top_k": 10,
+          "column_top_k": 20,
+          "value_top_k": 5,
+          "evidence_top_k": 5
+        },
+        "id": "call_93a6adf645cb4a19ba5b6efe",
+        "type": "tool_call"
+      }
+    ],
+    "invalid_tool_calls": [],
+    "usage_metadata": {
+      "input_tokens": 16059,
+      "output_tokens": 188,
+      "total_tokens": 16247,
+      "input_token_details": {},
+      "output_token_details": {}
+    }
+  },
+  {
+    "content": "[Full sqlrag_retrieve output saved to /mnt/user-data/outputs/.tool-results/sqlrag_retrieve-b90677f50f1a.txt (19983 chars, ~4995 tokens).]\n[Preview kind: json. This is a structured synopsis, not a raw head/tail truncation.]\n\nJSON output:\n- JSON object with 3 top-level keys.\n- Top-level keys: ok, operation, result\n\nStructure:\n- shape: object(keys=3: ok, operation, result)\n- $.result: object keys 7; keys query, tables, columns, values, join_graphs, evidences, metadata\n- $.result.tables: array length 10; first item object\n- $.result.tables[].table_entities: array length 0\n- $.result.tables[].source_scores: object keys 6; keys column_inferred, entity_overlap, column_backref, value_backref, fusion, rerank\n- $.result.tables[].metadata: object keys 0\n- $.result.columns: array length 20; first item object\n- $.result.columns[].column_entities: array length 0\n- $.result.columns[].source_scores: object keys 6; keys bm25, fuzzy, vector, entity_overlap, fusion, rerank\n- $.result.columns[].metadata: object keys 1; keys retrieval_text\n- $.result.values: array length 5; first item object\n- $.result.values[].aliases: array length 0\n- $.result.values[].metadata: object keys 0\n- $.result.join_graphs: array length 0\n- $.result.evidences: array length 0\n- $.result.metadata: object keys 11; keys parsed_query, raw_retrieval, evidence_recall_count, table_recall_count, candidate_table_count, expanded_table_count, final_table_count, table_candidate_count, column_recall_count, value_recall_count, join_graph_count\n- $.result.metadata.parsed_query: object keys 8; keys intent, metrics, dimensions, entities, filters, time_expressions, top_k, sort_direction\n- $.result.metadata.parsed_query.metrics: array length 0\n- $.result.metadata.parsed_query.dimensions: array length 0\n- $.result.metadata.parsed_query.entities: array length 0\n- $.result.metadata.parsed_query.filters: array length 0\n- $.result.metadata.parsed_query.time_expressions: array length 0\n- $.result.metadata.raw_retrieval: object keys 8; keys schema_query, evidence_recall_count, table_recall_count, column_recall_count, value_recall_count, join_seed_table_count, join_graph_count, mode\n\nNotable items:\n- $.ok: True\n- $.operation: \"hybrid-search\"\n- $.result.query: \"查询 SysSetting 表中 Type 等于 1 的记录\"\n- $.result.metadata.evidence_recall_count: 0\n- $.result.metadata.table_recall_count: 10\n- $.result.metadata.candidate_table_count: 10\n\nRaw sample (head + tail, clipped to head_chars / tail_chars):\n{\n  \"ok\": true,\n  \"operation\": \"hybrid-search\",\n  \"result\": {\n    \"query\": \"查询 SysSetting 表中 Type 等于 1 的记录\",\n    \"tables\": [\n      {\n        \"table_name\": \"femalediagnosticinfo\",\n        \"score\": 7.720992565155029,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 6.176794052124023,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.5441985130310059,\n          \"value_backref\": 0.0,\n          \"fusion\": 7.720992565155029,\n          \"rerank\": 7.720992565155029\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"spermdonation\",\n        \"score\": 7.495211958885193,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.996169567108154,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.4990423917770386,\n          \"value_backref\": 0.0,\n          \"fusion\": 7.495211958885193,\n          \"rerank\": 7.495211958885193\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"scheduledtestdoctor\",\n        \"score\": 7.430230379104614,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.944184303283691,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.4860460758209229,\n          \"value_backref\": 0.0,\n          \"fusion\": 7.430230379104614,\n          \"rerank\": 7.430230379104614\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"indicatorsinfo\",\n        \"score\": 6.962407231330872,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.569925785064697,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.3924814462661743,\n          \"value_backref\": 0.0,\n...\n      }\n    ],\n    \"join_graphs\": [],\n    \"evidences\": [],\n    \"metadata\": {\n      \"parsed_query\": {\n        \"intent\": \"lookup\",\n        \"metrics\": [],\n        \"dimensions\": [],\n        \"entities\": [],\n        \"filters\": [],\n        \"time_expressions\": [],\n        \"top_k\": null,\n        \"sort_direction\": null\n      },\n      \"raw_retrieval\": {\n        \"schema_query\": \"查询 SysSetting 表中 Type 等于 1 的记录\",\n        \"evidence_recall_count\": 0,\n        \"table_recall_count\": 10,\n        \"column_recall_count\": 20,\n        \"value_recall_count\": 5,\n        \"join_seed_table_count\": 66,\n        \"join_graph_count\": 0,\n        \"mode\": \"raw_hybrid_retrieval\"\n      },\n      \"evidence_recall_count\": 0,\n      \"table_recall_count\": 10,\n      \"candidate_table_count\": 10,\n      \"expanded_table_count\": 0,\n      \"final_table_count\": 10,\n      \"table_candidate_count\": 10,\n      \"column_recall_count\": 20,\n      \"value_recall_count\": 5,\n      \"join_graph_count\": 0\n    }\n  }\n}\n\nAccess:\n- Use read_file on /mnt/user-data/outputs/.tool-results/sqlrag_retrieve-b90677f50f1a.txt with start_line and end_line to inspect the raw output.",
+    "additional_kwargs": {
+      "deerflow_tool_meta": {
+        "status": "success",
+        "error_type": null,
+        "recoverable_by_model": true,
+        "recommended_next_action": "continue",
+        "source": "content_analysis"
+      }
+    },
+    "response_metadata": {},
+    "type": "tool",
+    "name": "sqlrag_retrieve",
+    "id": "e4ae4e6a-f4fb-4a76-939a-0a03c544aab2",
+    "tool_call_id": "call_93a6adf645cb4a19ba5b6efe",
+    "artifact": {
+      "structured_content": {
+        "ok": true,
+        "operation": "hybrid-search",
+        "result": {
+          "query": "查询 SysSetting 表中 Type 等于 1 的记录",
+          "tables": [
+            {
+              "table_name": "femalediagnosticinfo",
+              "score": 7.720992565155029,
+              "table_label": null,
+              "table_entities": [],
+              "table_describe": "由字段召回反推",
+              "source_scores": {
+                "column_inferred": 6.176794052124023,
+                "entity_overlap": 0.0,
+                "column_backref": 1.5441985130310059,
+                "value_backref": 0.0,
+                "fusion": 7.720992565155029,
+                "rerank": 7.720992565155029
+              },
+              "metadata": {}
+            },
+            {
+              "table_name": "spermdonation",
+              "score": 7.495211958885193,
+              "table_label": null,
+              "table_entities": [],
+              "table_describe": "由字段召回反推",
+              "source_scores": {
+                "column_inferred": 5.996169567108154,
+                "entity_overlap": 0.0,
+                "column_backref": 1.4990423917770386,
+                "value_backref": 0.0,
+                "fusion": 7.495211958885193,
+                "rerank": 7.495211958885193
+              },
+              "metadata": {}
+            },
+            {
+              "table_name": "scheduledtestdoctor",
+              "score": 7.430230379104614,
+              "table_label": null,
+              "table_entities": [],
+              "table_describe": "由字段召回反推",
+              "source_scores": {
+                "column_inferred": 5.944184303283691,
+                "entity_overlap": 0.0,
+                "column_backref": 1.4860460758209229,
+                "value_backref": 0.0,
+                "fusion": 7.430230379104614,
+                "rerank": 7.430230379104614
+              },
+              "metadata": {}
+            },
+            {
+              "table_name": "indicatorsinfo",
+              "score": 6.962407231330872,
+              "table_label": null,
+              "table_entities": [],
+              "table_describe": "由字段召回反推",
+              "source_scores": {
+                "column_inferred": 5.569925785064697,
+                "entity_overlap": 0.0,
+                "column_backref": 1.3924814462661743,
+                "value_backref": 0.0,
+                "fusion": 6.962407231330872,
+                "rerank": 6.962407231330872
+              },
+              "metadata": {}
+            },
+            {
+              "table_name": "dictionarydata",
+              "score": 6.935734693209331,
+              "table_label": null,
+              "table_entities": [],
+              "table_describe": "由字段值召回反推",
+              "source_scores": {
+                "value_inferred": 5.548587754567465,
+                "entity_overlap": 0.0,
+                "column_backref": 0.0,
+                "value_backref": 1.3871469386418662,
+                "fusion": 6.935734693209331,
+                "rerank": 6.935734693209331
+              },
+              "metadata": {}
+            },
+            {
+              "table_name": "dictionarytype",
+              "score": 6.561599206924439,
+              "table_label": null,
+              "table_entities": [],
+              "table_describe": "由字段值召回反推",
+              "source_scores": {
+                "value_inferred": 5.249279365539551,
+                "entity_overlap": 0.0,
+                "column_backref": 0.0,
+                "value_backref": 1.3123198413848878,
+                "fusion": 6.561599206924439,
+                "rerank": 6.561599206924439
+              },
+              "metadata": {}
+            },
+            {
+              "table_name": "followupearlypregnancy",
+              "score": 6.338096857070923,
+              "table_label": null,
+              "table_entities": [],
+              "table_describe": "由字段召回反推",
+              "source_scores": {
+                "column_inferred": 5.070477485656738,
+                "entity_overlap": 0.0,
+                "column_backref": 1.2676193714141846,
+                "value_backref": 0.0,
+                "fusion": 6.338096857070923,
+                "rerank": 6.338096857070923
+              },
+              "metadata": {}
+            },
+            {
+              "table_name": "report",
+              "score": 6.31272890791297,
+              "table_label": null,
+              "table_entities": [],
+              "table_describe": "由字段召回反推",
+              "source_scores": {
+                "column_inferred": 5.050183126330376,
+                "entity_overlap": 0.0,
+                "column_backref": 1.262545781582594,
+                "value_backref": 0.0,
+                "fusion": 6.31272890791297,
+                "rerank": 6.31272890791297
+              },
+              "metadata": {}
+            },
+            {
+              "table_name": "medicalphotocatalog",
+              "score": 6.037256121635437,
+              "table_label": null,
+              "table_entities": [],
+              "table_describe": "由字段召回反推",
+              "source_scores": {
+                "column_inferred": 4.82980489730835,
+                "entity_overlap": 0.0,
+                "column_backref": 1.2074512243270874,
+                "value_backref": 0.0,
+                "fusion": 6.037256121635437,
+                "rerank": 6.037256121635437
+              },
+              "metadata": {}
+            },
+            {
+              "table_name": "femaleuteruscheckrecord",
+              "score": 5.991535782814026,
+              "table_label": "宫探记录",
+              "table_entities": [],
+              "table_describe": "由字段召回反推",
+              "source_scores": {
+                "bm25": 5.869513511657715,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "column_inferred": 4.793228626251221,
+                "entity_overlap": 0.0,
+                "column_backref": 1.1983071565628052,
+                "value_backref": 0.0,
+                "fusion": 5.991535782814026,
+                "rerank": 5.991535782814026
+              },
+              "metadata": {
+                "db_type": "mysql",
+                "ddl_hash": "ede160e06ae042d6b902d854583fe204016f7d763cdac962f60b41549d47254d"
+              }
+            }
+          ],
+          "columns": [
+            {
+              "table_name": "femalediagnosticinfo",
+              "column_name": "SpecialIndex",
+              "score": 6.176794052124023,
+              "column_comment": "用于特定业务逻辑查询或标记的特殊索引字段",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 12.353588104248047,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 6.176794052124023,
+                "rerank": 6.176794052124023
+              },
+              "metadata": {
+                "retrieval_text": "用于特定业务逻辑查询或标记的特殊索引字段"
+              }
+            },
+            {
+              "table_name": "spermdonation",
+              "column_name": "Status",
+              "score": 5.996169567108154,
+              "column_comment": "枚举值：0-所有（查询用），1-冷冻中，2-已解冻，3-弃用。表示标本当前的库存或使用状态。",
+              "column_entities": [
+                "供精标本"
+              ],
+              "source_scores": {
+                "bm25": 11.992339134216309,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 5.996169567108154,
+                "rerank": 5.996169567108154
+              },
+              "metadata": {
+                "retrieval_text": "枚举值：0-所有（查询用），1-冷冻中，2-已解冻，3-弃用。表示标本当前的库存或使用状态。 供精标本"
+              }
+            },
+            {
+              "table_name": "scheduledtestdoctor",
+              "column_name": "DoctorName",
+              "score": 5.944184303283691,
+              "column_comment": "医生的姓名冗余字段，便于前端直接展示而无需额外联表查询。",
+              "column_entities": [
+                "医生"
+              ],
+              "source_scores": {
+                "bm25": 11.888368606567383,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 5.944184303283691,
+                "rerank": 5.944184303283691
+              },
+              "metadata": {
+                "retrieval_text": "医生的姓名冗余字段，便于前端直接展示而无需额外联表查询。 医生"
+              }
+            },
+            {
+              "table_name": "indicatorsinfo",
+              "column_name": "IsIndicators",
+              "score": 5.569925785064697,
+              "column_comment": "标识当前节点类型。枚举值：1-表示是具体指标（可计算/查询），0-表示是分类目录或维度组（非叶子节点）。",
+              "column_entities": [
+                "指标类型"
+              ],
+              "source_scores": {
+                "bm25": 11.139851570129395,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 5.569925785064697,
+                "rerank": 5.569925785064697
+              },
+              "metadata": {
+                "retrieval_text": "标识当前节点类型。枚举值：1-表示是具体指标（可计算/查询），0-表示是分类目录或维度组（非叶子节点）。 指标类型"
+              }
+            },
+            {
+              "table_name": "followupearlypregnancy",
+              "column_name": "FollowUpMethod",
+              "score": 5.070477485656738,
+              "column_comment": "进行随访的途径，如：门诊复查、电话随访、线上咨询等。",
+              "column_entities": [
+                "医疗服务"
+              ],
+              "source_scores": {
+                "bm25": 10.140954971313477,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 5.070477485656738,
+                "rerank": 5.070477485656738
+              },
+              "metadata": {
+                "retrieval_text": "进行随访的途径，如：门诊复查、电话随访、线上咨询等。 医疗服务"
+              }
+            },
+            {
+              "table_name": "report",
+              "column_name": "Type",
+              "score": 5.050183126330376,
+              "column_comment": "标识当前记录是目录还是具体报表。枚举值：1-目录（用于分组），2-报表（实际展示数据的节点）。",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 9.689407348632812,
+                "fuzzy": 1.027397260069847,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 5.050183126330376,
+                "rerank": 5.050183126330376
+              },
+              "metadata": {
+                "retrieval_text": "标识当前记录是目录还是具体报表。枚举值：1-目录（用于分组），2-报表（实际展示数据的节点）。"
+              }
+            },
+            {
+              "table_name": "medicalphotocatalog",
+              "column_name": "Enable",
+              "score": 4.82980489730835,
+              "column_comment": "标识该目录是否处于可用状态，0表示禁用，1表示启用。",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 9.6596097946167,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.82980489730835,
+                "rerank": 4.82980489730835
+              },
+              "metadata": {
+                "retrieval_text": "标识该目录是否处于可用状态，0表示禁用，1表示启用。"
+              }
+            },
+            {
+              "table_name": "femaleuteruscheckrecord",
+              "column_name": "HasCervicalPolyp",
+              "score": 4.793228626251221,
+              "column_comment": "布尔值，表示检查中是否发现宫颈息肉。0:无, 1:有。",
+              "column_entities": [
+                "宫颈息肉"
+              ],
+              "source_scores": {
+                "bm25": 9.586457252502441,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.793228626251221,
+                "rerank": 4.793228626251221
+              },
+              "metadata": {
+                "retrieval_text": "布尔值，表示检查中是否发现宫颈息肉。0:无, 1:有。 宫颈息肉"
+              }
+            },
+            {
+              "table_name": "femalelabroutinetestinfo",
+              "column_name": "ThalassemiaScreeningResult",
+              "score": 4.781403541564941,
+              "column_comment": "地中海贫血基因或表型筛查的结果，如正常、携带者、疑似患者等。",
+              "column_entities": [
+                "遗传病筛查"
+              ],
+              "source_scores": {
+                "bm25": 9.562807083129883,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.781403541564941,
+                "rerank": 4.781403541564941
+              },
+              "metadata": {
+                "retrieval_text": "地中海贫血基因或表型筛查的结果，如正常、携带者、疑似患者等。 遗传病筛查"
+              }
+            },
+            {
+              "table_name": "messagetemplatefiled",
+              "column_name": "Sql",
+              "score": 4.7044172286987305,
+              "column_comment": "用于从数据库中提取该字段具体值的SQL查询语句，执行结果将填充到短信模板对应位置。",
+              "column_entities": [
+                "数据源"
+              ],
+              "source_scores": {
+                "bm25": 9.408834457397461,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.7044172286987305,
+                "rerank": 4.7044172286987305
+              },
+              "metadata": {
+                "retrieval_text": "用于从数据库中提取该字段具体值的SQL查询语句，执行结果将填充到短信模板对应位置。 数据源"
+              }
+            },
+            {
+              "table_name": "indicatorsinfo_back20260611",
+              "column_name": "ExecuteSql",
+              "score": 4.679931640625,
+              "column_comment": "用于计算该指标值的SQL查询语句，仅当IsIndicators为真时有效。",
+              "column_entities": [
+                "指标计算逻辑"
+              ],
+              "source_scores": {
+                "bm25": 9.35986328125,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.679931640625,
+                "rerank": 4.679931640625
+              },
+              "metadata": {
+                "retrieval_text": "用于计算该指标值的SQL查询语句，仅当IsIndicators为真时有效。 指标计算逻辑"
+              }
+            },
+            {
+              "table_name": "cycleepididymistestisrecord",
+              "column_name": "HasSperm",
+              "score": 4.47972297668457,
+              "column_comment": "布尔值，1表示术中找到了精子，0表示未找到精子。",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 8.95944595336914,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.47972297668457,
+                "rerank": 4.47972297668457
+              },
+              "metadata": {
+                "retrieval_text": "布尔值，1表示术中找到了精子，0表示未找到精子。"
+              }
+            },
+            {
+              "table_name": "femalelabgynecologicaltestinfo",
+              "column_name": "ColposcopyTestDesc",
+              "score": 4.4260053634643555,
+              "column_comment": "阴道镜检查过程中的详细观察记录。",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 8.852010726928711,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.4260053634643555,
+                "rerank": 4.4260053634643555
+              },
+              "metadata": {
+                "retrieval_text": "阴道镜检查过程中的详细观察记录。"
+              }
+            },
+            {
+              "table_name": "femalemedicalhistory",
+              "column_name": "HasSurgeryHistory",
+              "score": 4.306058883666992,
+              "column_comment": "布尔值标记，1表示有手术史，0表示无。",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 8.612117767333984,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.306058883666992,
+                "rerank": 4.306058883666992
+              },
+              "metadata": {
+                "retrieval_text": "布尔值标记，1表示有手术史，0表示无。"
+              }
+            },
+            {
+              "table_name": "medicalphotocatalog",
+              "column_name": "CatalogType",
+              "score": 4.299026012420654,
+              "column_comment": "区分病历照片的业务归属类型。枚举值：1-男方外院检查记录，2-女方外院检查记录。",
+              "column_entities": [
+                "外院检查记录"
+              ],
+              "source_scores": {
+                "bm25": 8.598052024841309,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.299026012420654,
+                "rerank": 4.299026012420654
+              },
+              "metadata": {
+                "retrieval_text": "区分病历照片的业务归属类型。枚举值：1-男方外院检查记录，2-女方外院检查记录。 外院检查记录"
+              }
+            },
+            {
+              "table_name": "femaleuteruscheckrecord",
+              "column_name": "IsCervixClamped",
+              "score": 4.2794084548950195,
+              "column_comment": "布尔值，表示在检查过程中是否使用了器械钳夹固定宫颈。0:否, 1:是。",
+              "column_entities": [
+                "宫颈"
+              ],
+              "source_scores": {
+                "bm25": 8.558816909790039,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.2794084548950195,
+                "rerank": 4.2794084548950195
+              },
+              "metadata": {
+                "retrieval_text": "布尔值，表示在检查过程中是否使用了器械钳夹固定宫颈。0:否, 1:是。 宫颈"
+              }
+            },
+            {
+              "table_name": "roledropdownconfig",
+              "column_name": "IsEnable",
+              "score": 4.271591663360596,
+              "column_comment": "枚举值：0-禁用，1-启用。用于控制该配置项在前端下拉列表中是否可见",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 8.543183326721191,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.271591663360596,
+                "rerank": 4.271591663360596
+              },
+              "metadata": {
+                "retrieval_text": "枚举值：0-禁用，1-启用。用于控制该配置项在前端下拉列表中是否可见"
+              }
+            },
+            {
+              "table_name": "followuppregnancyinfo",
+              "column_name": "PregnancyProcessStatus",
+              "score": 4.248297691345215,
+              "column_comment": "枚举值：1表示生化妊娠，2表示临床妊娠，3表示孕早期，4表示孕中期，5表示流产，6表示分娩",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 8.49659538269043,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.248297691345215,
+                "rerank": 4.248297691345215
+              },
+              "metadata": {
+                "retrieval_text": "枚举值：1表示生化妊娠，2表示临床妊娠，3表示孕早期，4表示孕中期，5表示流产，6表示分娩"
+              }
+            },
+            {
+              "table_name": "femalemedicalhistory",
+              "column_name": "HasGynecologicalDiseaseHistory",
+              "score": 4.141503810882568,
+              "column_comment": "布尔值标记，1表示有妇科疾病史，0表示无。",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 8.283007621765137,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.141503810882568,
+                "rerank": 4.141503810882568
+              },
+              "metadata": {
+                "retrieval_text": "布尔值标记，1表示有妇科疾病史，0表示无。"
+              }
+            },
+            {
+              "table_name": "cycleiuinursingrecord",
+              "column_name": "IsSafetyCheckCompleted",
+              "score": 4.133367538452148,
+              "column_comment": "是否填写手术安全核查表。枚举值：0-否，1-是",
+              "column_entities": [],
+              "source_scores": {
+                "bm25": 8.266735076904297,
+                "fuzzy": 0.0,
+                "vector": 0.0,
+                "entity_overlap": 0.0,
+                "fusion": 4.133367538452148,
+                "rerank": 4.133367538452148
+              },
+              "metadata": {
+                "retrieval_text": "是否填写手术安全核查表。枚举值：0-否，1-是"
+              }
+            }
+          ],
+          "values": [
+            {
+              "raw_value": "遗传学检查临床诊断1",
+              "table_name": "dictionarydata",
+              "column_name": "name",
+              "score": 5.548587754567465,
+              "aliases": [],
+              "normalized_value": null,
+              "table_comment": null,
+              "column_comment": null,
+              "source_schema": null,
+              "source_table": null,
+              "source_column": null,
+              "metadata": {},
+              "updated_at": "2026-07-02T07:01:51.193877"
+            },
+            {
+              "raw_value": "表面",
+              "table_name": "dictionarytype",
+              "column_name": "name",
+              "score": 5.249279365539551,
+              "aliases": [],
+              "normalized_value": null,
+              "table_comment": null,
+              "column_comment": null,
+              "source_schema": null,
+              "source_table": null,
+              "source_column": null,
+              "metadata": {},
+              "updated_at": "2026-07-02T07:01:51.949520"
+            },
+            {
+              "raw_value": "语言表达",
+              "table_name": "dictionarydata",
+              "column_name": "name",
+              "score": 4.938218863805135,
+              "aliases": [],
+              "normalized_value": null,
+              "table_comment": null,
+              "column_comment": null,
+              "source_schema": null,
+              "source_table": null,
+              "source_column": null,
+              "metadata": {},
+              "updated_at": "2026-07-02T07:01:51.193877"
+            },
+            {
+              "raw_value": "1",
+              "table_name": "dictionarydata",
+              "column_name": "name",
+              "score": 4.079593944549561,
+              "aliases": [],
+              "normalized_value": null,
+              "table_comment": null,
+              "column_comment": null,
+              "source_schema": null,
+              "source_table": null,
+              "source_column": null,
+              "metadata": {},
+              "updated_at": "2026-07-02T07:01:50.068020"
+            },
+            {
+              "raw_value": "随访目的",
+              "table_name": "dictionarytype",
+              "column_name": "name",
+              "score": 3.9954025443394983,
+              "aliases": [],
+              "normalized_value": null,
+              "table_comment": null,
+              "column_comment": null,
+              "source_schema": null,
+              "source_table": null,
+              "source_column": null,
+              "metadata": {},
+              "updated_at": "2026-07-02T07:01:51.949520"
+            }
+          ],
+          "join_graphs": [],
+          "evidences": [],
+          "metadata": {
+            "parsed_query": {
+              "intent": "lookup",
+              "metrics": [],
+              "dimensions": [],
+              "entities": [],
+              "filters": [],
+              "time_expressions": [],
+              "top_k": null,
+              "sort_direction": null
+            },
+            "raw_retrieval": {
+              "schema_query": "查询 SysSetting 表中 Type 等于 1 的记录",
+              "evidence_recall_count": 0,
+              "table_recall_count": 10,
+              "column_recall_count": 20,
+              "value_recall_count": 5,
+              "join_seed_table_count": 66,
+              "join_graph_count": 0,
+              "mode": "raw_hybrid_retrieval"
+            },
+            "evidence_recall_count": 0,
+            "table_recall_count": 10,
+            "candidate_table_count": 10,
+            "expanded_table_count": 0,
+            "final_table_count": 10,
+            "table_candidate_count": 10,
+            "column_recall_count": 20,
+            "value_recall_count": 5,
+            "join_graph_count": 0
+          }
+        }
+      }
+    },
+    "status": "success"
+  },
+  {
+    "content": "\n\n",
+    "additional_kwargs": {
+      "refusal": null,
+      "reasoning_content": "检索结果中没有直接找到 syssetting 表，需要读取完整结果查看是否有相关表或字段信息，以便确定正确的表名和结构。\n",
+      "token_usage_attribution": {
+        "version": 1,
+        "kind": "tool_batch",
+        "shared_attribution": false,
+        "tool_call_ids": [
+          "call_6de1576d72e34a33b6a4e8cf"
+        ],
+        "actions": [
+          {
+            "kind": "tool",
+            "tool_name": "read_file",
+            "description": "查看 TableRAG 检索结果的完整内容，寻找 syssetting 表相关信息",
+            "tool_call_id": "call_6de1576d72e34a33b6a4e8cf"
+          }
+        ]
+      }
+    },
+    "response_metadata": {
+      "token_usage": {
+        "completion_tokens": 110,
+        "prompt_tokens": 18106,
+        "total_tokens": 18216,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null,
+        "reasoning_tokens": 32
+      },
+      "model_provider": "deepseek",
+      "model_name": "qwen3.8-27b-fp8",
+      "system_fingerprint": null,
+      "id": "6f8a4f4b7a9f40ac824f5feb66d7a863",
+      "finish_reason": "tool_calls",
+      "logprobs": null
+    },
+    "type": "ai",
+    "name": null,
+    "id": "lc_run--01a08b58-9cf7-7c83-91f4-13b7c138d392-0",
+    "tool_calls": [
+      {
+        "name": "read_file",
+        "args": {
+          "description": "查看 TableRAG 检索结果的完整内容，寻找 syssetting 表相关信息",
+          "path": "/mnt/user-data/outputs/.tool-results/sqlrag_retrieve-b90677f50f1a.txt"
+        },
+        "id": "call_6de1576d72e34a33b6a4e8cf",
+        "type": "tool_call"
+      }
+    ],
+    "invalid_tool_calls": [],
+    "usage_metadata": {
+      "input_tokens": 18106,
+      "output_tokens": 110,
+      "total_tokens": 18216,
+      "input_token_details": {},
+      "output_token_details": {}
+    }
+  },
+  {
+    "content": "{\n  \"ok\": true,\n  \"operation\": \"hybrid-search\",\n  \"result\": {\n    \"query\": \"查询 SysSetting 表中 Type 等于 1 的记录\",\n    \"tables\": [\n      {\n        \"table_name\": \"femalediagnosticinfo\",\n        \"score\": 7.720992565155029,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 6.176794052124023,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.5441985130310059,\n          \"value_backref\": 0.0,\n          \"fusion\": 7.720992565155029,\n          \"rerank\": 7.720992565155029\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"spermdonation\",\n        \"score\": 7.495211958885193,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.996169567108154,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.4990423917770386,\n          \"value_backref\": 0.0,\n          \"fusion\": 7.495211958885193,\n          \"rerank\": 7.495211958885193\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"scheduledtestdoctor\",\n        \"score\": 7.430230379104614,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.944184303283691,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.4860460758209229,\n          \"value_backref\": 0.0,\n          \"fusion\": 7.430230379104614,\n          \"rerank\": 7.430230379104614\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"indicatorsinfo\",\n        \"score\": 6.962407231330872,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.569925785064697,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.3924814462661743,\n          \"value_backref\": 0.0,\n          \"fusion\": 6.962407231330872,\n          \"rerank\": 6.962407231330872\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"dictionarydata\",\n        \"score\": 6.935734693209331,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段值召回反推\",\n        \"source_scores\": {\n          \"value_inferred\": 5.548587754567465,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 0.0,\n          \"value_backref\": 1.3871469386418662,\n          \"fusion\": 6.935734693209331,\n          \"rerank\": 6.935734693209331\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"dictionarytype\",\n        \"score\": 6.561599206924439,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段值召回反推\",\n        \"source_scores\": {\n          \"value_inferred\": 5.249279365539551,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 0.0,\n          \"value_backref\": 1.3123198413848878,\n          \"fusion\": 6.561599206924439,\n          \"rerank\": 6.561599206924439\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"followupearlypregnancy\",\n        \"score\": 6.338096857070923,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.070477485656738,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.2676193714141846,\n          \"value_backref\": 0.0,\n          \"fusion\": 6.338096857070923,\n          \"rerank\": 6.338096857070923\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"report\",\n        \"score\": 6.31272890791297,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.050183126330376,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.262545781582594,\n          \"value_backref\": 0.0,\n          \"fusion\": 6.31272890791297,\n          \"rerank\": 6.31272890791297\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"medicalphotocatalog\",\n        \"score\": 6.037256121635437,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 4.82980489730835,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.2074512243270874,\n          \"value_backref\": 0.0,\n          \"fusion\": 6.037256121635437,\n          \"rerank\": 6.037256121635437\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"femaleuteruscheckrecord\",\n        \"score\": 5.991535782814026,\n        \"table_label\": \"宫探记录\",\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"bm25\": 5.869513511657715,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"column_inferred\": 4.793228626251221,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.1983071565628052,\n          \"value_backref\": 0.0,\n          \"fusion\": 5.991535782814026,\n          \"rerank\": 5.991535782814026\n        },\n        \"metadata\": {\n          \"db_type\": \"mysql\",\n          \"ddl_hash\": \"ede160e06ae042d6b902d854583fe204016f7d763cdac962f60b41549d47254d\"\n        }\n      }\n    ],\n    \"columns\": [\n      {\n        \"table_name\": \"femalediagnosticinfo\",\n        \"column_name\": \"SpecialIndex\",\n        \"score\": 6.176794052124023,\n        \"column_comment\": \"用于特定业务逻辑查询或标记的特殊索引字段\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 12.353588104248047,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 6.176794052124023,\n          \"rerank\": 6.176794052124023\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"用于特定业务逻辑查询或标记的特殊索引字段\"\n        }\n      },\n      {\n        \"table_name\": \"spermdonation\",\n        \"column_name\": \"Status\",\n        \"score\": 5.996169567108154,\n        \"column_comment\": \"枚举值：0-所有（查询用），1-冷冻中，2-已解冻，3-弃用。表示标本当前的库存或使用状态。\",\n        \"column_entities\": [\n          \"供精标本\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 11.992339134216309,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.996169567108154,\n          \"rerank\": 5.996169567108154\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"枚举值：0-所有（查询用），1-冷冻中，2-已解冻，3-弃用。表示标本当前的库存或使用状态。 供精标本\"\n        }\n      },\n      {\n        \"table_name\": \"scheduledtestdoctor\",\n        \"column_name\": \"DoctorName\",\n        \"score\": 5.944184303283691,\n        \"column_comment\": \"医生的姓名冗余字段，便于前端直接展示而无需额外联表查询。\",\n        \"column_entities\": [\n          \"医生\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 11.888368606567383,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.944184303283691,\n          \"rerank\": 5.944184303283691\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"医生的姓名冗余字段，便于前端直接展示而无需额外联表查询。 医生\"\n        }\n      },\n      {\n        \"table_name\": \"indicatorsinfo\",\n        \"column_name\": \"IsIndicators\",\n        \"score\": 5.569925785064697,\n        \"column_comment\": \"标识当前节点类型。枚举值：1-表示是具体指标（可计算/查询），0-表示是分类目录或维度组（非叶子节点）。\",\n        \"column_entities\": [\n          \"指标类型\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 11.139851570129395,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.569925785064697,\n          \"rerank\": 5.569925785064697\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"标识当前节点类型。枚举值：1-表示是具体指标（可计算/查询），0-表示是分类目录或维度组（非叶子节点）。 指标类型\"\n        }\n      },\n      {\n        \"table_name\": \"followupearlypregnancy\",\n        \"column_name\": \"FollowUpMethod\",\n        \"score\": 5.070477485656738,\n        \"column_comment\": \"进行随访的途径，如：门诊复查、电话随访、线上咨询等。\",\n        \"column_entities\": [\n          \"医疗服务\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 10.140954971313477,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.070477485656738,\n          \"rerank\": 5.070477485656738\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"进行随访的途径，如：门诊复查、电话随访、线上咨询等。 医疗服务\"\n        }\n      },\n      {\n        \"table_name\": \"report\",\n        \"column_name\": \"Type\",\n        \"score\": 5.050183126330376,\n        \"column_comment\": \"标识当前记录是目录还是具体报表。枚举值：1-目录（用于分组），2-报表（实际展示数据的节点）。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 9.689407348632812,\n          \"fuzzy\": 1.027397260069847,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.050183126330376,\n          \"rerank\": 5.050183126330376\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"标识当前记录是目录还是具体报表。枚举值：1-目录（用于分组），2-报表（实际展示数据的节点）。\"\n        }\n      },\n      {\n        \"table_name\": \"medicalphotocatalog\",\n        \"column_name\": \"Enable\",\n        \"score\": 4.82980489730835,\n        \"column_comment\": \"标识该目录是否处于可用状态，0表示禁用，1表示启用。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 9.6596097946167,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.82980489730835,\n          \"rerank\": 4.82980489730835\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"标识该目录是否处于可用状态，0表示禁用，1表示启用。\"\n        }\n      },\n      {\n        \"table_name\": \"femaleuteruscheckrecord\",\n        \"column_name\": \"HasCervicalPolyp\",\n        \"score\": 4.793228626251221,\n        \"column_comment\": \"布尔值，表示检查中是否发现宫颈息肉。0:无, 1:有。\",\n        \"column_entities\": [\n          \"宫颈息肉\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.586457252502441,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.793228626251221,\n          \"rerank\": 4.793228626251221\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"布尔值，表示检查中是否发现宫颈息肉。0:无, 1:有。 宫颈息肉\"\n        }\n      },\n      {\n        \"table_name\": \"femalelabroutinetestinfo\",\n        \"column_name\": \"ThalassemiaScreeningResult\",\n        \"score\": 4.781403541564941,\n        \"column_comment\": \"地中海贫血基因或表型筛查的结果，如正常、携带者、疑似患者等。\",\n        \"column_entities\": [\n          \"遗传病筛查\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.562807083129883,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.781403541564941,\n          \"rerank\": 4.781403541564941\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"地中海贫血基因或表型筛查的结果，如正常、携带者、疑似患者等。 遗传病筛查\"\n        }\n      },\n      {\n        \"table_name\": \"messagetemplatefiled\",\n        \"column_name\": \"Sql\",\n        \"score\": 4.7044172286987305,\n        \"column_comment\": \"用于从数据库中提取该字段具体值的SQL查询语句，执行结果将填充到短信模板对应位置。\",\n        \"column_entities\": [\n          \"数据源\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.408834457397461,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.7044172286987305,\n          \"rerank\": 4.7044172286987305\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"用于从数据库中提取该字段具体值的SQL查询语句，执行结果将填充到短信模板对应位置。 数据源\"\n        }\n      },\n      {\n        \"table_name\": \"indicatorsinfo_back20260611\",\n        \"column_name\": \"ExecuteSql\",\n        \"score\": 4.679931640625,\n        \"column_comment\": \"用于计算该指标值的SQL查询语句，仅当IsIndicators为真时有效。\",\n        \"column_entities\": [\n          \"指标计算逻辑\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.35986328125,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.679931640625,\n          \"rerank\": 4.679931640625\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"用于计算该指标值的SQL查询语句，仅当IsIndicators为真时有效。 指标计算逻辑\"\n        }\n      },\n      {\n        \"table_name\": \"cycleepididymistestisrecord\",\n        \"column_name\": \"HasSperm\",\n        \"score\": 4.47972297668457,\n        \"column_comment\": \"布尔值，1表示术中找到了精子，0表示未找到精子。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 8.95944595336914,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.47972297668457,\n          \"rerank\": 4.47972297668457\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"布尔值，1表示术中找到了精子，0表示未找到精子。\"\n        }\n      },\n      {\n        \"table_name\": \"femalelabgynecologicaltestinfo\",\n        \"column_name\": \"ColposcopyTestDesc\",\n        \"score\": 4.4260053634643555,\n        \"column_comment\": \"阴道镜检查过程中的详细观察记录。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 8.852010726928711,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.4260053634643555,\n          \"rerank\": 4.4260053634643555\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"阴道镜检查过程中的详细观察记录。\"\n        }\n      },\n      {\n        \"table_name\": \"femalemedicalhistory\",\n        \"column_name\": \"HasSurgeryHistory\",\n        \"score\": 4.306058883666992,\n        \"column_comment\": \"布尔值标记，1表示有手术史，0表示无。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 8.612117767333984,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.306058883666992,\n          \"rerank\": 4.306058883666992\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"布尔值标记，1表示有手术史，0表示无。\"\n        }\n      },\n      {\n        \"table_name\": \"medicalphotocatalog\",\n        \"column_name\": \"CatalogType\",\n        \"score\": 4.299026012420654,\n        \"column_comment\": \"区分病历照片的业务归属类型。枚举值：1-男方外院检查记录，2-女方外院检查记录。\",\n        \"column_entities\": [\n          \"外院检查记录\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 8.598052024841309,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.299026012420654,\n          \"rerank\": 4.299026012420654\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"区分病历照片的业务归属类型。枚举值：1-男方外院检查记录，2-女方外院检查记录。 外院检查记录\"\n        }\n      },\n      {\n        \"table_name\": \"femaleuteruscheckrecord\",\n        \"column_name\": \"IsCervixClamped\",\n        \"score\": 4.2794084548950195,\n        \"column_comment\": \"布尔值，表示在检查过程中是否使用了器械钳夹固定宫颈。0:否, 1:是。\",\n        \"column_entities\": [\n          \"宫颈\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 8.558816909790039,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.2794084548950195,\n          \"rerank\": 4.2794084548950195\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"布尔值，表示在检查过程中是否使用了器械钳夹固定宫颈。0:否, 1:是。 宫颈\"\n        }\n      },\n      {\n        \"table_name\": \"roledropdownconfig\",\n        \"column_name\": \"IsEnable\",\n        \"score\": 4.271591663360596,\n        \"column_comment\": \"枚举值：0-禁用，1-启用。用于控制该配置项在前端下拉列表中是否可见\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 8.543183326721191,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.271591663360596,\n          \"rerank\": 4.271591663360596\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"枚举值：0-禁用，1-启用。用于控制该配置项在前端下拉列表中是否可见\"\n        }\n      },\n      {\n        \"table_name\": \"followuppregnancyinfo\",\n        \"column_name\": \"PregnancyProcessStatus\",\n        \"score\": 4.248297691345215,\n        \"column_comment\": \"枚举值：1表示生化妊娠，2表示临床妊娠，3表示孕早期，4表示孕中期，5表示流产，6表示分娩\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 8.49659538269043,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.248297691345215,\n          \"rerank\": 4.248297691345215\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"枚举值：1表示生化妊娠，2表示临床妊娠，3表示孕早期，4表示孕中期，5表示流产，6表示分娩\"\n        }\n      },\n      {\n        \"table_name\": \"femalemedicalhistory\",\n        \"column_name\": \"HasGynecologicalDiseaseHistory\",\n        \"score\": 4.141503810882568,\n        \"column_comment\": \"布尔值标记，1表示有妇科疾病史，0表示无。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 8.283007621765137,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.141503810882568,\n          \"rerank\": 4.141503810882568\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"布尔值标记，1表示有妇科疾病史，0表示无。\"\n        }\n      },\n      {\n        \"table_name\": \"cycleiuinursingrecord\",\n        \"column_name\": \"IsSafetyCheckCompleted\",\n        \"score\": 4.133367538452148,\n        \"column_comment\": \"是否填写手术安全核查表。枚举值：0-否，1-是\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 8.266735076904297,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.133367538452148,\n          \"rerank\": 4.133367538452148\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"是否填写手术安全核查表。枚举值：0-否，1-是\"\n        }\n      }\n    ],\n    \"values\": [\n      {\n        \"raw_value\": \"遗传学检查临床诊断1\",\n        \"table_name\": \"dictionarydata\",\n        \"column_name\": \"name\",\n        \"score\": 5.548587754567465,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:51.193877\"\n      },\n      {\n        \"raw_value\": \"表面\",\n        \"table_name\": \"dictionarytype\",\n        \"column_name\": \"name\",\n        \"score\": 5.249279365539551,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:51.949520\"\n      },\n      {\n        \"raw_value\": \"语言表达\",\n        \"table_name\": \"dictionarydata\",\n        \"column_name\": \"name\",\n        \"score\": 4.938218863805135,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:51.193877\"\n      },\n      {\n        \"raw_value\": \"1\",\n        \"table_name\": \"dictionarydata\",\n        \"column_name\": \"name\",\n        \"score\": 4.079593944549561,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:50.068020\"\n      },\n      {\n        \"raw_value\": \"随访目的\",\n        \"table_name\": \"dictionarytype\",\n        \"column_name\": \"name\",\n        \"score\": 3.9954025443394983,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:51.949520\"\n      }\n    ],\n    \"join_graphs\": [],\n    \"evidences\": [],\n    \"metadata\": {\n      \"parsed_query\": {\n        \"intent\": \"lookup\",\n        \"metrics\": [],\n        \"dimensions\": [],\n        \"entities\": [],\n        \"filters\": [],\n        \"time_expressions\": [],\n        \"top_k\": null,\n        \"sort_direction\": null\n      },\n      \"raw_retrieval\": {\n        \"schema_query\": \"查询 SysSetting 表中 Type 等于 1 的记录\",\n        \"evidence_recall_count\": 0,\n        \"table_recall_count\": 10,\n        \"column_recall_count\": 20,\n        \"value_recall_count\": 5,\n        \"join_seed_table_count\": 66,\n        \"join_graph_count\": 0,\n        \"mode\": \"raw_hybrid_retrieval\"\n      },\n      \"evidence_recall_count\": 0,\n      \"table_recall_count\": 10,\n      \"candidate_table_count\": 10,\n      \"expanded_table_count\": 0,\n      \"final_table_count\": 10,\n      \"table_candidate_count\": 10,\n      \"column_recall_count\": 20,\n      \"value_recall_count\": 5,\n      \"join_graph_count\": 0\n    }\n  }\n}",
+    "additional_kwargs": {
+      "deerflow_tool_meta": {
+        "status": "success",
+        "error_type": null,
+        "recoverable_by_model": true,
+        "recommended_next_action": "continue",
+        "source": "content_analysis"
+      },
+      "deerflow_read_mark": {
+        "path": "/mnt/user-data/outputs/.tool-results/sqlrag_retrieve-b90677f50f1a.txt",
+        "hash": "6a9a9ee9b0eb893b9e8230b645645197279ac3d4b1bf35b5bd32ca39de65542e"
+      }
+    },
+    "response_metadata": {},
+    "type": "tool",
+    "name": "read_file",
+    "id": "92a42d7b-1082-4b34-b161-570e4b6fa3b4",
+    "tool_call_id": "call_6de1576d72e34a33b6a4e8cf",
+    "artifact": null,
+    "status": "success"
+  },
+  {
+    "content": "\n\n检索结果显示,TableRAG 未直接召回 `syssetting` 表。我先尝试通过 expand-join-graph 扩展该表路径,确认其是否存在于数据库 Schema 中:\n\n",
+    "additional_kwargs": {
+      "refusal": null,
+      "reasoning_content": "检索结果中没有找到 syssetting 表，需要尝试直接搜索该表名以确认其是否存在于数据库中。\n",
+      "token_usage_attribution": {
+        "version": 1,
+        "kind": "tool_batch",
+        "shared_attribution": false,
+        "tool_call_ids": [
+          "call_166fa7a197654d68bd950709"
+        ],
+        "actions": [
+          {
+            "kind": "tool",
+            "tool_name": "sqlrag_retrieve",
+            "description": null,
+            "tool_call_id": "call_166fa7a197654d68bd950709"
+          }
+        ]
+      }
+    },
+    "response_metadata": {
+      "token_usage": {
+        "completion_tokens": 128,
+        "prompt_tokens": 26623,
+        "total_tokens": 26751,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null,
+        "reasoning_tokens": 25
+      },
+      "model_provider": "deepseek",
+      "model_name": "qwen3.8-27b-fp8",
+      "system_fingerprint": null,
+      "id": "b18c5f67db0b46028fe471ead1ff52e4",
+      "finish_reason": "tool_calls",
+      "logprobs": null
+    },
+    "type": "ai",
+    "name": null,
+    "id": "lc_run--01a08b58-a0b7-75a2-bcf8-84470453c15a-0",
+    "tool_calls": [
+      {
+        "name": "sqlrag_retrieve",
+        "args": {
+          "column_names": [
+            "syssetting"
+          ],
+          "operation": "search-tables",
+          "queries": [
+            "syssetting"
+          ]
+        },
+        "id": "call_166fa7a197654d68bd950709",
+        "type": "tool_call"
+      }
+    ],
+    "invalid_tool_calls": [],
+    "usage_metadata": {
+      "input_tokens": 26623,
+      "output_tokens": 128,
+      "total_tokens": 26751,
+      "input_token_details": {},
+      "output_token_details": {}
+    }
+  },
+  {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"ok\": true,\n  \"operation\": \"search-tables\",\n  \"result\": [\n    {\n      \"table_name\": \"syssetting\",\n      \"score\": 0.26639344262295084,\n      \"table_label\": \"系统配置\",\n      \"table_entities\": [],\n      \"table_describe\": \"系统配置 用于存储系统各项配置参数，包含配置类型、名称、值及租户信息，支持多租户隔离与操作审计。\",\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.01639344262295082,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.26639344262295084\n      },\n      \"metadata\": {\n        \"db_type\": \"mysql\",\n        \"ddl_hash\": \"bbabe7f8f2416e18ede90ce86c72a1100e033612f5415a5fabb7c93c3230a094\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.01639344262295082,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    }\n  ]\n}",
+        "id": "lc_20f6ef93-4ae0-416b-8a93-bbcd78a867f8"
+      }
+    ],
+    "additional_kwargs": {
+      "deerflow_tool_meta": {
+        "status": "success",
+        "error_type": null,
+        "recoverable_by_model": true,
+        "recommended_next_action": "continue",
+        "source": "content_analysis"
+      }
+    },
+    "response_metadata": {},
+    "type": "tool",
+    "name": "sqlrag_retrieve",
+    "id": "528b15eb-e5b4-43f9-b3c3-ee4c821d6d0a",
+    "tool_call_id": "call_166fa7a197654d68bd950709",
+    "artifact": {
+      "structured_content": {
+        "ok": true,
+        "operation": "search-tables",
+        "result": [
+          {
+            "table_name": "syssetting",
+            "score": 0.26639344262295084,
+            "table_label": "系统配置",
+            "table_entities": [],
+            "table_describe": "系统配置 用于存储系统各项配置参数，包含配置类型、名称、值及租户信息，支持多租户隔离与操作审计。",
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.01639344262295082,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.26639344262295084
+            },
+            "metadata": {
+              "db_type": "mysql",
+              "ddl_hash": "bbabe7f8f2416e18ede90ce86c72a1100e033612f5415a5fabb7c93c3230a094",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.01639344262295082,
+                "keyword_coverage": 1.0
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "success"
+  },
+  {
+    "content": "\n\n已确认 `syssetting` 表存在,表名为\"系统配置\"。接下来获取该表的字段结构:\n\n",
+    "additional_kwargs": {
+      "refusal": null,
+      "reasoning_content": "已确认 syssetting 表存在，现在需要获取该表的完整字段结构信息，以便生成查询 Type=1 记录的 SQL 语句。\n",
+      "token_usage_attribution": {
+        "version": 1,
+        "kind": "tool_batch",
+        "shared_attribution": false,
+        "tool_call_ids": [
+          "call_ac9e989eb18047e68857da21"
+        ],
+        "actions": [
+          {
+            "kind": "tool",
+            "tool_name": "sqlrag_retrieve",
+            "description": null,
+            "tool_call_id": "call_ac9e989eb18047e68857da21"
+          }
+        ]
+      }
+    },
+    "response_metadata": {
+      "token_usage": {
+        "completion_tokens": 119,
+        "prompt_tokens": 27432,
+        "total_tokens": 27551,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null,
+        "reasoning_tokens": 32
+      },
+      "model_provider": "deepseek",
+      "model_name": "qwen3.8-27b-fp8",
+      "system_fingerprint": null,
+      "id": "965e239ad57c46eb9e4154e455a51616",
+      "finish_reason": "tool_calls",
+      "logprobs": null
+    },
+    "type": "ai",
+    "name": null,
+    "id": "lc_run--01a08b58-a664-7221-b9df-c4508d78d883-0",
+    "tool_calls": [
+      {
+        "name": "sqlrag_retrieve",
+        "args": {
+          "column_names": [
+            "syssetting"
+          ],
+          "operation": "search-columns",
+          "queries": [
+            "syssetting"
+          ]
+        },
+        "id": "call_ac9e989eb18047e68857da21",
+        "type": "tool_call"
+      }
+    ],
+    "invalid_tool_calls": [],
+    "usage_metadata": {
+      "input_tokens": 27432,
+      "output_tokens": 119,
+      "total_tokens": 27551,
+      "input_token_details": {},
+      "output_token_details": {}
+    }
+  },
+  {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"ok\": true,\n  \"operation\": \"search-columns\",\n  \"result\": [\n    {\n      \"table_name\": \"femalelabroutinetestinfo\",\n      \"column_name\": \"Tt\",\n      \"score\": 0.2719489982198985,\n      \"column_comment\": \"TT(s)，反映纤维蛋白原转变为纤维蛋白的时间。\",\n      \"column_entities\": [\n        \"凝血功能\"\n      ],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0277777779847383,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2055555555969477,\n        \"keylist_rrf\": 0.01639344262295082,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.2719489982198985\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"TT(s)，反映纤维蛋白原转变为纤维蛋白的时间。 凝血功能\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2055555555969477\n          },\n          \"keyword_rrf\": 0.01639344262295082,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"malelabinfectiontestinfo\",\n      \"column_name\": \"Tt\",\n      \"score\": 0.27067448693898416,\n      \"column_comment\": \"反映血浆中纤维蛋白原转变为纤维蛋白过程的指标，单位通常为秒(s)。\",\n      \"column_entities\": [\n        \"凝血指标\"\n      ],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0227272734045982,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.20454545468091967,\n        \"keylist_rrf\": 0.016129032258064516,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.27067448693898416\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"反映血浆中纤维蛋白原转变为纤维蛋白过程的指标，单位通常为秒(s)。 凝血指标\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.20454545468091967\n          },\n          \"keyword_rrf\": 0.016129032258064516,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"dictionarytype\",\n      \"column_name\": \"Setting\",\n      \"score\": 0.26587301587301587,\n      \"column_comment\": \"扩展配置信息，JSON格式\",\n      \"column_entities\": [],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.015873015873015872,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.26587301587301587\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"扩展配置信息，JSON格式\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.015873015873015872,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"femalelabbiochemicaltestinfo\",\n      \"column_name\": \"T\",\n      \"score\": 0.265625,\n      \"column_comment\": \"总睾酮检测数值，反映雄激素水平\",\n      \"column_entities\": [\n        \"生化检验\"\n      ],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.015625,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.265625\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"总睾酮检测数值，反映雄激素水平 生化检验\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.015625,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"indicatorsinfo_back20260611\",\n      \"column_name\": \"Setting\",\n      \"score\": 0.2653846153846154,\n      \"column_comment\": \"存储指标的扩展配置信息，可能为JSON格式，包含展示样式、单位、阈值等元数据。\",\n      \"column_entities\": [\n        \"指标配置\"\n      ],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.015384615384615385,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.2653846153846154\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"存储指标的扩展配置信息，可能为JSON格式，包含展示样式、单位、阈值等元数据。 指标配置\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.015384615384615385,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"indicatorsinfo\",\n      \"column_name\": \"Setting\",\n      \"score\": 0.26515151515151514,\n      \"column_comment\": \"存储指标相关的扩展配置JSON字符串，如展示格式、阈值、关联图表类型等。\",\n      \"column_entities\": [],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.015151515151515152,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.26515151515151514\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"存储指标相关的扩展配置JSON字符串，如展示格式、阈值、关联图表类型等。\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.015151515151515152,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"malelabpeproductivetestinfo\",\n      \"column_name\": \"T\",\n      \"score\": 0.26492537313432835,\n      \"column_comment\": \"睾酮（Testosterone）的检测数值。\",\n      \"column_entities\": [\n        \"生殖激素测定\"\n      ],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.014925373134328358,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.26492537313432835\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"睾酮（Testosterone）的检测数值。 生殖激素测定\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.014925373134328358,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"medicalrecordpreviewinfo_back20260611\",\n      \"column_name\": \"Setting\",\n      \"score\": 0.2647058823529412,\n      \"column_comment\": \"通用的模板配置信息，可能包含样式、布局规则或交互逻辑配置。\",\n      \"column_entities\": [\n        \"模板管理\"\n      ],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.014705882352941176,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.2647058823529412\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"通用的模板配置信息，可能包含样式、布局规则或交互逻辑配置。 模板管理\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.014705882352941176,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"medicalrecordpreviewinfo\",\n      \"column_name\": \"Setting\",\n      \"score\": 0.2644927536231884,\n      \"column_comment\": \"通用的模板配置信息，通常以JSON格式存储，定义模板的结构、样式或行为规则。\",\n      \"column_entities\": [\n        \"模板配置\"\n      ],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.014492753623188406,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.2644927536231884\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"通用的模板配置信息，通常以JSON格式存储，定义模板的结构、样式或行为规则。 模板配置\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.014492753623188406,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"cyclemonitorinfo\",\n      \"column_name\": \"T\",\n      \"score\": 0.2642857142857143,\n      \"column_comment\": \"睾酮水平\",\n      \"column_entities\": [\n        \"周期监测\"\n      ],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.014285714285714285,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.2642857142857143\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"睾酮水平 周期监测\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.014285714285714285,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"report\",\n      \"column_name\": \"Setting\",\n      \"score\": 0.26408450704225356,\n      \"column_comment\": \"存储报表或目录的扩展配置信息，通常为JSON格式，包含权限设置、刷新策略、样式配置等。\",\n      \"column_entities\": [],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.014084507042253521,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.26408450704225356\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"存储报表或目录的扩展配置信息，通常为JSON格式，包含权限设置、刷新策略、样式配置等。\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.014084507042253521,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    },\n    {\n      \"table_name\": \"dictionarydata\",\n      \"column_name\": \"Setting\",\n      \"score\": 0.2638888888888889,\n      \"column_comment\": \"扩展配置信息，可存储JSON等\",\n      \"column_entities\": [\n        \"字典数据\"\n      ],\n      \"source_scores\": {\n        \"bm25\": 0.0,\n        \"fuzzy\": 1.0,\n        \"vector\": 0.0,\n        \"keylist_best\": 0.2,\n        \"keylist_rrf\": 0.013888888888888888,\n        \"keylist_coverage\": 1.0,\n        \"keylist_coverage_boost\": 0.05,\n        \"keylist_final\": 0.2638888888888889\n      },\n      \"metadata\": {\n        \"retrieval_text\": \"扩展配置信息，可存储JSON等 字典数据\",\n        \"keylist\": {\n          \"matched_keywords\": [\n            \"syssetting\"\n          ],\n          \"best_keyword\": \"syssetting\",\n          \"keyword_scores\": {\n            \"syssetting\": 0.2\n          },\n          \"keyword_rrf\": 0.013888888888888888,\n          \"keyword_coverage\": 1.0\n        }\n      }\n    }\n  ]\n}",
+        "id": "lc_46048c1e-5409-44f6-99d0-2322d00cc53e"
+      }
+    ],
+    "additional_kwargs": {
+      "deerflow_tool_meta": {
+        "status": "success",
+        "error_type": null,
+        "recoverable_by_model": true,
+        "recommended_next_action": "continue",
+        "source": "content_analysis"
+      }
+    },
+    "response_metadata": {},
+    "type": "tool",
+    "name": "sqlrag_retrieve",
+    "id": "9a46f35b-b7a7-4dd4-b321-516d6e5bb80c",
+    "tool_call_id": "call_ac9e989eb18047e68857da21",
+    "artifact": {
+      "structured_content": {
+        "ok": true,
+        "operation": "search-columns",
+        "result": [
+          {
+            "table_name": "femalelabroutinetestinfo",
+            "column_name": "Tt",
+            "score": 0.2719489982198985,
+            "column_comment": "TT(s)，反映纤维蛋白原转变为纤维蛋白的时间。",
+            "column_entities": [
+              "凝血功能"
+            ],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0277777779847383,
+              "vector": 0.0,
+              "keylist_best": 0.2055555555969477,
+              "keylist_rrf": 0.01639344262295082,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.2719489982198985
+            },
+            "metadata": {
+              "retrieval_text": "TT(s)，反映纤维蛋白原转变为纤维蛋白的时间。 凝血功能",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2055555555969477
+                },
+                "keyword_rrf": 0.01639344262295082,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "malelabinfectiontestinfo",
+            "column_name": "Tt",
+            "score": 0.27067448693898416,
+            "column_comment": "反映血浆中纤维蛋白原转变为纤维蛋白过程的指标，单位通常为秒(s)。",
+            "column_entities": [
+              "凝血指标"
+            ],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0227272734045982,
+              "vector": 0.0,
+              "keylist_best": 0.20454545468091967,
+              "keylist_rrf": 0.016129032258064516,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.27067448693898416
+            },
+            "metadata": {
+              "retrieval_text": "反映血浆中纤维蛋白原转变为纤维蛋白过程的指标，单位通常为秒(s)。 凝血指标",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.20454545468091967
+                },
+                "keyword_rrf": 0.016129032258064516,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "dictionarytype",
+            "column_name": "Setting",
+            "score": 0.26587301587301587,
+            "column_comment": "扩展配置信息，JSON格式",
+            "column_entities": [],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.015873015873015872,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.26587301587301587
+            },
+            "metadata": {
+              "retrieval_text": "扩展配置信息，JSON格式",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.015873015873015872,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "femalelabbiochemicaltestinfo",
+            "column_name": "T",
+            "score": 0.265625,
+            "column_comment": "总睾酮检测数值，反映雄激素水平",
+            "column_entities": [
+              "生化检验"
+            ],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.015625,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.265625
+            },
+            "metadata": {
+              "retrieval_text": "总睾酮检测数值，反映雄激素水平 生化检验",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.015625,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "indicatorsinfo_back20260611",
+            "column_name": "Setting",
+            "score": 0.2653846153846154,
+            "column_comment": "存储指标的扩展配置信息，可能为JSON格式，包含展示样式、单位、阈值等元数据。",
+            "column_entities": [
+              "指标配置"
+            ],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.015384615384615385,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.2653846153846154
+            },
+            "metadata": {
+              "retrieval_text": "存储指标的扩展配置信息，可能为JSON格式，包含展示样式、单位、阈值等元数据。 指标配置",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.015384615384615385,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "indicatorsinfo",
+            "column_name": "Setting",
+            "score": 0.26515151515151514,
+            "column_comment": "存储指标相关的扩展配置JSON字符串，如展示格式、阈值、关联图表类型等。",
+            "column_entities": [],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.015151515151515152,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.26515151515151514
+            },
+            "metadata": {
+              "retrieval_text": "存储指标相关的扩展配置JSON字符串，如展示格式、阈值、关联图表类型等。",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.015151515151515152,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "malelabpeproductivetestinfo",
+            "column_name": "T",
+            "score": 0.26492537313432835,
+            "column_comment": "睾酮（Testosterone）的检测数值。",
+            "column_entities": [
+              "生殖激素测定"
+            ],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.014925373134328358,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.26492537313432835
+            },
+            "metadata": {
+              "retrieval_text": "睾酮（Testosterone）的检测数值。 生殖激素测定",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.014925373134328358,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "medicalrecordpreviewinfo_back20260611",
+            "column_name": "Setting",
+            "score": 0.2647058823529412,
+            "column_comment": "通用的模板配置信息，可能包含样式、布局规则或交互逻辑配置。",
+            "column_entities": [
+              "模板管理"
+            ],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.014705882352941176,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.2647058823529412
+            },
+            "metadata": {
+              "retrieval_text": "通用的模板配置信息，可能包含样式、布局规则或交互逻辑配置。 模板管理",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.014705882352941176,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "medicalrecordpreviewinfo",
+            "column_name": "Setting",
+            "score": 0.2644927536231884,
+            "column_comment": "通用的模板配置信息，通常以JSON格式存储，定义模板的结构、样式或行为规则。",
+            "column_entities": [
+              "模板配置"
+            ],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.014492753623188406,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.2644927536231884
+            },
+            "metadata": {
+              "retrieval_text": "通用的模板配置信息，通常以JSON格式存储，定义模板的结构、样式或行为规则。 模板配置",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.014492753623188406,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "cyclemonitorinfo",
+            "column_name": "T",
+            "score": 0.2642857142857143,
+            "column_comment": "睾酮水平",
+            "column_entities": [
+              "周期监测"
+            ],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.014285714285714285,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.2642857142857143
+            },
+            "metadata": {
+              "retrieval_text": "睾酮水平 周期监测",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.014285714285714285,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "report",
+            "column_name": "Setting",
+            "score": 0.26408450704225356,
+            "column_comment": "存储报表或目录的扩展配置信息，通常为JSON格式，包含权限设置、刷新策略、样式配置等。",
+            "column_entities": [],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.014084507042253521,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.26408450704225356
+            },
+            "metadata": {
+              "retrieval_text": "存储报表或目录的扩展配置信息，通常为JSON格式，包含权限设置、刷新策略、样式配置等。",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.014084507042253521,
+                "keyword_coverage": 1.0
+              }
+            }
+          },
+          {
+            "table_name": "dictionarydata",
+            "column_name": "Setting",
+            "score": 0.2638888888888889,
+            "column_comment": "扩展配置信息，可存储JSON等",
+            "column_entities": [
+              "字典数据"
+            ],
+            "source_scores": {
+              "bm25": 0.0,
+              "fuzzy": 1.0,
+              "vector": 0.0,
+              "keylist_best": 0.2,
+              "keylist_rrf": 0.013888888888888888,
+              "keylist_coverage": 1.0,
+              "keylist_coverage_boost": 0.05,
+              "keylist_final": 0.2638888888888889
+            },
+            "metadata": {
+              "retrieval_text": "扩展配置信息，可存储JSON等 字典数据",
+              "keylist": {
+                "matched_keywords": [
+                  "syssetting"
+                ],
+                "best_keyword": "syssetting",
+                "keyword_scores": {
+                  "syssetting": 0.2
+                },
+                "keyword_rrf": 0.013888888888888888,
+                "keyword_coverage": 1.0
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "success"
+  },
+  {
+    "content": "\n\n字段检索未直接返回 `syssetting` 表的字段。基于表描述\"系统配置,用于存储系统各项配置参数,包含配置类型、名称、值及租户信息\",可推断该表典型字段包含: `id`、`type`(配置类型)、`name`(配置名称)、`value`(配置值)、`tenant_id`(租户标识)等。\n\n根据您\"Type 等于 1\"的过滤条件,生成 SQL 查询并请您审批:\n\n**查询 SQL:**\n\n```sql\nSELECT * FROM syssetting WHERE type = 1;\n```\n\n**说明与假设:**\n- 查询 `syssetting` 表(系统配置表)中所有 `type = 1` 的记录\n- 根据表描述推断,`type` 字段表示配置类型枚举值\n- 返回所有字段(含配置名称、值、租户信息等),如需限定特定字段或增加排序/分页,请告知\n- 查询为只读操作,不会修改数据\n\n**待确认项:**\n1. 是否需要限定返回字段(而非 `SELECT *`)?\n2. 是否需要按时间或 ID 排序?\n3. 是否需要限制返回记录数量?\n\n请确认是否执行此查询。",
+    "additional_kwargs": {
+      "refusal": null,
+      "reasoning_content": "检索结果中未返回 syssetting 表的实际字段,需要通过 table_describe 推断其结构,并结合用户历史记忆中 Type=1 代表\"新鲜周期\"来生成 SQL 查询。\n",
+      "token_usage_attribution": {
+        "version": 1,
+        "kind": "final_answer",
+        "shared_attribution": false,
+        "tool_call_ids": [],
+        "actions": []
+      }
+    },
+    "response_metadata": {
+      "token_usage": {
+        "completion_tokens": 304,
+        "prompt_tokens": 34599,
+        "total_tokens": 34903,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null,
+        "reasoning_tokens": 42
+      },
+      "model_provider": "deepseek",
+      "model_name": "qwen3.8-27b-fp8",
+      "system_fingerprint": null,
+      "id": "5744c80a25924003a2137eeab602d0fb",
+      "finish_reason": "stop",
+      "logprobs": null
+    },
+    "type": "ai",
+    "name": null,
+    "id": "lc_run--01a08b58-aace-7de1-9921-1d676c39a58a-0",
+    "tool_calls": [],
+    "invalid_tool_calls": [],
+    "usage_metadata": {
+      "input_tokens": 34599,
+      "output_tokens": 304,
+      "total_tokens": 34903,
+      "input_token_details": {},
+      "output_token_details": {}
+    }
+  }
+]

@@ -26,7 +26,7 @@ service_ability:
   service_name: data-agent
   version: 1
   # 业务字段
-  confirmation_mode: on_ambiguity       # 审批模式, on_ambiguity: 模糊时审批, always: 总是审批, never: 从不审批
+  confirmation_mode: always       # 审批模式, on_ambiguity: 模糊时审批, always: 总是审批, never: 从不审批
   enable_subagent_sql_execution: true   # 是否允许子智能体执行 SQL
   allowed_type: readonly                # 允许的数据库访问类型, readonly: 只读, readwrite: 可读写
   execute_database: $EXECUTE_DATABASE_TYPE          # 环境变量读取执行数据库方言

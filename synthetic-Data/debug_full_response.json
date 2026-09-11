@@ -1,0 +1,1246 @@
+{
+  "messages": [
+    {
+      "content": "<system-reminder>\n<current_date>2026-09-10, Thursday</current_date>\n</system-reminder>",
+      "additional_kwargs": {
+        "hide_from_ui": true,
+        "dynamic_context_reminder": true,
+        "reminder_date": "2026-09-10, Thursday"
+      },
+      "response_metadata": {},
+      "type": "system",
+      "name": null,
+      "id": "5b4ae9b5-5626-42f6-82f1-e01c4dbc4b4c"
+    },
+    {
+      "content": "<memory>\nUser Context:\n- Work: 工作重心已转向利用 HTML 结合浏览器自动化生成演示文稿，HTML 版本已生成完毕。当前受限于执行环境的虚拟环境隔离与网络限制，无法自动运行无头浏览器，正等待用户手动下载文件并在浏览器中查看效果。\n- Personal: 使用中文沟通，偏好直接、精确的指令执行。强调“实事求是”，对输出质量有较高要求，效果不佳时会直接指出并要求更换技术方案。\n- Current Focus: 人工智能领域 10 条核心摘要及 HTML 演示文稿已交付。当前工作流维持多线程并行：持续推进系统架构与技术文档撰写（涵盖网关路由、Redis Cluster 缓存一致性），深入探索 `llm_wiki` 项目的增量式知识库构建模式（对比传统 RAG 的持久化 Wiki 维护架构），同步开展多平台电商产品评论生成任务（已覆盖 Sony 耳机、西昊椅子、冲锋衣、面膜及坚果等品类，采用专业、性价比、真实体验、吐槽及幽默等多种风格），并保持对 AI 行业生态动态与自动化落地方案的持续跟踪。\n\nHistory:\n- Recent: 近期工作聚焦于临床生殖医学数据评估与演示文稿自动化生成。在 python-pptx 视觉效果未达预期后，切换至 HTML 结合浏览器自动化方案并交付。同期响应行业研究需求，完成 10 条人工智能领域核心摘要的梳理，系统覆盖自主智能体演进、边缘计算部署、AI 风险管理及端侧 AI 部署等前沿动态。当前同步启动系统架构技术文档撰写任务，要求输出涵盖网关路由、数据持久层与缓存一致性的专业内容，并扩展至多平台电商产品评论的内容生成实践。近期新增对 `llm_wiki` 项目的调研，重点关注 LLM 驱动的个人知识库构建与增量式 Wiki 维护架构，形成技术架构输出、AI 产业研究与内容创作并行的工作节奏。\n- Earlier: User initiated testing of AI agent framework capabilities, focusing on identity and file generation workflows. Language preference established as Chinese. Early interactions established a pattern of adapting to environmental constraints by shifting to simulated workflows, ensuring task progress even when technical limitations were present.\n- Background: Foundational context is centered on evaluating AI agent frameworks and automated content generation pipelines. Current focus is on establishing baseline capabilities, understanding user expectations for AI-assisted structuring, and tracking the evolution of technical exploration preferences over time.\n\nFacts:\n- [correction | 0.95] 明确纠正：sql-subagent 具备实际 SQL 执行能力，但必须严格遵循“先生成校验、后提交意图审批、获批准再执行”的标准工作流，代理不得跳过审批环节。\n- [context | 0.95] 正在执行“原发继发比例-新鲜周期统计”数据分析项目，专门提取 SysSetting 表（Type=1）的配置数据，查询日期区间严格限定为 2023-06-01 至 2024-05-31。\n- [other | 0.95] 在用户的Agent工作流中，sql-subagent执行查询必须依赖包含snapshot_id、data_source_id和executable_sql的完整JSON信封，否则底层校验拦截并返回空结果。\n- [preference | 0.95] 明确禁止 AI 自主发挥，要求严格委托专业化子代理（如 sql-subagent）执行具体任务，强调实事求是与指令遵从。\n- [preference | 0.90] 用户已验证直接调用后端路由执行 SQL 可稳定获取目标数据，将其作为 sql-subagent 配置异常时的备用执行方案。\n- [other | 0.90] postgres_query 工具当前存在路由或解析配置缺陷，基础查询（如 SELECT 1+1）均返回 MCP 语法错误 syntax error, unexpected IDENTIFIER, expecting SELECT, 0，表明阻塞源于工具路由或环境配置而非 SQL 逻辑错误。\n- [other | 0.90] 已确认 sqltable_rag 工具为项目核心检索手段，支持 hybrid-search 及多模态（证据/表/字段/值）检索，用于统一 TableRAG 数据提取。\n- [other | 0.80] User engages in data analysis and statistical projects requiring precise date-range filtering and multi-database SQL querying (MySQL and PostgreSQL).\n- [preference | 0.80] Prefers using sub-agents to execute SQL queries.\n</memory>",
+      "additional_kwargs": {
+        "hide_from_ui": true,
+        "dynamic_context_reminder": true
+      },
+      "response_metadata": {},
+      "type": "human",
+      "name": null,
+      "id": "5b4ae9b5-5626-42f6-82f1-e01c4dbc4b4c__memory"
+    },
+    {
+      "content": "查询 syssetting 表中 Type=1 的配置",
+      "additional_kwargs": {
+        "run_id": "6535dcbc-6726-4201-aff9-7ebde7a5db35",
+        "timestamp": "2026-09-10T12:10:37.500511+00:00"
+      },
+      "response_metadata": {},
+      "type": "human",
+      "name": "user-input",
+      "id": "5b4ae9b5-5626-42f6-82f1-e01c4dbc4b4c__user"
+    },
+    {
+      "content": "\n\n",
+      "additional_kwargs": {
+        "refusal": null,
+        "reasoning_content": "用户查询 syssetting 表中 Type=1 的配置，我需要使用 entity_extract_tool 来识别查询意图并生成后续检索和澄清提示。这是一个简单的数据查询请求，需要查询特定表的配置数据。\n让我先调用实体抽取工具来分析这个查询。\n",
+        "token_usage_attribution": {
+          "version": 1,
+          "kind": "tool_batch",
+          "shared_attribution": false,
+          "tool_call_ids": [
+            "call_e4962476d08c47bb9baa4140"
+          ],
+          "actions": [
+            {
+              "kind": "tool",
+              "tool_name": "entity_extract_tool",
+              "description": null,
+              "tool_call_id": "call_e4962476d08c47bb9baa4140"
+            }
+          ]
+        }
+      },
+      "response_metadata": {
+        "token_usage": {
+          "completion_tokens": 73,
+          "prompt_tokens": 14179,
+          "total_tokens": 14252,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 56
+        },
+        "model_provider": "deepseek",
+        "model_name": "qwen3.8-27b-fp8",
+        "system_fingerprint": null,
+        "id": "cf9233b273984ca1966adba9d308de85",
+        "finish_reason": "tool_calls",
+        "logprobs": null
+      },
+      "type": "ai",
+      "name": null,
+      "id": "lc_run--01a08b3a-2079-7560-981c-f59700e7a4b5-0",
+      "tool_calls": [
+        {
+          "name": "entity_extract_tool",
+          "args": {},
+          "id": "call_e4962476d08c47bb9baa4140",
+          "type": "tool_call"
+        }
+      ],
+      "invalid_tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 14179,
+        "output_tokens": 73,
+        "total_tokens": 14252,
+        "input_token_details": {},
+        "output_token_details": {}
+      }
+    },
+    {
+      "content": "{\"ok\": true, \"query_context\": {\"original_query\": \"查询 syssetting 表中 Type=1 的配置\", \"normalized_query\": \"查询 syssetting 表中 Type=1 的配置\", \"intent\": \"text2sql\", \"aliases\": [], \"entities\": [{\"label\": \"表名\", \"value\": \"syssetting\"}, {\"label\": \"过滤\", \"value\": \"Type=1\"}, {\"label\": \"关键词\", \"value\": \"配置\"}], \"labels\": [{\"label\": \"意图\", \"value\": \"text2sql\"}, {\"label\": \"表名\", \"value\": \"syssetting\"}, {\"label\": \"过滤\", \"value\": \"Type=1\"}, {\"label\": \"关键词\", \"value\": \"配置\"}], \"warnings\": []}}",
+      "additional_kwargs": {},
+      "response_metadata": {},
+      "type": "tool",
+      "name": "entity_extract_tool",
+      "id": "805cde8a-6413-499e-9f43-de4f1f3809c4",
+      "tool_call_id": "call_e4962476d08c47bb9baa4140",
+      "artifact": {
+        "original_query": "查询 syssetting 表中 Type=1 的配置",
+        "normalized_query": "查询 syssetting 表中 Type=1 的配置",
+        "intent": "text2sql",
+        "aliases": [],
+        "entities": [
+          {
+            "label": "表名",
+            "value": "syssetting"
+          },
+          {
+            "label": "过滤",
+            "value": "Type=1"
+          },
+          {
+            "label": "关键词",
+            "value": "配置"
+          }
+        ],
+        "labels": [
+          {
+            "label": "意图",
+            "value": "text2sql"
+          },
+          {
+            "label": "表名",
+            "value": "syssetting"
+          },
+          {
+            "label": "过滤",
+            "value": "Type=1"
+          },
+          {
+            "label": "关键词",
+            "value": "配置"
+          }
+        ],
+        "warnings": []
+      },
+      "status": "success"
+    },
+    {
+      "content": "\n\n正在检索数据库表结构信息...\n\n",
+      "additional_kwargs": {
+        "refusal": null,
+        "reasoning_content": "用户要查询 syssetting 表中 Type=1 的配置数据。根据记忆，之前有类似的数据分析任务，涉及 SysSetting 表（Type=1）的配置数据，查询日期区间限定为 2023-06-01 至 2024-05-31。但这次用户没有指定时间范围，只是简单查询 Type=1 的配置。\n\n我需要使用 sqlrag_retrieve 工具来获取表结构和字段信息，然后再执行查询。让我先搜索这个工具。\n",
+        "token_usage_attribution": {
+          "version": 1,
+          "kind": "tool_batch",
+          "shared_attribution": false,
+          "tool_call_ids": [
+            "call_91ac6c36807343c282881eda"
+          ],
+          "actions": [
+            {
+              "kind": "tool",
+              "tool_name": "tool_search",
+              "description": null,
+              "tool_call_id": "call_91ac6c36807343c282881eda"
+            }
+          ]
+        }
+      },
+      "response_metadata": {
+        "token_usage": {
+          "completion_tokens": 149,
+          "prompt_tokens": 14427,
+          "total_tokens": 14576,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 111
+        },
+        "model_provider": "deepseek",
+        "model_name": "qwen3.8-27b-fp8",
+        "system_fingerprint": null,
+        "id": "e2da9ef3df814b8a9b84c97904829bbe",
+        "finish_reason": "tool_calls",
+        "logprobs": null
+      },
+      "type": "ai",
+      "name": null,
+      "id": "lc_run--01a08b3a-5d59-7ff1-9fe4-20e4caadc5e4-0",
+      "tool_calls": [
+        {
+          "name": "tool_search",
+          "args": {
+            "query": "sqlrag_retrieve"
+          },
+          "id": "call_91ac6c36807343c282881eda",
+          "type": "tool_call"
+        }
+      ],
+      "invalid_tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 14427,
+        "output_tokens": 149,
+        "total_tokens": 14576,
+        "input_token_details": {},
+        "output_token_details": {}
+      }
+    },
+    {
+      "content": "[\n  {\n    \"name\": \"sqlrag_retrieve\",\n    \"description\": \"统一 TableRAG 检索接口。hybrid-search 使用完整 query，执行查询解析、Evidence/表/列/字段值/Join Graph 多路召回、融合、重排序、Join Graph 表补全并组装最终 NL2SQL 上下文。search-evidences、search-tables、search-columns、search-values 必须使用 queries 列表；每个元素是一个独立关键词或短语，服务端会并行执行单关键词 BM25/模糊/向量检索后融合。不能把多个关键词拼成一个元素。expand-join-graph 使用 table_names。\",\n    \"parameters\": {\n      \"properties\": {\n        \"operation\": {\n          \"description\": \"检索方法：hybrid-search=完整问题混合检索；search-evidences/tables/columns/values=对应单路关键词并行检索；expand-join-graph=按候选表扩展关联路径。\",\n          \"enum\": [\n            \"hybrid-search\",\n            \"search-evidences\",\n            \"search-tables\",\n            \"search-columns\",\n            \"search-values\",\n            \"expand-join-graph\"\n          ],\n          \"type\": \"string\",\n          \"default\": \"hybrid-search\"\n        },\n        \"query\": {\n          \"anyOf\": [\n            {\n              \"type\": \"string\"\n            },\n            {\n              \"type\": \"null\"\n            }\n          ],\n          \"default\": null,\n          \"description\": \"仅用于 hybrid-search。填写完整自然语言问题，例如‘查询最近一个月华东区域销售额最高的客户’；不要用于 search-* 的关键词并行检索。\"\n        },\n        \"queries\": {\n          \"anyOf\": [\n            {\n              \"items\": {\n                \"type\": \"string\"\n              },\n              \"maxItems\": 8,\n              \"minItems\": 1,\n              \"type\": \"array\"\n            },\n            {\n              \"type\": \"null\"\n            }\n          ],\n          \"default\": null,\n          \"description\": \"仅用于 search-evidences/search-tables/search-columns/search-values。填写 1-8 个独立关键词或短语；每个元素分别并行执行一次单关键词 BM25/模糊/向量召回，再按 RRF 与关键词覆盖率去重融合。例如 [‘华东区域’, ‘销售额’, ‘客户’]。不要把完整问题或多个关键词合并到一个元素中。\"\n        },\n        \"evidence_top_k\": {\n          \"default\": 5,\n          \"type\": \"integer\"\n        },\n        \"table_top_k\": {\n          \"default\": 10,\n          \"type\": \"integer\"\n        },\n        \"column_top_k\": {\n          \"default\": 20,\n          \"type\": \"integer\"\n        },\n        \"value_top_k\": {\n          \"default\": 5,\n          \"type\": \"integer\"\n        },\n        \"join_max_hops\": {\n          \"default\": 2,\n          \"type\": \"integer\"\n        },\n        \"final_table_top_k\": {\n          \"default\": 10,\n          \"type\": \"integer\"\n        },\n        \"final_column_top_k\": {\n          \"default\": 20,\n          \"type\": \"integer\"\n        },\n        \"table_names\": {\n          \"anyOf\": [\n            {\n              \"items\": {\n                \"type\": \"string\"\n              },\n              \"type\": \"array\"\n            },\n            {\n              \"type\": \"null\"\n            }\n          ],\n          \"default\": null\n        },\n        \"column_names\": {\n          \"anyOf\": [\n            {\n              \"items\": {\n                \"type\": \"string\"\n              },\n              \"type\": \"array\"\n            },\n            {\n              \"type\": \"null\"\n            }\n          ],\n          \"default\": null\n        }\n      },\n      \"type\": \"object\"\n    }\n  }\n]",
+      "additional_kwargs": {},
+      "response_metadata": {},
+      "type": "tool",
+      "name": "tool_search",
+      "id": "b6624713-db9b-419d-82b4-4d9df911d3d0",
+      "tool_call_id": "call_91ac6c36807343c282881eda",
+      "artifact": null,
+      "status": "success"
+    },
+    {
+      "content": "\n\n",
+      "additional_kwargs": {
+        "refusal": null,
+        "reasoning_content": "好的，我现在可以使用 sqlrag_retrieve 工具来检索 syssetting 表的结构信息，然后再查询 Type=1 的配置数据。让我先进行 hybrid-search 获取完整的上下文。\n",
+        "token_usage_attribution": {
+          "version": 1,
+          "kind": "tool_batch",
+          "shared_attribution": false,
+          "tool_call_ids": [
+            "call_2ad87aa5cde549f295925ed6"
+          ],
+          "actions": [
+            {
+              "kind": "tool",
+              "tool_name": "sqlrag_retrieve",
+              "description": null,
+              "tool_call_id": "call_2ad87aa5cde549f295925ed6"
+            }
+          ]
+        }
+      },
+      "response_metadata": {
+        "token_usage": {
+          "completion_tokens": 121,
+          "prompt_tokens": 16151,
+          "total_tokens": 16272,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 40
+        },
+        "model_provider": "deepseek",
+        "model_name": "qwen3.8-27b-fp8",
+        "system_fingerprint": null,
+        "id": "0367b56a04424dfa8b68a3a96bfb64e1",
+        "finish_reason": "tool_calls",
+        "logprobs": null
+      },
+      "type": "ai",
+      "name": null,
+      "id": "lc_run--01a08b3a-6146-7fc3-a153-d034940aea63-0",
+      "tool_calls": [
+        {
+          "name": "sqlrag_retrieve",
+          "args": {
+            "operation": "hybrid-search",
+            "query": "查询 syssetting 表中 Type=1 的配置",
+            "table_top_k": 5,
+            "column_top_k": 20
+          },
+          "id": "call_2ad87aa5cde549f295925ed6",
+          "type": "tool_call"
+        }
+      ],
+      "invalid_tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 16151,
+        "output_tokens": 121,
+        "total_tokens": 16272,
+        "input_token_details": {},
+        "output_token_details": {}
+      }
+    },
+    {
+      "content": "[Full sqlrag_retrieve output saved to /mnt/user-data/outputs/.tool-results/sqlrag_retrieve-af02236b1f32.txt (20450 chars, ~5112 tokens).]\n[Preview kind: json. This is a structured synopsis, not a raw head/tail truncation.]\n\nJSON output:\n- JSON object with 3 top-level keys.\n- Top-level keys: ok, operation, result\n\nStructure:\n- shape: object(keys=3: ok, operation, result)\n- $.result: object keys 7; keys query, tables, columns, values, join_graphs, evidences, metadata\n- $.result.tables: array length 10; first item object\n- $.result.tables[].table_entities: array length 0\n- $.result.tables[].source_scores: object keys 9; keys bm25, fuzzy, vector, column_inferred, entity_overlap, column_backref, value_backref, fusion, rerank\n- $.result.tables[].metadata: object keys 2; keys db_type, ddl_hash\n- $.result.columns: array length 20; first item object\n- $.result.columns[].column_entities: array length 0\n- $.result.columns[].source_scores: object keys 6; keys bm25, fuzzy, vector, entity_overlap, fusion, rerank\n- $.result.columns[].metadata: object keys 1; keys retrieval_text\n- $.result.values: array length 5; first item object\n- $.result.values[].aliases: array length 0\n- $.result.values[].metadata: object keys 0\n- $.result.join_graphs: array length 0\n- $.result.evidences: array length 0\n- $.result.metadata: object keys 11; keys parsed_query, raw_retrieval, evidence_recall_count, table_recall_count, candidate_table_count, expanded_table_count, final_table_count, table_candidate_count, column_recall_count, value_recall_count, join_graph_count\n- $.result.metadata.parsed_query: object keys 8; keys intent, metrics, dimensions, entities, filters, time_expressions, top_k, sort_direction\n- $.result.metadata.parsed_query.metrics: array length 0\n- $.result.metadata.parsed_query.dimensions: array length 0\n- $.result.metadata.parsed_query.entities: array length 0\n- $.result.metadata.parsed_query.filters: array length 0\n- $.result.metadata.parsed_query.time_expressions: array length 0\n- $.result.metadata.raw_retrieval: object keys 8; keys schema_query, evidence_recall_count, table_recall_count, column_recall_count, value_recall_count, join_seed_table_count, join_graph_count, mode\n\nNotable items:\n- $.ok: True\n- $.operation: \"hybrid-search\"\n- $.result.query: \"查询 syssetting 表中 Type=1 的配置\"\n- $.result.metadata.evidence_recall_count: 0\n- $.result.metadata.table_recall_count: 5\n- $.result.metadata.candidate_table_count: 10\n\nRaw sample (head + tail, clipped to head_chars / tail_chars):\n{\n  \"ok\": true,\n  \"operation\": \"hybrid-search\",\n  \"result\": {\n    \"query\": \"查询 syssetting 表中 Type=1 的配置\",\n    \"tables\": [\n      {\n        \"table_name\": \"userpagesetting\",\n        \"score\": 11.313978433609009,\n        \"table_label\": \"用户页面配置\",\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"bm25\": 7.210750579833984,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"column_inferred\": 9.051182746887207,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 2.2627956867218018,\n          \"value_backref\": 0.0,\n          \"fusion\": 11.313978433609009,\n          \"rerank\": 11.313978433609009\n        },\n        \"metadata\": {\n          \"db_type\": \"mysql\",\n          \"ddl_hash\": \"f44c1d0bbbd5b2e398cacf60ccff9bf678e606d45626dc5cfad36421563ed3d9\"\n        }\n      },\n      {\n        \"table_name\": \"roledropdownconfigitem\",\n        \"score\": 9.102341325581074,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 7.281873060464859,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.8204682651162147,\n          \"value_backref\": 0.0,\n          \"fusion\": 9.102341325581074,\n          \"rerank\": 9.102341325581074\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"roledropdownconfig\",\n        \"score\": 8.35709035396576,\n        \"table_label\": \"下拉角色配置\",\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"bm25\": 7.805026054382324,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"column_inferred\": 6.685672283172607,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.6714180707931519,\n          \"value_backref\": 0.0,\n          \"fusion\": 8.35709035396576,\n          \"rerank\": 8.35709035396576\n        },\n        \"metadata\": {\n          \"db_type\": \"mysql\",\n...\n      }\n    ],\n    \"join_graphs\": [],\n    \"evidences\": [],\n    \"metadata\": {\n      \"parsed_query\": {\n        \"intent\": \"lookup\",\n        \"metrics\": [],\n        \"dimensions\": [],\n        \"entities\": [],\n        \"filters\": [],\n        \"time_expressions\": [],\n        \"top_k\": null,\n        \"sort_direction\": null\n      },\n      \"raw_retrieval\": {\n        \"schema_query\": \"查询 syssetting 表中 Type=1 的配置\",\n        \"evidence_recall_count\": 0,\n        \"table_recall_count\": 5,\n        \"column_recall_count\": 20,\n        \"value_recall_count\": 5,\n        \"join_seed_table_count\": 63,\n        \"join_graph_count\": 0,\n        \"mode\": \"raw_hybrid_retrieval\"\n      },\n      \"evidence_recall_count\": 0,\n      \"table_recall_count\": 5,\n      \"candidate_table_count\": 10,\n      \"expanded_table_count\": 0,\n      \"final_table_count\": 10,\n      \"table_candidate_count\": 10,\n      \"column_recall_count\": 20,\n      \"value_recall_count\": 5,\n      \"join_graph_count\": 0\n    }\n  }\n}\n\nAccess:\n- Use read_file on /mnt/user-data/outputs/.tool-results/sqlrag_retrieve-af02236b1f32.txt with start_line and end_line to inspect the raw output.",
+      "additional_kwargs": {
+        "deerflow_tool_meta": {
+          "status": "success",
+          "error_type": null,
+          "recoverable_by_model": true,
+          "recommended_next_action": "continue",
+          "source": "content_analysis"
+        }
+      },
+      "response_metadata": {},
+      "type": "tool",
+      "name": "sqlrag_retrieve",
+      "id": "1089e84b-d085-4dee-8787-947ada8f63f6",
+      "tool_call_id": "call_2ad87aa5cde549f295925ed6",
+      "artifact": {
+        "structured_content": {
+          "ok": true,
+          "operation": "hybrid-search",
+          "result": {
+            "query": "查询 syssetting 表中 Type=1 的配置",
+            "tables": [
+              {
+                "table_name": "userpagesetting",
+                "score": 11.313978433609009,
+                "table_label": "用户页面配置",
+                "table_entities": [],
+                "table_describe": "由字段召回反推",
+                "source_scores": {
+                  "bm25": 7.210750579833984,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "column_inferred": 9.051182746887207,
+                  "entity_overlap": 0.0,
+                  "column_backref": 2.2627956867218018,
+                  "value_backref": 0.0,
+                  "fusion": 11.313978433609009,
+                  "rerank": 11.313978433609009
+                },
+                "metadata": {
+                  "db_type": "mysql",
+                  "ddl_hash": "f44c1d0bbbd5b2e398cacf60ccff9bf678e606d45626dc5cfad36421563ed3d9"
+                }
+              },
+              {
+                "table_name": "roledropdownconfigitem",
+                "score": 9.102341325581074,
+                "table_label": null,
+                "table_entities": [],
+                "table_describe": "由字段召回反推",
+                "source_scores": {
+                  "column_inferred": 7.281873060464859,
+                  "entity_overlap": 0.0,
+                  "column_backref": 1.8204682651162147,
+                  "value_backref": 0.0,
+                  "fusion": 9.102341325581074,
+                  "rerank": 9.102341325581074
+                },
+                "metadata": {}
+              },
+              {
+                "table_name": "roledropdownconfig",
+                "score": 8.35709035396576,
+                "table_label": "下拉角色配置",
+                "table_entities": [],
+                "table_describe": "由字段召回反推",
+                "source_scores": {
+                  "bm25": 7.805026054382324,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "column_inferred": 6.685672283172607,
+                  "entity_overlap": 0.0,
+                  "column_backref": 1.6714180707931519,
+                  "value_backref": 0.0,
+                  "fusion": 8.35709035396576,
+                  "rerank": 8.35709035396576
+                },
+                "metadata": {
+                  "db_type": "mysql",
+                  "ddl_hash": "35d10aa0651c5ae32d0e9a9563862afdf6e38a9b39093dd39ed38e82e1ca7149"
+                }
+              },
+              {
+                "table_name": "dictionarytype",
+                "score": 8.16101058959961,
+                "table_label": null,
+                "table_entities": [],
+                "table_describe": "由字段召回反推",
+                "source_scores": {
+                  "value_inferred": 5.249279365539551,
+                  "column_inferred": 5.4789525985717775,
+                  "entity_overlap": 0.0,
+                  "column_backref": 1.3697381496429444,
+                  "value_backref": 1.3123198413848878,
+                  "fusion": 8.16101058959961,
+                  "rerank": 8.16101058959961
+                },
+                "metadata": {}
+              },
+              {
+                "table_name": "report",
+                "score": 7.9941102266311646,
+                "table_label": null,
+                "table_entities": [],
+                "table_describe": "由字段召回反推",
+                "source_scores": {
+                  "column_inferred": 6.395288181304932,
+                  "entity_overlap": 0.0,
+                  "column_backref": 1.598822045326233,
+                  "value_backref": 0.0,
+                  "fusion": 7.9941102266311646,
+                  "rerank": 7.9941102266311646
+                },
+                "metadata": {}
+              },
+              {
+                "table_name": "dictionarydata",
+                "score": 7.514858476320904,
+                "table_label": null,
+                "table_entities": [],
+                "table_describe": "由字段值召回反推",
+                "source_scores": {
+                  "value_inferred": 6.011886781056723,
+                  "entity_overlap": 0.0,
+                  "column_backref": 0.0,
+                  "value_backref": 1.5029716952641807,
+                  "fusion": 7.514858476320904,
+                  "rerank": 7.514858476320904
+                },
+                "metadata": {}
+              },
+              {
+                "table_name": "spermdonation",
+                "score": 7.495211958885193,
+                "table_label": null,
+                "table_entities": [],
+                "table_describe": "由字段召回反推",
+                "source_scores": {
+                  "column_inferred": 5.996169567108154,
+                  "entity_overlap": 0.0,
+                  "column_backref": 1.4990423917770386,
+                  "value_backref": 0.0,
+                  "fusion": 7.495211958885193,
+                  "rerank": 7.495211958885193
+                },
+                "metadata": {}
+              },
+              {
+                "table_name": "syssetting",
+                "score": 7.272096710745245,
+                "table_label": "系统配置",
+                "table_entities": [],
+                "table_describe": "由字段召回反推",
+                "source_scores": {
+                  "bm25": 6.5796589851379395,
+                  "fuzzy": 1.0133333336561918,
+                  "vector": 0.0,
+                  "column_inferred": 5.817677368596196,
+                  "entity_overlap": 0.0,
+                  "column_backref": 1.454419342149049,
+                  "value_backref": 0.0,
+                  "fusion": 7.272096710745245,
+                  "rerank": 7.272096710745245
+                },
+                "metadata": {
+                  "db_type": "mysql",
+                  "ddl_hash": "bbabe7f8f2416e18ede90ce86c72a1100e033612f5415a5fabb7c93c3230a094"
+                }
+              },
+              {
+                "table_name": "room",
+                "score": 6.90028190612793,
+                "table_label": null,
+                "table_entities": [],
+                "table_describe": "由字段召回反推",
+                "source_scores": {
+                  "column_inferred": 5.520225524902344,
+                  "entity_overlap": 0.0,
+                  "column_backref": 1.380056381225586,
+                  "value_backref": 0.0,
+                  "fusion": 6.90028190612793,
+                  "rerank": 6.90028190612793
+                },
+                "metadata": {}
+              },
+              {
+                "table_name": "messagetemplatefiled",
+                "score": 6.545321941375732,
+                "table_label": null,
+                "table_entities": [],
+                "table_describe": "由字段召回反推",
+                "source_scores": {
+                  "column_inferred": 5.236257553100586,
+                  "entity_overlap": 0.0,
+                  "column_backref": 1.3090643882751465,
+                  "value_backref": 0.0,
+                  "fusion": 6.545321941375732,
+                  "rerank": 6.545321941375732
+                },
+                "metadata": {}
+              }
+            ],
+            "columns": [
+              {
+                "table_name": "userpagesetting",
+                "column_name": "Enable",
+                "score": 9.051182746887207,
+                "column_comment": "枚举值：1表示启用该配置，0表示禁用该配置。",
+                "column_entities": [],
+                "source_scores": {
+                  "bm25": 18.102365493774414,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 9.051182746887207,
+                  "rerank": 9.051182746887207
+                },
+                "metadata": {
+                  "retrieval_text": "枚举值：1表示启用该配置，0表示禁用该配置。"
+                }
+              },
+              {
+                "table_name": "roledropdownconfigitem",
+                "column_name": "ConfigId",
+                "score": 7.281873060464859,
+                "column_comment": "关联父级下拉角色配置的ID，表示该条目属于哪个具体的下拉配置集合。",
+                "column_entities": [
+                  "配置"
+                ],
+                "source_scores": {
+                  "bm25": 13.910842895507812,
+                  "fuzzy": 1.0322580635547638,
+                  "vector": 0.0,
+                  "entity_overlap": 1.0,
+                  "fusion": 7.281873060464859,
+                  "rerank": 7.281873060464859
+                },
+                "metadata": {
+                  "retrieval_text": "关联父级下拉角色配置的ID，表示该条目属于哪个具体的下拉配置集合。 配置"
+                }
+              },
+              {
+                "table_name": "roledropdownconfig",
+                "column_name": "IsEnable",
+                "score": 6.685672283172607,
+                "column_comment": "枚举值：0-禁用，1-启用。用于控制该配置项在前端下拉列表中是否可见",
+                "column_entities": [],
+                "source_scores": {
+                  "bm25": 13.371344566345215,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 6.685672283172607,
+                  "rerank": 6.685672283172607
+                },
+                "metadata": {
+                  "retrieval_text": "枚举值：0-禁用，1-启用。用于控制该配置项在前端下拉列表中是否可见"
+                }
+              },
+              {
+                "table_name": "report",
+                "column_name": "Setting",
+                "score": 6.395288181304932,
+                "column_comment": "存储报表或目录的扩展配置信息，通常为JSON格式，包含权限设置、刷新策略、样式配置等。",
+                "column_entities": [],
+                "source_scores": {
+                  "bm25": 12.390576362609863,
+                  "fuzzy": 1.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 6.395288181304932,
+                  "rerank": 6.395288181304932
+                },
+                "metadata": {
+                  "retrieval_text": "存储报表或目录的扩展配置信息，通常为JSON格式，包含权限设置、刷新策略、样式配置等。"
+                }
+              },
+              {
+                "table_name": "spermdonation",
+                "column_name": "Status",
+                "score": 5.996169567108154,
+                "column_comment": "枚举值：0-所有（查询用），1-冷冻中，2-已解冻，3-弃用。表示标本当前的库存或使用状态。",
+                "column_entities": [
+                  "供精标本"
+                ],
+                "source_scores": {
+                  "bm25": 11.992339134216309,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.996169567108154,
+                  "rerank": 5.996169567108154
+                },
+                "metadata": {
+                  "retrieval_text": "枚举值：0-所有（查询用），1-冷冻中，2-已解冻，3-弃用。表示标本当前的库存或使用状态。 供精标本"
+                }
+              },
+              {
+                "table_name": "syssetting",
+                "column_name": "Type",
+                "score": 5.817677368596196,
+                "column_comment": "标识配置的类别或作用域。常见枚举推断：1-全局系统配置, 2-租户个性化配置, 3-功能模块开关, 4-第三方服务参数等（具体含义需结合业务代码定义）。",
+                "column_entities": [
+                  "配置分类"
+                ],
+                "source_scores": {
+                  "bm25": 11.22347354888916,
+                  "fuzzy": 1.0297029707580805,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.817677368596196,
+                  "rerank": 5.817677368596196
+                },
+                "metadata": {
+                  "retrieval_text": "标识配置的类别或作用域。常见枚举推断：1-全局系统配置, 2-租户个性化配置, 3-功能模块开关, 4-第三方服务参数等（具体含义需结合业务代码定义）。 配置分类"
+                }
+              },
+              {
+                "table_name": "report",
+                "column_name": "Content",
+                "score": 5.541001319885254,
+                "column_comment": "存储报表的具体定义内容，如SQL语句、图表配置JSON或模板数据等。",
+                "column_entities": [],
+                "source_scores": {
+                  "bm25": 11.082002639770508,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.541001319885254,
+                  "rerank": 5.541001319885254
+                },
+                "metadata": {
+                  "retrieval_text": "存储报表的具体定义内容，如SQL语句、图表配置JSON或模板数据等。"
+                }
+              },
+              {
+                "table_name": "room",
+                "column_name": "StorageDeviceType",
+                "score": 5.520225524902344,
+                "column_comment": "房间内主要配置的储藏设备类型枚举值：1表示液氮罐，2表示超低温冰箱，3表示冷藏冰箱。",
+                "column_entities": [
+                  "储藏设备"
+                ],
+                "source_scores": {
+                  "bm25": 11.040451049804688,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.520225524902344,
+                  "rerank": 5.520225524902344
+                },
+                "metadata": {
+                  "retrieval_text": "房间内主要配置的储藏设备类型枚举值：1表示液氮罐，2表示超低温冰箱，3表示冷藏冰箱。 储藏设备"
+                }
+              },
+              {
+                "table_name": "dictionarytype",
+                "column_name": "Setting",
+                "score": 5.4789525985717775,
+                "column_comment": "扩展配置信息，JSON格式",
+                "column_entities": [],
+                "source_scores": {
+                  "bm25": 10.557905197143555,
+                  "fuzzy": 1.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.4789525985717775,
+                  "rerank": 5.4789525985717775
+                },
+                "metadata": {
+                  "retrieval_text": "扩展配置信息，JSON格式"
+                }
+              },
+              {
+                "table_name": "syssetting",
+                "column_name": "Name",
+                "score": 5.374242782592773,
+                "column_comment": "配置项的唯一键名或显示名称，用于检索和识别特定配置。",
+                "column_entities": [],
+                "source_scores": {
+                  "bm25": 10.748485565185547,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.374242782592773,
+                  "rerank": 5.374242782592773
+                },
+                "metadata": {
+                  "retrieval_text": "配置项的唯一键名或显示名称，用于检索和识别特定配置。"
+                }
+              },
+              {
+                "table_name": "messagetemplatefiled",
+                "column_name": "Sql",
+                "score": 5.236257553100586,
+                "column_comment": "用于从数据库中提取该字段具体值的SQL查询语句，执行结果将填充到短信模板对应位置。",
+                "column_entities": [
+                  "数据源"
+                ],
+                "source_scores": {
+                  "bm25": 10.472515106201172,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.236257553100586,
+                  "rerank": 5.236257553100586
+                },
+                "metadata": {
+                  "retrieval_text": "用于从数据库中提取该字段具体值的SQL查询语句，执行结果将填充到短信模板对应位置。 数据源"
+                }
+              },
+              {
+                "table_name": "embryoinfo",
+                "column_name": "BlastocystIndex",
+                "score": 5.188951015472412,
+                "column_comment": "囊胚在特定容器或列表中的索引位置。",
+                "column_entities": [],
+                "source_scores": {
+                  "bm25": 10.377902030944824,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.188951015472412,
+                  "rerank": 5.188951015472412
+                },
+                "metadata": {
+                  "retrieval_text": "囊胚在特定容器或列表中的索引位置。"
+                }
+              },
+              {
+                "table_name": "medicalrecordpreviewinfo_back20260611",
+                "column_name": "Setting",
+                "score": 5.150258211046458,
+                "column_comment": "通用的模板配置信息，可能包含样式、布局规则或交互逻辑配置。",
+                "column_entities": [
+                  "模板管理"
+                ],
+                "source_scores": {
+                  "bm25": 9.893959045410156,
+                  "fuzzy": 1.0163934417068958,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.150258211046458,
+                  "rerank": 5.150258211046458
+                },
+                "metadata": {
+                  "retrieval_text": "通用的模板配置信息，可能包含样式、布局规则或交互逻辑配置。 模板管理"
+                }
+              },
+              {
+                "table_name": "indicatorsinfo",
+                "column_name": "IsIndicators",
+                "score": 5.129900932312012,
+                "column_comment": "标识当前节点类型。枚举值：1-表示是具体指标（可计算/查询），0-表示是分类目录或维度组（非叶子节点）。",
+                "column_entities": [
+                  "指标类型"
+                ],
+                "source_scores": {
+                  "bm25": 10.259801864624023,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 5.129900932312012,
+                  "rerank": 5.129900932312012
+                },
+                "metadata": {
+                  "retrieval_text": "标识当前节点类型。枚举值：1-表示是具体指标（可计算/查询），0-表示是分类目录或维度组（非叶子节点）。 指标类型"
+                }
+              },
+              {
+                "table_name": "roledropdownconfigitem",
+                "column_name": "RoleId",
+                "score": 4.9981536865234375,
+                "column_comment": "关联系统角色的唯一标识，表示该配置项对应的具体角色。",
+                "column_entities": [
+                  "角色"
+                ],
+                "source_scores": {
+                  "bm25": 9.996307373046875,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 4.9981536865234375,
+                  "rerank": 4.9981536865234375
+                },
+                "metadata": {
+                  "retrieval_text": "关联系统角色的唯一标识，表示该配置项对应的具体角色。 角色"
+                }
+              },
+              {
+                "table_name": "scheduledtestdoctor",
+                "column_name": "DoctorName",
+                "score": 4.98242712020874,
+                "column_comment": "医生的姓名冗余字段，便于前端直接展示而无需额外联表查询。",
+                "column_entities": [
+                  "医生"
+                ],
+                "source_scores": {
+                  "bm25": 9.96485424041748,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 4.98242712020874,
+                  "rerank": 4.98242712020874
+                },
+                "metadata": {
+                  "retrieval_text": "医生的姓名冗余字段，便于前端直接展示而无需额外联表查询。 医生"
+                }
+              },
+              {
+                "table_name": "lntank",
+                "column_name": "PailCount",
+                "score": 4.911243915557861,
+                "column_comment": "液氮罐内配置的提桶或提篮的总数量。",
+                "column_entities": [
+                  "液氮罐配件"
+                ],
+                "source_scores": {
+                  "bm25": 9.822487831115723,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 4.911243915557861,
+                  "rerank": 4.911243915557861
+                },
+                "metadata": {
+                  "retrieval_text": "液氮罐内配置的提桶或提篮的总数量。 液氮罐配件"
+                }
+              },
+              {
+                "table_name": "indicatorsinfo",
+                "column_name": "Setting",
+                "score": 4.886668395996094,
+                "column_comment": "存储指标相关的扩展配置JSON字符串，如展示格式、阈值、关联图表类型等。",
+                "column_entities": [],
+                "source_scores": {
+                  "bm25": 9.373336791992188,
+                  "fuzzy": 1.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 4.886668395996094,
+                  "rerank": 4.886668395996094
+                },
+                "metadata": {
+                  "retrieval_text": "存储指标相关的扩展配置JSON字符串，如展示格式、阈值、关联图表类型等。"
+                }
+              },
+              {
+                "table_name": "medicalrecordpreviewinfo",
+                "column_name": "Setting",
+                "score": 4.882429864443838,
+                "column_comment": "通用的模板配置信息，通常以JSON格式存储，定义模板的结构、样式或行为规则。",
+                "column_entities": [
+                  "模板配置"
+                ],
+                "source_scores": {
+                  "bm25": 9.35888957977295,
+                  "fuzzy": 1.01492537278682,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 4.882429864443838,
+                  "rerank": 4.882429864443838
+                },
+                "metadata": {
+                  "retrieval_text": "通用的模板配置信息，通常以JSON格式存储，定义模板的结构、样式或行为规则。 模板配置"
+                }
+              },
+              {
+                "table_name": "elasticsearchtemplateinfo",
+                "column_name": "Value",
+                "score": 4.859947681427002,
+                "column_comment": "存储模板的JSON配置内容",
+                "column_entities": [
+                  "Elasticsearch模板"
+                ],
+                "source_scores": {
+                  "bm25": 9.719895362854004,
+                  "fuzzy": 0.0,
+                  "vector": 0.0,
+                  "entity_overlap": 0.0,
+                  "fusion": 4.859947681427002,
+                  "rerank": 4.859947681427002
+                },
+                "metadata": {
+                  "retrieval_text": "存储模板的JSON配置内容 Elasticsearch模板"
+                }
+              }
+            ],
+            "values": [
+              {
+                "raw_value": "中央型前置胎盘",
+                "table_name": "dictionarydata",
+                "column_name": "name",
+                "score": 6.011886781056723,
+                "aliases": [],
+                "normalized_value": null,
+                "table_comment": null,
+                "column_comment": null,
+                "source_schema": null,
+                "source_table": null,
+                "source_column": null,
+                "metadata": {},
+                "updated_at": "2026-07-02T07:01:50.068020"
+              },
+              {
+                "raw_value": "遗传学检查临床诊断1",
+                "table_name": "dictionarydata",
+                "column_name": "name",
+                "score": 5.548587754567465,
+                "aliases": [],
+                "normalized_value": null,
+                "table_comment": null,
+                "column_comment": null,
+                "source_schema": null,
+                "source_table": null,
+                "source_column": null,
+                "metadata": {},
+                "updated_at": "2026-07-02T07:01:51.193877"
+              },
+              {
+                "raw_value": "表面",
+                "table_name": "dictionarytype",
+                "column_name": "name",
+                "score": 5.249279365539551,
+                "aliases": [],
+                "normalized_value": null,
+                "table_comment": null,
+                "column_comment": null,
+                "source_schema": null,
+                "source_table": null,
+                "source_column": null,
+                "metadata": {},
+                "updated_at": "2026-07-02T07:01:51.949520"
+              },
+              {
+                "raw_value": "配子移植",
+                "table_name": "dictionarydata",
+                "column_name": "name",
+                "score": 5.187426160176595,
+                "aliases": [],
+                "normalized_value": null,
+                "table_comment": null,
+                "column_comment": null,
+                "source_schema": null,
+                "source_table": null,
+                "source_column": null,
+                "metadata": {},
+                "updated_at": "2026-07-02T07:01:51.193877"
+              },
+              {
+                "raw_value": "语言表达",
+                "table_name": "dictionarydata",
+                "column_name": "name",
+                "score": 4.938218863805135,
+                "aliases": [],
+                "normalized_value": null,
+                "table_comment": null,
+                "column_comment": null,
+                "source_schema": null,
+                "source_table": null,
+                "source_column": null,
+                "metadata": {},
+                "updated_at": "2026-07-02T07:01:51.193877"
+              }
+            ],
+            "join_graphs": [],
+            "evidences": [],
+            "metadata": {
+              "parsed_query": {
+                "intent": "lookup",
+                "metrics": [],
+                "dimensions": [],
+                "entities": [],
+                "filters": [],
+                "time_expressions": [],
+                "top_k": null,
+                "sort_direction": null
+              },
+              "raw_retrieval": {
+                "schema_query": "查询 syssetting 表中 Type=1 的配置",
+                "evidence_recall_count": 0,
+                "table_recall_count": 5,
+                "column_recall_count": 20,
+                "value_recall_count": 5,
+                "join_seed_table_count": 63,
+                "join_graph_count": 0,
+                "mode": "raw_hybrid_retrieval"
+              },
+              "evidence_recall_count": 0,
+              "table_recall_count": 5,
+              "candidate_table_count": 10,
+              "expanded_table_count": 0,
+              "final_table_count": 10,
+              "table_candidate_count": 10,
+              "column_recall_count": 20,
+              "value_recall_count": 5,
+              "join_graph_count": 0
+            }
+          }
+        }
+      },
+      "status": "success"
+    },
+    {
+      "content": "\n\n",
+      "additional_kwargs": {
+        "refusal": null,
+        "reasoning_content": "从检索结果来看，syssetting 表没有被直接检索到。让我读取完整的检索结果，看看是否有 syssetting 表的相关信息，或者需要用其他方式来查询。\n\n让我读取完整的文件内容，看看 table 和 column 的详细信息。\n",
+        "token_usage_attribution": {
+          "version": 1,
+          "kind": "tool_batch",
+          "shared_attribution": false,
+          "tool_call_ids": [
+            "call_1f111c1cedc34eada7dfd1de"
+          ],
+          "actions": [
+            {
+              "kind": "tool",
+              "tool_name": "read_file",
+              "description": "查看 sqlrag 检索结果中的表和字段信息",
+              "tool_call_id": "call_1f111c1cedc34eada7dfd1de"
+            }
+          ]
+        }
+      },
+      "response_metadata": {
+        "token_usage": {
+          "completion_tokens": 124,
+          "prompt_tokens": 18165,
+          "total_tokens": 18289,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 52
+        },
+        "model_provider": "deepseek",
+        "model_name": "qwen3.8-27b-fp8",
+        "system_fingerprint": null,
+        "id": "8e039dc7779842d38653d1a577c55c99",
+        "finish_reason": "tool_calls",
+        "logprobs": null
+      },
+      "type": "ai",
+      "name": null,
+      "id": "lc_run--01a08b3a-6a45-7282-a758-7816f98712e1-0",
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "args": {
+            "description": "查看 sqlrag 检索结果中的表和字段信息",
+            "path": "/mnt/user-data/outputs/.tool-results/sqlrag_retrieve-af02236b1f32.txt"
+          },
+          "id": "call_1f111c1cedc34eada7dfd1de",
+          "type": "tool_call"
+        }
+      ],
+      "invalid_tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 18165,
+        "output_tokens": 124,
+        "total_tokens": 18289,
+        "input_token_details": {},
+        "output_token_details": {}
+      }
+    },
+    {
+      "content": "{\n  \"ok\": true,\n  \"operation\": \"hybrid-search\",\n  \"result\": {\n    \"query\": \"查询 syssetting 表中 Type=1 的配置\",\n    \"tables\": [\n      {\n        \"table_name\": \"userpagesetting\",\n        \"score\": 11.313978433609009,\n        \"table_label\": \"用户页面配置\",\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"bm25\": 7.210750579833984,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"column_inferred\": 9.051182746887207,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 2.2627956867218018,\n          \"value_backref\": 0.0,\n          \"fusion\": 11.313978433609009,\n          \"rerank\": 11.313978433609009\n        },\n        \"metadata\": {\n          \"db_type\": \"mysql\",\n          \"ddl_hash\": \"f44c1d0bbbd5b2e398cacf60ccff9bf678e606d45626dc5cfad36421563ed3d9\"\n        }\n      },\n      {\n        \"table_name\": \"roledropdownconfigitem\",\n        \"score\": 9.102341325581074,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 7.281873060464859,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.8204682651162147,\n          \"value_backref\": 0.0,\n          \"fusion\": 9.102341325581074,\n          \"rerank\": 9.102341325581074\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"roledropdownconfig\",\n        \"score\": 8.35709035396576,\n        \"table_label\": \"下拉角色配置\",\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"bm25\": 7.805026054382324,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"column_inferred\": 6.685672283172607,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.6714180707931519,\n          \"value_backref\": 0.0,\n          \"fusion\": 8.35709035396576,\n          \"rerank\": 8.35709035396576\n        },\n        \"metadata\": {\n          \"db_type\": \"mysql\",\n          \"ddl_hash\": \"35d10aa0651c5ae32d0e9a9563862afdf6e38a9b39093dd39ed38e82e1ca7149\"\n        }\n      },\n      {\n        \"table_name\": \"dictionarytype\",\n        \"score\": 8.16101058959961,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"value_inferred\": 5.249279365539551,\n          \"column_inferred\": 5.4789525985717775,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.3697381496429444,\n          \"value_backref\": 1.3123198413848878,\n          \"fusion\": 8.16101058959961,\n          \"rerank\": 8.16101058959961\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"report\",\n        \"score\": 7.9941102266311646,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 6.395288181304932,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.598822045326233,\n          \"value_backref\": 0.0,\n          \"fusion\": 7.9941102266311646,\n          \"rerank\": 7.9941102266311646\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"dictionarydata\",\n        \"score\": 7.514858476320904,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段值召回反推\",\n        \"source_scores\": {\n          \"value_inferred\": 6.011886781056723,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 0.0,\n          \"value_backref\": 1.5029716952641807,\n          \"fusion\": 7.514858476320904,\n          \"rerank\": 7.514858476320904\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"spermdonation\",\n        \"score\": 7.495211958885193,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.996169567108154,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.4990423917770386,\n          \"value_backref\": 0.0,\n          \"fusion\": 7.495211958885193,\n          \"rerank\": 7.495211958885193\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"syssetting\",\n        \"score\": 7.272096710745245,\n        \"table_label\": \"系统配置\",\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"bm25\": 6.5796589851379395,\n          \"fuzzy\": 1.0133333336561918,\n          \"vector\": 0.0,\n          \"column_inferred\": 5.817677368596196,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.454419342149049,\n          \"value_backref\": 0.0,\n          \"fusion\": 7.272096710745245,\n          \"rerank\": 7.272096710745245\n        },\n        \"metadata\": {\n          \"db_type\": \"mysql\",\n          \"ddl_hash\": \"bbabe7f8f2416e18ede90ce86c72a1100e033612f5415a5fabb7c93c3230a094\"\n        }\n      },\n      {\n        \"table_name\": \"room\",\n        \"score\": 6.90028190612793,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.520225524902344,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.380056381225586,\n          \"value_backref\": 0.0,\n          \"fusion\": 6.90028190612793,\n          \"rerank\": 6.90028190612793\n        },\n        \"metadata\": {}\n      },\n      {\n        \"table_name\": \"messagetemplatefiled\",\n        \"score\": 6.545321941375732,\n        \"table_label\": null,\n        \"table_entities\": [],\n        \"table_describe\": \"由字段召回反推\",\n        \"source_scores\": {\n          \"column_inferred\": 5.236257553100586,\n          \"entity_overlap\": 0.0,\n          \"column_backref\": 1.3090643882751465,\n          \"value_backref\": 0.0,\n          \"fusion\": 6.545321941375732,\n          \"rerank\": 6.545321941375732\n        },\n        \"metadata\": {}\n      }\n    ],\n    \"columns\": [\n      {\n        \"table_name\": \"userpagesetting\",\n        \"column_name\": \"Enable\",\n        \"score\": 9.051182746887207,\n        \"column_comment\": \"枚举值：1表示启用该配置，0表示禁用该配置。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 18.102365493774414,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 9.051182746887207,\n          \"rerank\": 9.051182746887207\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"枚举值：1表示启用该配置，0表示禁用该配置。\"\n        }\n      },\n      {\n        \"table_name\": \"roledropdownconfigitem\",\n        \"column_name\": \"ConfigId\",\n        \"score\": 7.281873060464859,\n        \"column_comment\": \"关联父级下拉角色配置的ID，表示该条目属于哪个具体的下拉配置集合。\",\n        \"column_entities\": [\n          \"配置\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 13.910842895507812,\n          \"fuzzy\": 1.0322580635547638,\n          \"vector\": 0.0,\n          \"entity_overlap\": 1.0,\n          \"fusion\": 7.281873060464859,\n          \"rerank\": 7.281873060464859\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"关联父级下拉角色配置的ID，表示该条目属于哪个具体的下拉配置集合。 配置\"\n        }\n      },\n      {\n        \"table_name\": \"roledropdownconfig\",\n        \"column_name\": \"IsEnable\",\n        \"score\": 6.685672283172607,\n        \"column_comment\": \"枚举值：0-禁用，1-启用。用于控制该配置项在前端下拉列表中是否可见\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 13.371344566345215,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 6.685672283172607,\n          \"rerank\": 6.685672283172607\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"枚举值：0-禁用，1-启用。用于控制该配置项在前端下拉列表中是否可见\"\n        }\n      },\n      {\n        \"table_name\": \"report\",\n        \"column_name\": \"Setting\",\n        \"score\": 6.395288181304932,\n        \"column_comment\": \"存储报表或目录的扩展配置信息，通常为JSON格式，包含权限设置、刷新策略、样式配置等。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 12.390576362609863,\n          \"fuzzy\": 1.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 6.395288181304932,\n          \"rerank\": 6.395288181304932\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"存储报表或目录的扩展配置信息，通常为JSON格式，包含权限设置、刷新策略、样式配置等。\"\n        }\n      },\n      {\n        \"table_name\": \"spermdonation\",\n        \"column_name\": \"Status\",\n        \"score\": 5.996169567108154,\n        \"column_comment\": \"枚举值：0-所有（查询用），1-冷冻中，2-已解冻，3-弃用。表示标本当前的库存或使用状态。\",\n        \"column_entities\": [\n          \"供精标本\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 11.992339134216309,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.996169567108154,\n          \"rerank\": 5.996169567108154\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"枚举值：0-所有（查询用），1-冷冻中，2-已解冻，3-弃用。表示标本当前的库存或使用状态。 供精标本\"\n        }\n      },\n      {\n        \"table_name\": \"syssetting\",\n        \"column_name\": \"Type\",\n        \"score\": 5.817677368596196,\n        \"column_comment\": \"标识配置的类别或作用域。常见枚举推断：1-全局系统配置, 2-租户个性化配置, 3-功能模块开关, 4-第三方服务参数等（具体含义需结合业务代码定义）。\",\n        \"column_entities\": [\n          \"配置分类\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 11.22347354888916,\n          \"fuzzy\": 1.0297029707580805,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.817677368596196,\n          \"rerank\": 5.817677368596196\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"标识配置的类别或作用域。常见枚举推断：1-全局系统配置, 2-租户个性化配置, 3-功能模块开关, 4-第三方服务参数等（具体含义需结合业务代码定义）。 配置分类\"\n        }\n      },\n      {\n        \"table_name\": \"report\",\n        \"column_name\": \"Content\",\n        \"score\": 5.541001319885254,\n        \"column_comment\": \"存储报表的具体定义内容，如SQL语句、图表配置JSON或模板数据等。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 11.082002639770508,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.541001319885254,\n          \"rerank\": 5.541001319885254\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"存储报表的具体定义内容，如SQL语句、图表配置JSON或模板数据等。\"\n        }\n      },\n      {\n        \"table_name\": \"room\",\n        \"column_name\": \"StorageDeviceType\",\n        \"score\": 5.520225524902344,\n        \"column_comment\": \"房间内主要配置的储藏设备类型枚举值：1表示液氮罐，2表示超低温冰箱，3表示冷藏冰箱。\",\n        \"column_entities\": [\n          \"储藏设备\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 11.040451049804688,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.520225524902344,\n          \"rerank\": 5.520225524902344\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"房间内主要配置的储藏设备类型枚举值：1表示液氮罐，2表示超低温冰箱，3表示冷藏冰箱。 储藏设备\"\n        }\n      },\n      {\n        \"table_name\": \"dictionarytype\",\n        \"column_name\": \"Setting\",\n        \"score\": 5.4789525985717775,\n        \"column_comment\": \"扩展配置信息，JSON格式\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 10.557905197143555,\n          \"fuzzy\": 1.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.4789525985717775,\n          \"rerank\": 5.4789525985717775\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"扩展配置信息，JSON格式\"\n        }\n      },\n      {\n        \"table_name\": \"syssetting\",\n        \"column_name\": \"Name\",\n        \"score\": 5.374242782592773,\n        \"column_comment\": \"配置项的唯一键名或显示名称，用于检索和识别特定配置。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 10.748485565185547,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.374242782592773,\n          \"rerank\": 5.374242782592773\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"配置项的唯一键名或显示名称，用于检索和识别特定配置。\"\n        }\n      },\n      {\n        \"table_name\": \"messagetemplatefiled\",\n        \"column_name\": \"Sql\",\n        \"score\": 5.236257553100586,\n        \"column_comment\": \"用于从数据库中提取该字段具体值的SQL查询语句，执行结果将填充到短信模板对应位置。\",\n        \"column_entities\": [\n          \"数据源\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 10.472515106201172,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.236257553100586,\n          \"rerank\": 5.236257553100586\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"用于从数据库中提取该字段具体值的SQL查询语句，执行结果将填充到短信模板对应位置。 数据源\"\n        }\n      },\n      {\n        \"table_name\": \"embryoinfo\",\n        \"column_name\": \"BlastocystIndex\",\n        \"score\": 5.188951015472412,\n        \"column_comment\": \"囊胚在特定容器或列表中的索引位置。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 10.377902030944824,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.188951015472412,\n          \"rerank\": 5.188951015472412\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"囊胚在特定容器或列表中的索引位置。\"\n        }\n      },\n      {\n        \"table_name\": \"medicalrecordpreviewinfo_back20260611\",\n        \"column_name\": \"Setting\",\n        \"score\": 5.150258211046458,\n        \"column_comment\": \"通用的模板配置信息，可能包含样式、布局规则或交互逻辑配置。\",\n        \"column_entities\": [\n          \"模板管理\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.893959045410156,\n          \"fuzzy\": 1.0163934417068958,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.150258211046458,\n          \"rerank\": 5.150258211046458\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"通用的模板配置信息，可能包含样式、布局规则或交互逻辑配置。 模板管理\"\n        }\n      },\n      {\n        \"table_name\": \"indicatorsinfo\",\n        \"column_name\": \"IsIndicators\",\n        \"score\": 5.129900932312012,\n        \"column_comment\": \"标识当前节点类型。枚举值：1-表示是具体指标（可计算/查询），0-表示是分类目录或维度组（非叶子节点）。\",\n        \"column_entities\": [\n          \"指标类型\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 10.259801864624023,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 5.129900932312012,\n          \"rerank\": 5.129900932312012\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"标识当前节点类型。枚举值：1-表示是具体指标（可计算/查询），0-表示是分类目录或维度组（非叶子节点）。 指标类型\"\n        }\n      },\n      {\n        \"table_name\": \"roledropdownconfigitem\",\n        \"column_name\": \"RoleId\",\n        \"score\": 4.9981536865234375,\n        \"column_comment\": \"关联系统角色的唯一标识，表示该配置项对应的具体角色。\",\n        \"column_entities\": [\n          \"角色\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.996307373046875,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.9981536865234375,\n          \"rerank\": 4.9981536865234375\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"关联系统角色的唯一标识，表示该配置项对应的具体角色。 角色\"\n        }\n      },\n      {\n        \"table_name\": \"scheduledtestdoctor\",\n        \"column_name\": \"DoctorName\",\n        \"score\": 4.98242712020874,\n        \"column_comment\": \"医生的姓名冗余字段，便于前端直接展示而无需额外联表查询。\",\n        \"column_entities\": [\n          \"医生\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.96485424041748,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.98242712020874,\n          \"rerank\": 4.98242712020874\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"医生的姓名冗余字段，便于前端直接展示而无需额外联表查询。 医生\"\n        }\n      },\n      {\n        \"table_name\": \"lntank\",\n        \"column_name\": \"PailCount\",\n        \"score\": 4.911243915557861,\n        \"column_comment\": \"液氮罐内配置的提桶或提篮的总数量。\",\n        \"column_entities\": [\n          \"液氮罐配件\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.822487831115723,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.911243915557861,\n          \"rerank\": 4.911243915557861\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"液氮罐内配置的提桶或提篮的总数量。 液氮罐配件\"\n        }\n      },\n      {\n        \"table_name\": \"indicatorsinfo\",\n        \"column_name\": \"Setting\",\n        \"score\": 4.886668395996094,\n        \"column_comment\": \"存储指标相关的扩展配置JSON字符串，如展示格式、阈值、关联图表类型等。\",\n        \"column_entities\": [],\n        \"source_scores\": {\n          \"bm25\": 9.373336791992188,\n          \"fuzzy\": 1.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.886668395996094,\n          \"rerank\": 4.886668395996094\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"存储指标相关的扩展配置JSON字符串，如展示格式、阈值、关联图表类型等。\"\n        }\n      },\n      {\n        \"table_name\": \"medicalrecordpreviewinfo\",\n        \"column_name\": \"Setting\",\n        \"score\": 4.882429864443838,\n        \"column_comment\": \"通用的模板配置信息，通常以JSON格式存储，定义模板的结构、样式或行为规则。\",\n        \"column_entities\": [\n          \"模板配置\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.35888957977295,\n          \"fuzzy\": 1.01492537278682,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.882429864443838,\n          \"rerank\": 4.882429864443838\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"通用的模板配置信息，通常以JSON格式存储，定义模板的结构、样式或行为规则。 模板配置\"\n        }\n      },\n      {\n        \"table_name\": \"elasticsearchtemplateinfo\",\n        \"column_name\": \"Value\",\n        \"score\": 4.859947681427002,\n        \"column_comment\": \"存储模板的JSON配置内容\",\n        \"column_entities\": [\n          \"Elasticsearch模板\"\n        ],\n        \"source_scores\": {\n          \"bm25\": 9.719895362854004,\n          \"fuzzy\": 0.0,\n          \"vector\": 0.0,\n          \"entity_overlap\": 0.0,\n          \"fusion\": 4.859947681427002,\n          \"rerank\": 4.859947681427002\n        },\n        \"metadata\": {\n          \"retrieval_text\": \"存储模板的JSON配置内容 Elasticsearch模板\"\n        }\n      }\n    ],\n    \"values\": [\n      {\n        \"raw_value\": \"中央型前置胎盘\",\n        \"table_name\": \"dictionarydata\",\n        \"column_name\": \"name\",\n        \"score\": 6.011886781056723,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:50.068020\"\n      },\n      {\n        \"raw_value\": \"遗传学检查临床诊断1\",\n        \"table_name\": \"dictionarydata\",\n        \"column_name\": \"name\",\n        \"score\": 5.548587754567465,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:51.193877\"\n      },\n      {\n        \"raw_value\": \"表面\",\n        \"table_name\": \"dictionarytype\",\n        \"column_name\": \"name\",\n        \"score\": 5.249279365539551,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:51.949520\"\n      },\n      {\n        \"raw_value\": \"配子移植\",\n        \"table_name\": \"dictionarydata\",\n        \"column_name\": \"name\",\n        \"score\": 5.187426160176595,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:51.193877\"\n      },\n      {\n        \"raw_value\": \"语言表达\",\n        \"table_name\": \"dictionarydata\",\n        \"column_name\": \"name\",\n        \"score\": 4.938218863805135,\n        \"aliases\": [],\n        \"normalized_value\": null,\n        \"table_comment\": null,\n        \"column_comment\": null,\n        \"source_schema\": null,\n        \"source_table\": null,\n        \"source_column\": null,\n        \"metadata\": {},\n        \"updated_at\": \"2026-07-02T07:01:51.193877\"\n      }\n    ],\n    \"join_graphs\": [],\n    \"evidences\": [],\n    \"metadata\": {\n      \"parsed_query\": {\n        \"intent\": \"lookup\",\n        \"metrics\": [],\n        \"dimensions\": [],\n        \"entities\": [],\n        \"filters\": [],\n        \"time_expressions\": [],\n        \"top_k\": null,\n        \"sort_direction\": null\n      },\n      \"raw_retrieval\": {\n        \"schema_query\": \"查询 syssetting 表中 Type=1 的配置\",\n        \"evidence_recall_count\": 0,\n        \"table_recall_count\": 5,\n        \"column_recall_count\": 20,\n        \"value_recall_count\": 5,\n        \"join_seed_table_count\": 63,\n        \"join_graph_count\": 0,\n        \"mode\": \"raw_hybrid_retrieval\"\n      },\n      \"evidence_recall_count\": 0,\n      \"table_recall_count\": 5,\n      \"candidate_table_count\": 10,\n      \"expanded_table_count\": 0,\n      \"final_table_count\": 10,\n      \"table_candidate_count\": 10,\n      \"column_recall_count\": 20,\n      \"value_recall_count\": 5,\n      \"join_graph_count\": 0\n    }\n  }\n}",
+      "additional_kwargs": {
+        "deerflow_tool_meta": {
+          "status": "success",
+          "error_type": null,
+          "recoverable_by_model": true,
+          "recommended_next_action": "continue",
+          "source": "content_analysis"
+        },
+        "deerflow_read_mark": {
+          "path": "/mnt/user-data/outputs/.tool-results/sqlrag_retrieve-af02236b1f32.txt",
+          "hash": "f5efca67e0d65b874e5a7db156e37a6248f4fca88c74a4a3c952d818faf512a2"
+        }
+      },
+      "response_metadata": {},
+      "type": "tool",
+      "name": "read_file",
+      "id": "f27d3ff9-1b97-4367-a8f7-a355554b5bd9",
+      "tool_call_id": "call_1f111c1cedc34eada7dfd1de",
+      "artifact": null,
+      "status": "success"
+    },
+    {
+      "content": "\n\n已检索到 syssetting 表信息。该表为系统配置表，包含 Type（配置类别）和 Name（配置键名）等字段。\n\n让我发布意图标签并生成查询：\n\n",
+      "additional_kwargs": {
+        "refusal": null,
+        "reasoning_content": "很好，我找到了 syssetting 表的信息：\n- 表名: syssetting\n- 表标签: 系统配置\n- 关键字段: Type (配置的类别或作用域), Name (配置项的唯一键名)\n\n现在我需要生成 SQL 来查询 syssetting 表中 Type=1 的配置。根据字段信息，syssetting 表有 Type 和 Name 字段，可能还有其他配置相关的字段如 Value 等。\n\n让我先发布意图标签，然后生成 SQL 查询。\n",
+        "token_usage_attribution": {
+          "version": 1,
+          "kind": "tool_batch",
+          "shared_attribution": false,
+          "tool_call_ids": [
+            "call_04a5fc13a3584910a662c772"
+          ],
+          "actions": [
+            {
+              "kind": "tool",
+              "tool_name": "publish_query_labels",
+              "description": null,
+              "tool_call_id": "call_04a5fc13a3584910a662c772"
+            }
+          ]
+        }
+      },
+      "response_metadata": {
+        "token_usage": {
+          "completion_tokens": 293,
+          "prompt_tokens": 26998,
+          "total_tokens": 27291,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 108
+        },
+        "model_provider": "deepseek",
+        "model_name": "qwen3.8-27b-fp8",
+        "system_fingerprint": null,
+        "id": "ef29680944084aa19806c0bdaae95312",
+        "finish_reason": "tool_calls",
+        "logprobs": null
+      },
+      "type": "ai",
+      "name": null,
+      "id": "lc_run--01a08b3a-6e1f-7881-b968-028c183b2399-0",
+      "tool_calls": [
+        {
+          "name": "publish_query_labels",
+          "args": {
+            "intent": "查询系统配置",
+            "labels": [
+              {
+                "label": "表名",
+                "value": "syssetting",
+                "source": "database"
+              },
+              {
+                "label": "过滤条件",
+                "value": "Type=1",
+                "source": "user"
+              },
+              {
+                "label": "意图",
+                "value": "查询系统配置明细",
+                "source": "derived"
+              }
+            ],
+            "summary": "系统已识别查询目标为 syssetting 表（系统配置表），筛选条件为 Type=1（全局系统配置）"
+          },
+          "id": "call_04a5fc13a3584910a662c772",
+          "type": "tool_call"
+        }
+      ],
+      "invalid_tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 26998,
+        "output_tokens": 293,
+        "total_tokens": 27291,
+        "input_token_details": {},
+        "output_token_details": {}
+      }
+    },
+    {
+      "content": "{\"ok\": true, \"flow_id\": \"AY234P2N\", \"approval_required\": false, \"approval_reason\": \"当前意图和标签无需人工审批，可以继续下一步。\", \"next_tool\": null}",
+      "additional_kwargs": {},
+      "response_metadata": {},
+      "type": "tool",
+      "name": "publish_query_labels",
+      "id": "query-labels:call_04a5fc13a3584910a662c772",
+      "tool_call_id": "call_04a5fc13a3584910a662c772",
+      "artifact": {
+        "intent": "查询系统配置",
+        "summary": "系统已识别查询目标为 syssetting 表（系统配置表），筛选条件为 Type=1（全局系统配置）",
+        "labels": [
+          {
+            "label": "表名",
+            "value": "syssetting",
+            "source": "database"
+          },
+          {
+            "label": "过滤条件",
+            "value": "Type=1",
+            "source": "user"
+          },
+          {
+            "label": "意图",
+            "value": "查询系统配置明细",
+            "source": "derived"
+          }
+        ],
+        "evidence": [],
+        "approval": {
+          "flow_id": "AY234P2N",
+          "required": false,
+          "reason": "当前意图和标签无需人工审批，可以继续下一步。",
+          "next_tool": null
+        }
+      },
+      "status": "success"
+    },
+    {
+      "content": "\n\n根据检索结果，syssetting 表的结构如下：\n\n| 字段 | 说明 |\n|------|------|\n| Type | 配置的类别或作用域（1=全局系统配置） |\n| Name | 配置项的唯一键名 |\n| Value | 配置值（推断字段） |\n\n**SQL 查询：**\n\n```sql\nSELECT \n    Type,\n    Name,\n    Value\nFROM syssetting\nWHERE Type = 1\nORDER BY Name;\n```\n\n**说明：**\n- 筛选条件：`Type = 1`，表示查询全局系统配置\n- 排序：按配置名称（Name）升序排列\n- 返回字段：Type（配置类别）、Name（配置键名）、Value（配置值）\n\n是否需要我执行此查询获取实际数据？",
+      "additional_kwargs": {
+        "refusal": null,
+        "reasoning_content": "意图已发布，无需审批。现在我需要生成 SQL 查询来查询 syssetting 表中 Type=1 的配置。\n\n根据检索结果，syssetting 表有以下字段：\n- Type: 配置的类别或作用域\n- Name: 配置项的唯一键名\n\n通常配置表还会有 Value 字段存储配置值。让我生成 SQL 查询。\n",
+        "token_usage_attribution": {
+          "version": 1,
+          "kind": "final_answer",
+          "shared_attribution": false,
+          "tool_call_ids": [],
+          "actions": []
+        }
+      },
+      "response_metadata": {
+        "token_usage": {
+          "completion_tokens": 252,
+          "prompt_tokens": 27353,
+          "total_tokens": 27605,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 77
+        },
+        "model_provider": "deepseek",
+        "model_name": "qwen3.8-27b-fp8",
+        "system_fingerprint": null,
+        "id": "9bc5093eb19441fbbf955f2a774646ea",
+        "finish_reason": "stop",
+        "logprobs": null
+      },
+      "type": "ai",
+      "name": null,
+      "id": "lc_run--01a08b3a-76c5-7831-8e6f-6d851a2555f6-0",
+      "tool_calls": [],
+      "invalid_tool_calls": [],
+      "usage_metadata": {
+        "input_tokens": 27353,
+        "output_tokens": 252,
+        "total_tokens": 27605,
+        "input_token_details": {},
+        "output_token_details": {}
+      }
+    }
+  ],
+  "thread_data": {
+    "workspace_path": "/app/backend/.deer-flow/users/ed2e7617-0129-4a31-8bbc-e86ba2e33272/threads/test-simple-266c86c6/user-data/workspace",
+    "uploads_path": "/app/backend/.deer-flow/users/ed2e7617-0129-4a31-8bbc-e86ba2e33272/threads/test-simple-266c86c6/user-data/uploads",
+    "outputs_path": "/app/backend/.deer-flow/users/ed2e7617-0129-4a31-8bbc-e86ba2e33272/threads/test-simple-266c86c6/user-data/outputs"
+  },
+  "uploaded_files": [],
+  "sandbox": {
+    "sandbox_id": "local:ed2e7617-0129-4a31-8bbc-e86ba2e33272:test-simple-266c86c6"
+  },
+  "title": "查询 syssetting 表中 Type=1 的配置",
+  "artifacts": [],
+  "service_states": [],
+  "viewed_images": {},
+  "promoted": {
+    "catalog_hash": "998848fff591eb28",
+    "names": [
+      "sqlrag_retrieve"
+    ]
+  },
+  "delegations": [],
+  "skill_context": []
+}

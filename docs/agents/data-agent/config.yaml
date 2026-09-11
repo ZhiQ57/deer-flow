@@ -17,7 +17,7 @@ service_ability:
   table_rag_config: tablerag.yaml
   data_source_id: text2sql-mysql-local
   source_binding_mode: logical_data_source
-  confirmation_mode: on_ambiguity
+  confirmation_mode: always
   min_auto_confidence: 0.85
   sql_subagent_name: sql-subagent
   sql_execution:
