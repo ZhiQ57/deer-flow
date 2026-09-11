@@ -18,6 +18,7 @@ Usage:
 import asyncio
 import concurrent.futures
 import copy
+import json
 import logging
 import mimetypes
 import os
@@ -280,11 +281,14 @@ class DeerFlowClient:
             except FileNotFoundError:
                 agent_config = None
 
-        # ADD: 嵌入式 DeerFlowClient 复用正式 service ability 解析器，不复制 DataAgent 图或 middleware 链。
+        # 嵌入式客户端保留可选 service ability 扩展；普通 custom-agent 的
+        # 子代理权限由 allowable_subagents 决定。
         service_ability = resolve_service_ability_safely(agent_config.service_ability if agent_config is not None else None)
 
         subagent_enabled = cfg.get("subagent_enabled", False)
         allowable_subagents = set(agent_config.allowable_subagents) if agent_config is not None and agent_config.allowable_subagents is not None else None
+        if allowable_subagents is not None:
+            subagent_enabled = bool(allowable_subagents)
         sql_subagent_allowed = bool(service_ability is not None and allowable_subagents is not None and service_ability.config.sql_subagent_name in allowable_subagents)
         if sql_subagent_allowed:
             subagent_enabled = True
@@ -308,6 +312,7 @@ class DeerFlowClient:
             self._agent_name,
             json.dumps(service_ability_cache_config, ensure_ascii=False, sort_keys=True, default=str) if service_ability_cache_config is not None else None,
             frozenset(allowable_subagents) if allowable_subagents is not None else None,
+            tuple(agent_config.mcp_tools) if agent_config is not None and agent_config.mcp_tools is not None else None,
             frozenset(self._available_skills) if self._available_skills is not None else None,
             self._checkpoint_channel_mode,
             self._checkpoint_snapshot_frequency,
@@ -334,6 +339,10 @@ class DeerFlowClient:
         max_total_subagents = cfg.get("max_total_subagents", self._app_config.subagents.max_total_per_run)
 
         tools = self._get_tools(model_name=model_name, subagent_enabled=subagent_enabled)
+        if agent_config is not None:
+            from deerflow.tools.mcp_metadata import filter_mcp_tools
+
+            tools = filter_mcp_tools(tools, agent_config.mcp_tools)
         if service_ability is not None:
             # ADD: 嵌入式 DataAgent 与 Gateway 使用相同的 SQLRAG 工具收敛规则。
             tools = service_ability.filter_tools(tools)

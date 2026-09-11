@@ -1255,7 +1255,8 @@ async def start_run(
 
                 worker = run_after_metadata(record)
                 try:
-                    # SQL 解析在准入前完成；此处仅同步注册，保持持久化准入与任务挂载之间无 await。
+                    # 前端手动 SQL 路由仍使用当前 Run 的能力上下文；模型/子代理
+                    # 执行 SQL 使用外部 MCP，不通过该上下文注入工具。
                     register_sql_execution_run_context(prepared_sql_context, run_id=record.run_id)
                     record.task = asyncio.create_task(worker)
                     record.task.add_done_callback(lambda _completed_task, run_id=record.run_id: release_sql_execution_run_context(run_id))

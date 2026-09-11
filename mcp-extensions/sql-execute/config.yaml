@@ -1,0 +1,18 @@
+# SQL Execute MCP Server 独立配置。
+# 数据库凭据只通过环境变量注入，不写入仓库和 DeerFlow AgentLoop。
+server:
+  name: sql-execute
+  transport: streamable-http
+  host: 0.0.0.0
+  port: 8003
+
+database:
+  type: mysql
+  dsn_env: DATA_AGENT_MYSQL_DSN
+  readonly: true
+  statement_timeout_seconds: 10
+  max_rows: 100
+  max_cell_chars: 2000
+  max_result_chars: 100000
+  allowed_schemas:
+    - text2sql

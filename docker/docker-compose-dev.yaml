@@ -201,6 +201,12 @@ services:
       - DEER_FLOW_STREAM_BRIDGE_REDIS_URL=${DEER_FLOW_STREAM_BRIDGE_REDIS_URL:-redis://redis:6379/0}
       - DEER_FLOW_CHANNELS_LANGGRAPH_URL=${DEER_FLOW_CHANNELS_LANGGRAPH_URL:-http://gateway:8001/api}
       - DEER_FLOW_CHANNELS_GATEWAY_URL=${DEER_FLOW_CHANNELS_GATEWAY_URL:-http://gateway:8001}
+      - SQL_EXECUTE_MCP_URL=${SQL_EXECUTE_MCP_URL:-http://sql-execute:8003/mcp}
+      - SQLTABLE_RAG_MCP_URL=${SQLTABLE_RAG_MCP_URL:-http://sqltable-rag:8004/mcp}
+      # Gateway 手动 SQL 路由与外部 MCP 服务分别读取各自所需的 DSN。
+      - DATA_AGENT_MYSQL_DSN=${DATA_AGENT_MYSQL_DSN:-}
+      - DATA_AGENT_POSTGRES_DSN=${DATA_AGENT_POSTGRES_DSN:-}
+      - TABLERAG_MCP_INDEX_DSN=${TABLERAG_MCP_INDEX_DSN:-}
       - DEER_FLOW_INTERNAL_AUTH_TOKEN=${DEER_FLOW_INTERNAL_AUTH_TOKEN:-}
       - DEER_FLOW_HOST_BASE_DIR=${DEER_FLOW_ROOT}/backend/.deer-flow
       - DEER_FLOW_SANDBOX_HOST=host.docker.internal
@@ -209,8 +215,8 @@ services:
       - PROVISIONER_API_KEY=${PROVISIONER_API_KEY:-}
       # Proxy values (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY) are inherited from ../.env via env_file.
       # Only NO_PROXY is declared here so internal service hostnames are always exempt from the proxy.
-      - NO_PROXY=${NO_PROXY:-}${NO_PROXY:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,openviking,host.docker.internal
-      - no_proxy=${no_proxy:-}${no_proxy:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,openviking,host.docker.internal
+      - NO_PROXY=${NO_PROXY:-}${NO_PROXY:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,sql-execute,sqltable-rag,openviking,host.docker.internal
+      - no_proxy=${no_proxy:-}${no_proxy:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,sql-execute,sqltable-rag,openviking,host.docker.internal
     env_file:
       - ../.env
     extra_hosts:
@@ -219,9 +225,56 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      sql-execute:
+        condition: service_healthy
+      sqltable-rag:
+        condition: service_healthy
     networks:
       - deer-flow-dev
     restart: unless-stopped
+
+  # ── External SQL MCP Server ───────────────────────────────────────────────
+  sql-execute:
+    build:
+      context: ../
+      dockerfile: mcp-extensions/sql-execute/Dockerfile
+    container_name: deer-flow-sql-execute
+    environment:
+      - SQL_EXECUTE_CONFIG_PATH=/app/config.yaml
+      - DATA_AGENT_MYSQL_DSN=${DATA_AGENT_MYSQL_DSN:-}
+      - DATA_AGENT_POSTGRES_DSN=${DATA_AGENT_POSTGRES_DSN:-}
+    networks:
+      - deer-flow-dev
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8003), 2).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # ── External TableRAG MCP Server ───────────────────────────────────────────
+  sqltable-rag:
+    build:
+      context: ../
+      dockerfile: mcp-extensions/sqltable-rag/Dockerfile
+    container_name: deer-flow-sqltable-rag
+    volumes:
+      - ../tablerag.yaml:/app/tablerag.yaml:ro
+    environment:
+      - SQLTABLE_RAG_CONFIG_PATH=/app/mcp-extensions/sqltable-rag/config.yaml
+      - TABLERAG_MCP_CONFIG=/app/tablerag.yaml
+      - TABLERAG_MCP_INDEX_DSN=${TABLERAG_MCP_INDEX_DSN:-}
+      - TABLERAG_MCP_TRANSPORT=streamable-http
+      - TABLERAG_MCP_HOST=0.0.0.0
+      - TABLERAG_MCP_PORT=8004
+    networks:
+      - deer-flow-dev
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8004), 2).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
 volumes:
   # Persist .venv across container restarts so dependencies installed during

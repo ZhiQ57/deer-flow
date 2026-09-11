@@ -1506,19 +1506,14 @@ sandbox:
 #   #     max_turns: 80
 #   #     timeout_seconds: 600
 #   #   sql-subagent:
-#   #     description: "Generate and validate one read-only PostgreSQL/MySQL query from a DataAgent snapshot"
+#   #     description: "Generate and execute one read-only PostgreSQL/MySQL query"
 #   #     system_prompt: |
-#   #       Consume only the JSON envelope supplied by the parent DataAgent.
-#   #       Use data_validate_sql first. Only when action=execute may data_execute_sql be used.
-#   #       When execution fails with retryable=true, use error_category, error_message,
-#   #       and recommended_action to repair or simplify the SQL, then call data_validate_sql
-#   #       again before another execution. Never exceed max_execution_attempts.
-#   #       Return exactly one JSON object
-#   #       matching the requested snapshot_id and data_source_id, including the validator's
-#   #       sql_sha256 and validation_digest; do not use Markdown or ask the user questions.
+#   #       Generate a read-only SQL query from the parent DataAgent context.
+#   #       Call sql_execute directly and return its rows without reducing them to
+#   #       only row/column counts. If the tool reports an error, repair the SQL
+#   #       and call it again. Do not use bash or another database tool.
 #   #     tools:
-#   #       - data_validate_sql
-#   #       - data_execute_sql
+#   #       - sql_execute
 #   #     disallowed_tools:
 #   #       - task
 #   #       - ask_clarification

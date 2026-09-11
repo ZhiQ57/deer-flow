@@ -8,14 +8,13 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import BaseTool
 
-
 logger = logging.getLogger(__name__)
 
 
 class DataAgentServiceAbility:
     """DataAgent 查询闭环的正式 service ability 实现。"""
 
-    name = "data-agent"
+    name = "data_query"
 
     def __init__(self, config: dict) -> None:
         """初始化 DataAgent 能力适配器。

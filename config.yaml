@@ -1314,17 +1314,15 @@ subagents:
       max_turns: 80
       timeout_seconds: 600
     sql-subagent:
-      description: "根据 DataAgent 已批准快照生成并校验一条只读 PostgreSQL/MySQL SQL"
+      description: "生成并执行一条只读 PostgreSQL/MySQL SQL"
       system_prompt: |
-        只消费父 DataAgent 提供的 JSON envelope，不重新检索数据库。
-        必须先调用 data_validate_sql；action=execute 时，再把 executable_sql 和 validation_digest
-        原样传给 data_execute_sql。执行失败且 retryable=true 时，根据 error_category、error_message
-        和 recommended_action 修复或简化 SQL，重新调用 data_validate_sql 后才能再次执行，
-        且不得超过 max_execution_attempts。最终只返回一个 JSON 对象，必须匹配 snapshot_id、data_source_id，
-        并包含 validation 和 execution；禁止 Markdown、自由文本、猜测表字段或向用户提问。
+        根据父 DataAgent 的查询上下文生成一条只读 SQL。
+        必须直接调用 sql_execute，并把工具返回的 rows 原样带回给父 Agent；
+        不得只返回 SQL 校验状态、行数、列数或数据量摘要。
+        如果工具返回错误，根据 error_code 和 error_message 修复 SQL 后重新调用。
+        最终向父 Agent 说明执行 SQL 和完整查询结果，不要调用 bash 或其他数据库工具。
       tools:
-        - data_validate_sql
-        - data_execute_sql
+        - sql_execute
       disallowed_tools:
         - task
         - ask_clarification

@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping
 from typing import Any, Literal
 
-from deerflow.agents.service_agent.config import BaseServiceAbilityConfig
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
@@ -123,8 +121,6 @@ class DataAgentServiceAbilityConfig(BaseModel):
     def public_metadata(self) -> dict[str, Any]:
         """返回可以暴露给 Agents API 和运行 metadata 的脱敏摘要。"""
         return {
-            "enable_subagent_sql_execution": self.enable_subagent_sql_execution,
-
             "type": self.type,
             "version": self.version,
             "enabled": True,

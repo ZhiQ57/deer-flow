@@ -737,12 +737,14 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     # 根据 agent_name 动态加载 lead-agent 配置，如果是 bootstrap 模式则不加载配置
     agent_config = (load_agent_config(agent_name, user_id=resolved_user_id) if resolved_user_id is not None else load_agent_config(agent_name)) if not is_bootstrap else None
 
-    # ADD: 由 service_ability 合同决定 DataAgent 是否启用业务工具和 middleware。
-    # TODO: 这里解析的是外层的 service-ability, 需要独立方法注入
+    # 保留 service_ability 作为可选业务扩展；普通 custom-agent 的子代理权限
+    # 由 allowable_subagents 决定，不要求绑定 DataAgent SQL 能力。
     service_ability = resolve_nested_service_ability_safely(agent_config if agent_config else None)
 
-    # ADD: 只有 custom-agent 显式 allowlist SQL SubAgent 时才开启现有 task 工具。
-    subagent_enabled = bool(service_ability is not None and agent_config is not None and agent_config.allowable_subagents)
+    # custom-agent 显式声明 allowable_subagents 即开启 task 工具。SQL 权限仍由
+    # 外部 MCP 工具白名单控制，不在 AgentLoop 中增加 SQL 特判。
+    if agent_config is not None and agent_config.allowable_subagents is not None:
+        subagent_enabled = bool(agent_config.allowable_subagents)
 
     if subagent_enabled:
         context = config.setdefault("context", {})
@@ -812,6 +814,17 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             "service_ability": service_ability.public_metadata() if service_ability is not None else None,
         }
     )
+    # 仅向通用运行上下文写入脱敏的 DataAgent 能力元数据，供查询标签/
+    # 审批 middleware 和子代理权限判断使用；不写入 DSN，也不注入旧 Gateway SQL 工具。
+    if service_ability is not None:
+        context = config.setdefault("context", {})
+        if isinstance(context, dict):
+            context["data_query_service_ability"] = service_ability.public_metadata()
+            context["data_query_sql_subagent_allowed"] = bool(
+                agent_config is not None
+                and agent_config.allowable_subagents is not None
+                and service_ability.config.sql_subagent_name in agent_config.allowable_subagents
+            )
 
     # Inject tracing callbacks at the graph invocation root so a single LangGraph
     # run produces one trace with all node / LLM / tool calls as child spans,
@@ -926,6 +939,10 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     extra_tools = [update_agent] if agent_name and not is_webhook_channel else []
     # Default lead agent (unchanged behavior)
     raw_tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, app_config=resolved_app_config)
+    if agent_config is not None:
+        from deerflow.tools.mcp_metadata import filter_mcp_tools
+
+        raw_tools = filter_mcp_tools(raw_tools, agent_config.mcp_tools)
 
     # ADD: service_ability 读取授权工具集
     if service_ability is not None:

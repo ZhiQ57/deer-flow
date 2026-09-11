@@ -13,7 +13,6 @@ from app.gateway.config import get_gateway_config
 from app.gateway.csrf_middleware import CORS_EXPOSED_HEADERS, CSRFMiddleware, get_configured_cors_origins
 from app.gateway.deps import langgraph_runtime
 from app.gateway.modules.sql_execution.router import router as sql_execution_router
-from app.gateway.modules.sql_execution.tool_provider import register_gateway_sql_tool_provider
 from app.gateway.routers import (
     agents,
     artifacts,
@@ -641,9 +640,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # Browser API is mounted at /api/threads/{thread_id}/browser
     app.include_router(browser.router)
 
-    # DataAgent SQL API is mounted at /api/threads/{thread_id}/sql/execute
+    # DataAgent SQL API remains available for the frontend manual Execute button.
+    # Model and SubAgent SQL calls use the external MCP server instead.
     app.include_router(sql_execution_router)
-    register_gateway_sql_tool_provider(app)
 
     # Uploads API is mounted at /api/threads/{thread_id}/uploads
     app.include_router(uploads.router)

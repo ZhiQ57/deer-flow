@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-import logging
+from typing import TYPE_CHECKING, Any
 
-from deerflow.agents.service_agent.contracts import ServiceAbilityAdapter, ServiceState
+from pydantic import BaseModel
+
+from deerflow.agents.service_agent.contracts import ServiceAbilityAdapter, ServiceState, StateMerger
 from deerflow.agents.service_agent.data_agent.service_ability import DataAgentServiceAbility
 from deerflow.agents.service_agent.data_agent.service_config import DataAgentServiceAbilityConfig
 from deerflow.agents.service_agent.data_agent.service_state import merge_data_query_state
-from deerflow.agents.service_agent.contracts import StateMerger
-from deerflow.config.agents_config import AgentConfig
-from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from deerflow.config.agents_config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +27,13 @@ class ServiceAbilitySpec:
     adapter_cls: type[ServiceAbilityAdapter]
     state_merger: StateMerger | None = None  # 可选的业务状态合并函数
 
+
 # 业务注册表字典
 SERVICE_ABILITY_REGISTRY: dict[str, ServiceAbilitySpec] = {
     "data-agent": ServiceAbilitySpec(
-        config_cls=DataAgentServiceAbilityConfig,   # 配置类
-        adapter_cls=DataAgentServiceAbility,        # 适配器
-        state_merger=merge_data_query_state,        # 业务状态合并函数
+        config_cls=DataAgentServiceAbilityConfig,  # 配置类
+        adapter_cls=DataAgentServiceAbility,  # 适配器
+        state_merger=merge_data_query_state,  # 业务状态合并函数
     ),
 }
 
@@ -53,6 +57,10 @@ def resolve_nested_service_ability_safely(agent_config: AgentConfig | None) -> S
         raise ValueError("AgentConfig.service_ability 必须是字典或 Pydantic 模型")
 
     service_name = str(raw_service_ability.get("service_name") or "").strip()
+    # DataAgent 配置公开使用 `type: data_query` 合同；这里仅将其映射
+    # 到内部注册名，不能因此把 SQL 执行重新接回 AgentLoop。
+    if not service_name and raw_service_ability.get("type") == "data_query":
+        service_name = "data-agent"
     if not service_name:
         raise ValueError("AgentConfig.service_ability 缺少 service_name")
 
@@ -64,8 +72,7 @@ def resolve_nested_service_ability_safely(agent_config: AgentConfig | None) -> S
     return spec.adapter_cls(config)
 
 
-
-def resolve_service_ability_safely(agent_config: AgentConfig | None) -> ServiceAbilityAdapter | None:
+def resolve_service_ability_safely(agent_config: AgentConfig | Mapping[str, Any] | None) -> ServiceAbilityAdapter | None:
     """安全解析 custom-agent 的 service ability
 
     Args:
@@ -80,7 +87,11 @@ def resolve_service_ability_safely(agent_config: AgentConfig | None) -> ServiceA
 
     # 读取智能体名称
     if isinstance(agent_config, Mapping):
-        name = agent_config.get("service_name")   # 字典
+        name = agent_config.get("service_name")  # 字典
+        # 兼容历史 AgentConfig.service_ability 直接使用 type=data_query 的
+        # 结构；这只恢复元数据解析，不恢复 SQL middleware 或 Gateway 执行链。
+        if not name and agent_config.get("type") == "data_query":
+            name = "data-agent"
     else:
         name = getattr(agent_config, "service_name", None)  # 对象
         # TODO 这里分为两种情况, 一种是 系统外层读取 config.yaml , 一种是 读取 service_bility 参数.
@@ -131,11 +142,7 @@ def merge_service_states(
 
         merger = spec.state_merger if spec is not None else None
 
-        merged = (
-            merger(active.get(service_name), incoming)
-            if merger is not None
-            else incoming
-        )
+        merged = merger(active.get(service_name), incoming) if merger is not None else incoming
 
         if merged is None:
             continue
@@ -145,4 +152,3 @@ def merge_service_states(
         active[service_name] = merged
 
     return list(active.values())
-

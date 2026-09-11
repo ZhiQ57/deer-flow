@@ -1,17 +1,12 @@
 {
   "middlewares": [],
-  "mcpInterceptors": [
-    "my_package.mcp.auth:build_auth_interceptor"
-  ],
+  "mcpInterceptors": [],
   "mcpServers": {
     "github": {
       "enabled": false,
       "type": "stdio",
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-github"
-      ],
+      "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {
         "GITHUB_TOKEN": "$GITHUB_TOKEN"
       },
@@ -24,34 +19,20 @@
       "enabled": false,
       "type": "stdio",
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-postgres",
-        "postgresql://localhost/mydb"
-      ],
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"],
       "env": {},
       "description": "PostgreSQL database access",
       "routing": {
         "mode": "prefer",
         "priority": 50,
-        "keywords": [
-          "database",
-          "SQL",
-          "table",
-          "订单",
-          "用户"
-        ]
+        "keywords": ["database", "SQL", "table", "订单", "用户"]
       },
       "tools": {
         "query": {
           "routing": {
             "mode": "prefer",
             "priority": 100,
-            "keywords": [
-              "查库",
-              "订单表",
-              "指标"
-            ]
+            "keywords": ["查库", "订单表", "指标"]
           }
         }
       }
@@ -60,12 +41,7 @@
       "enabled": false,
       "type": "stdio",
       "command": "python",
-      "args": [
-        "-m",
-        "table_rag.mcp",
-        "--transport",
-        "stdio"
-      ],
+      "args": ["-m", "table_rag.mcp", "--transport", "stdio"],
       "env": {
         "TABLERAG_MCP_CONFIG": "$TABLERAG_CONFIG",
         "TABLERAG_MCP_INDEX_DSN": "$TABLERAG_MCP_INDEX_DSN"
@@ -76,15 +52,31 @@
       "routing": {
         "mode": "prefer",
         "priority": 90,
-        "keywords": [
-          "Text2SQL",
-          "NL2SQL",
-          "schema",
-          "table_rag",
-          "数据表",
-          "字段",
-          "查库"
-        ]
+        "keywords": ["Text2SQL", "NL2SQL", "schema", "table_rag", "数据表", "字段", "查库"]
+      }
+    },
+    "sql-execute": {
+      "enabled": false,
+      "type": "http",
+      "url": "$SQL_EXECUTE_MCP_URL",
+      "tool_name_prefix": false,
+      "description": "External read-only SQL execution MCP server",
+      "routing": {
+        "mode": "prefer",
+        "priority": 95,
+        "keywords": ["SQL", "查询", "数据库", "执行查询"]
+      }
+    },
+    "sqltable-rag": {
+      "enabled": false,
+      "type": "http",
+      "url": "$SQLTABLE_RAG_MCP_URL",
+      "tool_name_prefix": false,
+      "description": "External TableRAG schema retrieval MCP server",
+      "routing": {
+        "mode": "prefer",
+        "priority": 90,
+        "keywords": ["Text2SQL", "NL2SQL", "表结构", "字段", "业务口径"]
       }
     }
   },

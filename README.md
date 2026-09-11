@@ -304,7 +304,11 @@ DeerFlow still uses `Forwarded` / `X-Forwarded-*` headers to recover the browser
 >
 > Run cancellation may land on any Gateway worker. A non-owning worker now persists the interrupt or rollback request for the live owner, which observes it during lease renewal and performs the normal cancellation flow; load-balancer routing alone no longer produces a 409. The first accepted action wins even if a retry lands on the owner, and accepted cancellation competes atomically with owner completion. Dead owners still follow lease takeover and orphan recovery. Cancellation latency is therefore bounded by the lease heartbeat interval.
 >
-> DataAgent SQL bindings are resolved before durable run admission, then registered synchronously after the Gateway assigns the run ID. The capability and its request-scoped database secret copy are removed when the attached run task finishes, including failure and cancellation paths.
+> Model and SubAgent DataAgent SQL is executed by the external MCP services under
+> `mcp-extensions/`; the Gateway/AgentLoop does not inject SQL execution middleware.
+> The existing frontend manual Execute button continues to use the Gateway
+> `/api/threads/{thread_id}/sql/execute` route, while the MCP service receives model
+> SQL strings and returns bounded real rows.
 >
 > With lease heartbeat enabled, a transient RunStore renewal error is retried only until the last confirmed lease expires; the stale worker then cancels local execution and suppresses checkpoint, completion-hook, delivery-receipt, and thread-status finalization. A remote tool side effect already in flight may still be outside local cancellation.
 >
@@ -424,32 +428,13 @@ Targeted updates accept both DeerFlow's `type` field and the MCP-spec `transport
 Runtime MCP and skill updates replace `extensions_config.json` atomically, so an interrupted write cannot leave the shared configuration truncated or partially written.
 MCP routing hints can also prefer a specific MCP tool for matching requests without forbidding other tools. When `tool_search` defers MCP schemas, matching routing metadata can auto-promote up to `tool_search.auto_promote_top_k` deferred schemas before the model call.
 See the [MCP Server Guide](backend/docs/MCP_SERVER.md) for detailed instructions.
-The default `extensions_config.example.json` also includes a disabled `tablerag`
-stdio server entry for the DataAgent Text2SQL workflow. See
-[DataAgent Text2SQL](docs/agents/data-agent/README.md) before enabling it with
-your own TableRAG config and DSNs.
-The production path is the custom-agent `data_query` service ability: a new visible
-user turn resets the DataAgent query snapshot before TableRAG retrieval, and SQL-stage
-rejections are persisted as terminal failed subagent results so the label review card
-and SQL SubAgent can continue on the next valid turn.
-For local prototype runs without adding a Gateway route, use
-`python backend\tests\service_agent\test-data-agent\run_data_agent_stream.py "your data question"` to
-stream the experimental DataAgent (`backend/packages/harness/deerflow-dev`).
-The prototype mirrors the DeerFlow SDK boundaries: graph assembly in
-`agents/data_agent`, middleware in `agents/middlewares`, state in
-`agents/thread_state.py`, and callable tools in `tools/builtins`.
-Use `--log-path <directory-or-log.txt>` to create a timestamped, credential-redacted
-`log_YYYYMMDD_HHMMSS_mmm.txt` containing runtime variables, stream events, tool/stage
-output, and Python dependency logs.
-For a more readable local workflow, run
-`python backend\tests\service_agent\test-data-agent\run_data_agent_web.py`.
-It opens a loopback-only browser UI with chat, execution stages, QueryContext labels,
-TableRAG retrieval, validated SQL, result tables, ChartSpec previews, tool events, and
-the per-run log path. This is a standalone debugging app, not a production Gateway route.
-The experimental graph enforces read-only TableRAG retrieval, validated single-statement
-MySQL queries, bounded execution, and optional ChartSpec generation. It is not yet the
-same graph used by the native custom-agent UI; configure credentials through environment
-variables and use a database-level read-only MySQL account.
+The default `extensions_config.example.json` includes disabled HTTP entries for the
+external `sql-execute` and `sqltable-rag` services. See
+[DataAgent Text2SQL](docs/agents/data-agent/README.md) and
+[MCP Extensions](mcp-extensions/README.md) before enabling them. Development starts
+the MCP servers manually; Docker Compose starts them as independent services.
+`sql-execute` returns real `rows` plus a readable SQL/result wrapper, while tool
+visibility remains configurable per Lead-Agent or SubAgent.
 
 Security: pass per-request MCP credentials only through `config.context.secrets`;
 credentials must never be placed in either run metadata surface

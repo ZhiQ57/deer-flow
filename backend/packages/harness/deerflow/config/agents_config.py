@@ -199,6 +199,9 @@ class AgentConfig(BaseModel):
     # - ["default", "subagent1", "subagent2"] 表示允许使用的子智能体列表
     allowable_subagents: list[str] | None = None
     tool_groups: list[str] | None = None
+    # 当前 Lead-Agent custom-agent 的 MCP 工具白名单。None 继承全部已启用 MCP
+    # 工具；[] 隐藏全部 MCP 工具；名称匹配最终暴露给模型的工具名。
+    mcp_tools: list[str] | None = None
     # skills controls which skills are discoverable and may be activated by the
     # agent. It does not activate their allowed-tools policies at construction:
     # - None (or omitted): load all enabled skills (default fallback behavior)
@@ -214,7 +217,7 @@ class AgentConfig(BaseModel):
     # Per-agent reasoning-effort default for models that support it. None = do
     # not override (a request-supplied reasoning_effort still wins over this).
     reasoning_effort: Literal["low", "medium", "high"] | None = None
-    
+
     # ADD: 可扩展的定制业务能力配置
     service_ability: dict[str, Any] | None = None
     # Optional binding to GitHub repositories so this agent can respond to

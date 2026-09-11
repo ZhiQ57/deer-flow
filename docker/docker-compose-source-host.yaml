@@ -65,6 +65,11 @@ services:
       DEER_FLOW_STREAM_BRIDGE_REDIS_URL: ${DEER_FLOW_STREAM_BRIDGE_REDIS_URL:-redis://127.0.0.1:6379/0}
       DEER_FLOW_CHANNELS_LANGGRAPH_URL: http://127.0.0.1:8001/api
       DEER_FLOW_CHANNELS_GATEWAY_URL: http://127.0.0.1:8001
+      SQL_EXECUTE_MCP_URL: ${SQL_EXECUTE_MCP_URL:-http://127.0.0.1:8003/mcp}
+      SQLTABLE_RAG_MCP_URL: ${SQLTABLE_RAG_MCP_URL:-http://127.0.0.1:8004/mcp}
+      DATA_AGENT_MYSQL_DSN: ${DATA_AGENT_MYSQL_DSN:-}
+      DATA_AGENT_POSTGRES_DSN: ${DATA_AGENT_POSTGRES_DSN:-}
+      TABLERAG_MCP_INDEX_DSN: ${TABLERAG_MCP_INDEX_DSN:-}
       DEER_FLOW_INTERNAL_AUTH_TOKEN: ${DEER_FLOW_INTERNAL_AUTH_TOKEN:-}
       # AioSandboxProvider + DooD 时，Docker daemon 需要看到宿主机上的
       # 运行时目录；LocalSandboxProvider 不依赖这两个变量。
@@ -79,7 +84,51 @@ services:
       - "host.docker.internal:host-gateway"
     # 仅适用于 Linux。这样可以直接访问已有的 127.0.0.1:55432/6379。
     network_mode: host
+    depends_on:
+      sql-execute:
+        condition: service_healthy
+      sqltable-rag:
+        condition: service_healthy
     restart: unless-stopped
+
+  sql-execute:
+    build:
+      context: ../
+      dockerfile: mcp-extensions/sql-execute/Dockerfile
+    container_name: deer-flow-source-sql-execute
+    environment:
+      SQL_EXECUTE_CONFIG_PATH: /app/config.yaml
+      DATA_AGENT_MYSQL_DSN: ${DATA_AGENT_MYSQL_DSN:-}
+      DATA_AGENT_POSTGRES_DSN: ${DATA_AGENT_POSTGRES_DSN:-}
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8003), 2).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  sqltable-rag:
+    build:
+      context: ../
+      dockerfile: mcp-extensions/sqltable-rag/Dockerfile
+    container_name: deer-flow-source-sqltable-rag
+    volumes:
+      - ../tablerag.yaml:/app/tablerag.yaml:ro
+    environment:
+      SQLTABLE_RAG_CONFIG_PATH: /app/mcp-extensions/sqltable-rag/config.yaml
+      TABLERAG_MCP_CONFIG: /app/tablerag.yaml
+      TABLERAG_MCP_INDEX_DSN: ${TABLERAG_MCP_INDEX_DSN:-}
+      TABLERAG_MCP_TRANSPORT: streamable-http
+      TABLERAG_MCP_HOST: 0.0.0.0
+      TABLERAG_MCP_PORT: 8004
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8004), 2).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   # ── Frontend：映射宿主机 frontend 源码 ────────────────────────────────────
   frontend:

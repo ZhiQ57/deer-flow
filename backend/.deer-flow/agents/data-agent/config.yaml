@@ -6,6 +6,9 @@ model: 使用 Qwen / Deepseek / glm 系列国产模型
 allowable_subagents: 
   - default
   - sql-subagent
+# Lead-Agent 只检索表结构；SQL 执行权交给显式配置的 sql-subagent。
+mcp_tools:
+  - sqlrag_retrieve
 
 # 工具列表
 tool_groups:
@@ -20,24 +23,16 @@ skills:
   - data-analysis
   - chart-visualization
 
-# 业务能力：表示正式 DataAgent 能力，例如：PostgreSQL 保存 TableRAG 索引，MySQL 执行业务 SQL.
+# 手动 SQL 执行按钮仍通过 Gateway 路由执行；模型和子代理执行 SQL
+# 继续通过外部 MCP 的 sql_execute，不会由 service_ability 注入 AgentLoop。
 service_ability:
-  # 通用字段
-  service_name: data-agent
-  version: 1
-  # 业务字段
-  confirmation_mode: always       # 审批模式, on_ambiguity: 模糊时审批, always: 总是审批, never: 从不审批
-  enable_subagent_sql_execution: true   # 是否允许子智能体执行 SQL
-  allowed_type: readonly                # 允许的数据库访问类型, readonly: 只读, readwrite: 可读写
-  execute_database: $EXECUTE_DATABASE_TYPE          # 环境变量读取执行数据库方言
-  dsn_env: $DATA_AGENT_DSN
-
   type: data_query
+  version: 1
   enable_sql_rag: true
-  table_rag_config: tabelrag.yaml
+  table_rag_config: tablerag.yaml
   data_source_id: text2sql-mysql-local
   source_binding_mode: logical_data_source
-  min_auto_confidence: 0.85
+  confirmation_mode: always
   sql_subagent_name: sql-subagent
   sql_execution:
     enabled: true

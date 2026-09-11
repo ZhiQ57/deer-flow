@@ -5,31 +5,34 @@ tool_groups:
   - file:read
 allowable_subagents:
   - sql-subagent
+mcp_tools:
+  - sqlrag_retrieve
 skills:
   - table-rag-agent
   - data-analysis
   - chart-visualization
+# 手动 SQL 执行按钮仍通过 Gateway 路由执行；模型和子代理执行 SQL
+# 继续通过外部 MCP 的 sql_execute，不会由 service_ability 注入 AgentLoop。
 service_ability:
   type: data_query
   version: 1
-  # data_query v1 只支持完整 TableRAG -> SQL 闭环；停用时移除整个 service_ability。
   enable_sql_rag: true
   table_rag_config: tablerag.yaml
   data_source_id: text2sql-mysql-local
   source_binding_mode: logical_data_source
   confirmation_mode: always
-  min_auto_confidence: 0.85
   sql_subagent_name: sql-subagent
   sql_execution:
     enabled: true
     database_type: mysql
     dsn_env: DATA_AGENT_MYSQL_DSN
     readonly: true
-    statement_timeout_seconds: 30
-    max_execution_attempts: 3
-    max_rows: 500
+    statement_timeout_seconds: 10
+    max_rows: 100
     max_cell_chars: 2000
     max_result_chars: 100000
-    allowed_schemas: [text2sql]
-    allowed_tables: []
-    allowed_columns: []
+    allowed_schemas:
+      - text2sql
+
+# 通过 extensions_config.json、custom-agent 工具白名单控制
+# Lead-Agent/SubAgent 可见的 MCP 工具。

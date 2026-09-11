@@ -221,8 +221,8 @@ async def test_internal_execute_returns_gateway_authoritative_artifact() -> None
     )
     context = SimpleNamespace(
         config=config,
-        active_state={"snapshot_id": "snapshot-1"},
-        retrieval={"binding": {"binding_fingerprint": "sha256:binding"}},
+        flow_id="flow-1",
+        binding={"binding_fingerprint": "sha256:binding"},
         capability=SimpleNamespace(secrets={"database-dsn": "secret"}),
     )
     validation = {
@@ -234,7 +234,7 @@ async def test_internal_execute_returns_gateway_authoritative_artifact() -> None
         "validation_digest": "sha256:validation",
         "database_type": "postgresql",
         "binding_fingerprint": "sha256:binding",
-        "snapshot_id": "snapshot-1",
+        "flow_id": "flow-1",
     }
     execution = {
         "version": 1,
@@ -257,7 +257,7 @@ async def test_internal_execute_returns_gateway_authoritative_artifact() -> None
     body = InternalSqlExecuteRequest(
         agent_name="data-agent",
         sql="SELECT orders.region FROM public.orders",
-        snapshot_id="snapshot-1",
+        flow_id="flow-1",
         run_id="run-1",
         validation_digest="sha256:validation",
     )
@@ -290,7 +290,7 @@ async def test_internal_execute_returns_gateway_authoritative_artifact() -> None
     assert result.execution["attempt"] == 1
     mark_succeeded.assert_called_once_with(
         run_id="run-1",
-        snapshot_id="snapshot-1",
+        flow_id="flow-1",
     )
 
 
@@ -300,8 +300,8 @@ async def test_internal_validate_records_gateway_validation_generation() -> None
     config = SimpleNamespace(data_source_id="sales-pg")
     context = SimpleNamespace(
         config=config,
-        active_state={"snapshot_id": "snapshot-1"},
-        retrieval={"binding": {"binding_fingerprint": "sha256:binding"}},
+        flow_id="flow-1",
+        binding={"binding_fingerprint": "sha256:binding"},
         capability=SimpleNamespace(secrets={}),
     )
     validation = {
@@ -309,13 +309,13 @@ async def test_internal_validate_records_gateway_validation_generation() -> None
         "valid": True,
         "source": "subagent",
         "validation_digest": "sha256:validation",
-        "snapshot_id": "snapshot-1",
+        "flow_id": "flow-1",
     }
     service = SimpleNamespace(validate=MagicMock(return_value=validation))
     body = InternalSqlRequest(
         agent_name="data-agent",
         sql="SELECT orders.region FROM public.orders",
-        snapshot_id="snapshot-1",
+        flow_id="flow-1",
         run_id="run-1",
     )
 
@@ -346,7 +346,7 @@ async def test_internal_validate_records_gateway_validation_generation() -> None
     assert result.validation["valid"] is True
     record_validation.assert_called_once_with(
         run_id="run-1",
-        snapshot_id="snapshot-1",
+        flow_id="flow-1",
         validation_digest="sha256:validation",
     )
 
@@ -363,7 +363,7 @@ async def test_internal_route_rejects_non_internal_auth_before_state_access() ->
     body = InternalSqlRequest(
         agent_name="data-agent",
         sql="SELECT 1",
-        snapshot_id="snapshot-1",
+        flow_id="flow-1",
         run_id="run-1",
     )
 
@@ -372,7 +372,6 @@ async def test_internal_route_rejects_non_internal_auth_before_state_access() ->
             thread_id="thread-1",
             body=body,
             request=request,
-            require_execute=True,
         )
 
     assert getattr(exc_info.value, "status_code", None) == 403

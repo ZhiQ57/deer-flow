@@ -63,7 +63,12 @@ async def _load_sql_config(agent_name: str, user_id: str):
         raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found") from exc
     if agent_config is None:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
-    ability = resolve_service_ability_safely(agent_config.service_ability)
+    try:
+        ability = resolve_service_ability_safely(agent_config.service_ability)
+    except ValueError as exc:
+        # 手动 SQL 路由必须把失效的 service_ability 配置转换成稳定的
+        # 客户端权限错误，不能让配置错误冒泡为 500。
+        raise HTTPException(status_code=403, detail="Agent does not enable data_query SQL execution") from exc
     if not isinstance(ability, DataAgentServiceAbility):
         raise HTTPException(status_code=403, detail="Agent does not enable data_query SQL execution")
     config = ability.config

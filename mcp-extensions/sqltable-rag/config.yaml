@@ -1,0 +1,10 @@
+# sqltable-rag 独立启动配置。
+server:
+  name: sqltable-rag
+  transport: stdio
+  host: 0.0.0.0
+  port: 8004
+
+tablerag:
+  config_path: ${TABLERAG_CONFIG:-tablerag.yaml}
+  index_dsn_env: TABLERAG_MCP_INDEX_DSN

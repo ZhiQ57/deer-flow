@@ -1,4 +1,6 @@
-当前 DataAgent 并不是独立 LangGraph，而是“正式 `lead_agent` + `data_query service_ability`”。自动 SQL 链路也不经过 bash：数据库执行入口是 `data_execute_sql → SqlExecutionService`.
+当前 DataAgent 并不是独立 LangGraph，而是“正式 `lead_agent` + `data_query service_ability`”。
+模型/子代理的 SQL 执行入口是外部 `sql-execute` MCP；`service_ability.sql_execution`
+仅保留给前端手动 SQL 路由使用，不会把 SQL 工具注入 AgentLoop。
 
 下面按当前代码的实际调用关系绘制.
 
@@ -181,25 +183,19 @@ DataAgent Lead Middleware
 ├─ 31. Custom / Configured Middleware（可选）
 │      └─ 配置文件中的扩展 Middleware
 │
-├─ 32. TableRagStageMiddleware
-│      └─ 控制 sqlrag_retrieve 阶段、预算和 Retrieval Snapshot
-│
-├─ 33. QueryLabelsMiddleware
+├─ 32. QueryLabelsMiddleware
 │      └─ 构造查询标签、Evidence 引用、Snapshot 和审批策略
 │
-├─ 34. QueryIntentApprovalMiddleware
+├─ 33. QueryIntentApprovalMiddleware
 │      └─ 拦截 ask_intent_approval；生成审批卡并把人类结果写回工具历史
 │
-├─ 35. SqlStageMiddleware
-│      └─ 只允许 approved 或策略自动放行的 Snapshot 委派 SQL SubAgent
-│
-├─ 36. TerminalResponseMiddleware
+├─ 34. TerminalResponseMiddleware
 │      └─ 避免模型在工具结束后返回空消息
 │
-├─ 37. SafetyFinishReasonMiddleware（可选）
+├─ 35. SafetyFinishReasonMiddleware（可选）
 │      └─ 模型被安全策略终止时禁止继续执行残缺工具调用
 │
-└─ 38. ClarificationMiddleware
+└─ 36. ClarificationMiddleware
        └─ 处理普通 Agent 澄清请求
 ```
 
@@ -228,15 +224,8 @@ DataAgent Graph 开始
    │     ├─ search-values
    │     └─ expand-join-graph
    │
-   ├─ TableRagStageMiddleware
-   │  ├─ 同一个 AIMessage 只保留第一次检索
-   │  ├─ 限制检索次数
-   │  ├─ 验证 TableRAG JSON
-   │  ├─ 生成 Evidence/Table/Column/Value ref
-   │  ├─ 构建 registry
-   │  ├─ 绑定 data_source_id 和 binding_fingerprint
-   │  ├─ 生成 retrieval_digest
-   │  └─ stage = retrieving / needs_refinement
+   ├─ DataAgent Lead 直接读取 sqltable-rag MCP 的 ToolMessage
+   │  └─ 基于返回的表、字段、业务口径和 Join Graph 继续推理
    │
    ├─ DataAgent Lead 再次推理业务口径
    │
@@ -284,36 +273,17 @@ Run B：用户提交审核结果
 
 ```text
 DataAgent Lead
-└─ 工具：task(
-      subagent_type = "sql-subagent",
-      prompt = 模型原始任务
-   )
-   │
-   ├─ SqlStageMiddleware.wrap_tool_call()
-   │  ├─ 检查当前持久化快照已 approved / approval_policy.required=false
-   │  ├─ 检查 action == execute / sql_only
-   │  ├─ 检查 allowable_subagents
-   │  ├─ 禁止同一个响应重复委派 SQL SubAgent
-   │  └─ 将模型原始 prompt 替换为服务端 JSON Envelope
-   │     ├─ snapshot_id
-   │     ├─ data_source_id
-   │     ├─ intent / labels
-   │     ├─ retrieval_digest
-   │     ├─ evidence / tables / columns / values
-   │     ├─ join_graphs
-   │     ├─ database_type
-   │     ├─ action
-   │     └─ max_execution_attempts
+└─ 工具：task(subagent_type = "sql-subagent")
    │
    └─ task_tool()
       ├─ 获取 sql-subagent 配置和独立 SQL 模型
-      ├─ 禁止递归 task
       ├─ 继承用户身份、Thread、Run 和授权上下文
-      ├─ 动态装配 SQL 工具
-      │  ├─ data_validate_sql（content + artifact）
-      │  └─ data_execute_sql（仅 action=execute，content + artifact）
-      │
+      ├─ 按 `custom_agents.sql-subagent.tools` 只暴露 `sql_execute`
       ├─ SubagentExecutor.execute_async()
+      │  └─ sql_execute(SQL 字符串) → 外部 sql-execute MCP
+      │     ├─ 返回真实 columns / rows
+      │     ├─ 返回行数与截断状态
+      │     └─ content 包装当前 SQL 与 SQL 结果摘要
       └─ 发送 task_* Custom Event
          ├─ task_started
          ├─ task_running
@@ -362,56 +332,15 @@ SQL 模型内部执行闭环：
 
 ```text
 SQL SubAgent 模型
-└─ 生成候选 SQL
+└─ 生成 SQL 字符串
    │
-   └─ 工具：data_validate_sql(sql)
-      └─ SqlExecutionService.validate()
-         ├─ SQLGlot 方言解析
-         ├─ 只允许单条 SELECT / UNION
-         ├─ 拒绝 DDL / DML / 多语句
-         ├─ 拒绝锁、危险函数和系统库
-         ├─ 校验 Schema
-         ├─ 校验当前 Retrieval registry
-         ├─ 校验 data source binding
-         ├─ 自动收紧 LIMIT
-         └─ 返回
-            ├─ executable_sql
-            ├─ sql_sha256
-            └─ validation_digest
-               │
-               └─ 工具：data_execute_sql(
-                    executable_sql,
-                    validation_digest
-                  )
-                  └─ SqlExecutionService.execute()
-                     ├─ 再次校验 SQL digest
-                     ├─ 再次校验 binding fingerprint
-                     ├─ 从 dsn_env 读取数据库 DSN
-                     ├─ PyMySQL / psycopg 连接数据库
-                     ├─ 开启只读事务
-                     ├─ 设置执行超时
-                     ├─ 执行 SQL
-                     ├─ rollback + close
-      └─ 返回 JSON 安全结果，并同时写入 artifact
-                        │
-                        ├─ 成功
-                        │  ├─ columns
-                        │  ├─ rows
-                        │  ├─ row_count
-                        │  ├─ truncated
-                        │  └─ duration_ms
-                        │
-                        └─ 失败
-                           ├─ error_code
-                           ├─ error_category
-                           ├─ error_message
-                           ├─ retryable
-                           └─ recommended_action
-                              │
-                              └─ retryable=true
-                                 └─ SQL 模型修复 SQL
-                                    └─ 必须重新 data_validate_sql
-                                       └─ 再次 data_execute_sql
+   └─ 工具：sql_execute(sql)
+      └─ 外部 mcp-extensions/sql-execute
+         ├─ MCP Server 负责只读、单语句、Schema 和结果预算边界
+         ├─ 执行真实数据库查询
+         ├─ 返回 columns / rows / row_count / returned_row_count
+         ├─ 返回 truncated、empty 和受控 error_code
+         └─ content 包装“当前执行SQL为 / SQL结果为”摘要
 ```
 
 这里没有 `bash`：
@@ -422,8 +351,8 @@ SQL SubAgent → bash → 数据库
 
 当前真实链路：
 SQL SubAgent
-  → data_execute_sql
-  → SqlExecutionService
+  → sql_execute
+  → 外部 sql-execute MCP
   → PyMySQL / psycopg
   → 数据库
 ```
@@ -434,30 +363,12 @@ SQL SubAgent
 
 ```text
 SubagentExecutor 捕获真实 ToolMessage
-├─ data_validate_sql ToolMessage
-└─ data_execute_sql ToolMessage
+└─ sql_execute ToolMessage
    │
-   └─ task_tool 重建 data_query_sql_result
-      ├─ 不信任 SQL 模型最终自由文本
-      ├─ 优先读取 SQL 工具 artifact
-      ├─ 兼容旧 content JSON
-      └─ 返回 task ToolMessage
-         │
-         └─ SqlStageMiddleware._merge_result()
-            ├─ 优先读取 task artifact
-            ├─ 若 task 已失败且携带 SQL_* 错误码则直接透传
-            ├─ 校验 snapshot_id
-            ├─ 校验 data_source_id
-            ├─ 校验 validation_digest
-            ├─ 调用 SqlExecutionService.validate() 再校验
-            ├─ 生成 data_query_sql_result Artifact
-            └─ service_states
-               ├─ succeeded
-               └─ failed
-                  │
-                  └─ DataAgent Lead 再次调用
-                     ├─ 读取 SQL、数据库行或原始错误
-                     └─ 生成最终用户答案
+   └─ task_tool 返回原始 MCP 结果给 Lead-Agent
+      ├─ 读取真实 SQL、columns 和 rows
+      ├─ 读取 row_count / truncated / error_code
+      └─ Lead-Agent 根据 content 摘要和结构化结果生成最终答案
 ```
 
 当前持久化状态的主要变化是：
@@ -469,7 +380,8 @@ idle
       └─ succeeded / failed
 ```
 
-`sql_generating`、`sql_validating`、`sql_ready`、`executing` 已在 reducer 中预留，但当前正式链路主要通过 SubAgent 的 `task_*` 事件展示过程，父 `service_states` 通常在任务返回后直接从 `approved` 投影到 `succeeded/failed`。
+模型侧 SQL 执行不再依赖 Gateway `service_states` 的 SQL 阶段或
+`SqlStageMiddleware`；MCP 结果通过普通 ToolMessage 和 `task_*` 事件返回。
 
 ## 七、SSE 返回前端
 
@@ -527,7 +439,7 @@ SQL Markdown CodeBlock
 
 ```text
 自动执行：
-DataAgent → task → SQL SubAgent → data_execute_sql → Executor
+DataAgent → task → SQL SubAgent → sql_execute → 外部 sql-execute MCP
 结果自动进入 ToolMessage、Checkpoint 和 Lead 上下文
 
 手动执行：
@@ -539,6 +451,6 @@ DataAgent → task → SQL SubAgent → data_execute_sql → Executor
 
 - Gateway Run：[thread_runs.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/app/gateway/routers/thread_runs.py:548)、[services.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/app/gateway/services.py:886)、[worker.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/runtime/runs/worker.py:375)
 - Lead 装配：[agent.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/lead_agent/agent.py:523)、[registry.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/registry.py:31)
-- DataAgent Middleware：[turn_context.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/turn_context.py:14)、[table_rag_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/table_rag_middleware.py:28)、[query_labels_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/middlewares/query_labels_middleware.py:46)、[approval_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/approval_middleware.py:34)、[sql_stage_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/sql_stage_middleware.py:26)
-- SQL 执行：[task_tool.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/tools/builtins/task_tool.py:323)、[sql_tools.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/sql_tools.py:33)、[sql_executor.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/sql_executor.py:658)
-- 手动执行支线：[sql_execution.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/app/gateway/routers/sql_execution.py:150)、[sql-code-block.tsx](D:/A-PythonWork/AOpenGithub/deer-flow/frontend/src/components/workspace/sql-execution/sql-code-block.tsx:16)、[sql-result-panel.tsx](D:/A-PythonWork/AOpenGithub/deer-flow/frontend/src/components/workspace/sql-execution/sql-result-panel.tsx:72)
+- DataAgent Middleware：[query_labels_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/middlewares/query_labels_middleware.py:46)、[query_intent_approval_middleware.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/agents/service_agent/data_agent/query_intent_approval_middleware.py:29)
+- SQL 执行：[task_tool.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/packages/harness/deerflow/tools/builtins/task_tool.py:323)、[sql-execute/server.py](D:/A-PythonWork/AOpenGithub/deer-flow/mcp-extensions/sql-execute/server.py:225)
+- 手动执行支线：[router.py](D:/A-PythonWork/AOpenGithub/deer-flow/backend/app/gateway/modules/sql_execution/router.py:224)、[sql-code-block.tsx](D:/A-PythonWork/AOpenGithub/deer-flow/frontend/src/components/workspace/sql-execution/sql-code-block.tsx:16)、[sql-result-panel.tsx](D:/A-PythonWork/AOpenGithub/deer-flow/frontend/src/components/workspace/sql-execution/sql-result-panel.tsx:72)

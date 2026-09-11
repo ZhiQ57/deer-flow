@@ -33,6 +33,25 @@ def is_mcp_tool(tool: BaseTool) -> bool:
     return (getattr(tool, "metadata", None) or {}).get(MCP_TOOL_METADATA_KEY) is True
 
 
+def filter_mcp_tools(tools: list[BaseTool], allowed_names: list[str] | None) -> list[BaseTool]:
+    """按 custom-agent 的通用 MCP 工具白名单过滤工具。
+
+    Args:
+        tools: 已加载的全部工具。
+        allowed_names: None 表示继承全部 MCP；空列表表示禁用 MCP；
+            其他值按工具最终暴露名称精确匹配。
+
+    Returns:
+        保留非 MCP 工具及白名单内 MCP 工具的新列表。
+    """
+    if allowed_names is None:
+        return tools
+    allowed = {name.strip() for name in allowed_names if isinstance(name, str) and name.strip()}
+    if "*" in allowed:
+        return tools
+    return [tool for tool in tools if not is_mcp_tool(tool) or tool.name in allowed]
+
+
 def tag_mcp_routing(tool: BaseTool, routing: Mapping[str, Any]) -> BaseTool:
     """Attach serialized MCP routing metadata to ``tool``."""
     tool.metadata = {
