@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { QueryIntentCard } from "@/components/workspace/messages/query-intent-card";
 import { I18nContext } from "@/core/i18n/context";
+import { enUS } from "@/core/i18n/locales/en-US";
 import type { QueryIntentArtifact } from "@/core/messages/data-query";
 
 const artifact: QueryIntentArtifact = {
@@ -44,7 +45,7 @@ function renderCard() {
   return renderToStaticMarkup(
     createElement(
       I18nContext.Provider,
-      { value: { locale: "en-US", setLocale: () => undefined } },
+      { value: { locale: "en-US", setLocale: () => undefined, t: enUS } },
       createElement(QueryIntentCard, {
         artifact,
       }),

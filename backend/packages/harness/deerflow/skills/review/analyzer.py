@@ -21,7 +21,7 @@ from deerflow.skills.review.models import (
     summarize_findings,
 )
 from deerflow.skills.review.resource_graph import build_resource_graph
-from deerflow.skills.skillscan.orchestrator import scan_skill_dir
+from deerflow.skills.skillscan import scan_skill_dir
 
 
 def analyze_skill_package(snapshot: dict[str, Any], *, profile: ProfileName = "deerflow") -> dict[str, Any]:
@@ -240,7 +240,7 @@ def _analyze_skill_md(content: str, *, profile: ProfileName, findings: list[dict
                 severity="error",
                 path="SKILL.md",
                 message=str(exc),
-                remediation="Declare allowed-tools as a YAML list of non-empty strings.",
+                remediation="Declare allowed-tools as a space-separated string or YAML list of non-empty strings.",
             )
         )
 

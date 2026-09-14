@@ -154,3 +154,16 @@ __all__ = [
     "scan_skill_dir",
     "skill_scan_enabled",
 ]
+
+# 原生实现可用时优先暴露上游完整扫描器；导入失败则继续使用上面的保守实现。
+try:
+    from deerflow.skills.skillscan import orchestrator as _native_scanner
+except Exception:
+    _native_scanner = None
+else:
+    RULES = _native_scanner.RULES
+    enforce_static_scan = _native_scanner.enforce_static_scan
+    format_static_findings = _native_scanner.format_static_findings
+    scan_archive_preflight = _native_scanner.scan_archive_preflight
+    scan_skill_dir = _native_scanner.scan_skill_dir
+    skill_scan_enabled = _native_scanner.skill_scan_enabled

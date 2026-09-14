@@ -1,4 +1,6 @@
 from .ask_intent_approval_tool import ask_intent_approval_tool
+from .background_tasks_tool import cancel_background_task, list_background_tasks
+from .batch_task_tool import batch_status, batch_task, cancel_batch
 from .clarification_tool import ask_clarification_tool
 from .entity_extract_tool import entity_extract_tool
 from .list_uploaded_files_tool import list_uploaded_files
@@ -21,5 +23,10 @@ __all__ = [
     "ask_clarification_tool",
     "view_image_tool",
     "task_tool",
+    "batch_task",
+    "batch_status",
+    "cancel_batch",
     "list_uploaded_files",
+    "list_background_tasks",
+    "cancel_background_task",
 ]

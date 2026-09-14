@@ -455,15 +455,74 @@ type MessageMetadataLookup = (
   index: number,
 ) => { streamMetadata?: Record<string, unknown> } | undefined;
 
+export type StreamMetadataSnapshot = {
+  ids: ReadonlyMap<string, Record<string, unknown>>;
+  messages: ReadonlyMap<Message, Record<string, unknown>>;
+};
+
 export type StreamingMessageLookup = {
   ids: ReadonlySet<string>;
   messages: ReadonlySet<Message>;
 };
 
+export function areStreamMetadataSnapshotsEqual(
+  left: StreamMetadataSnapshot,
+  right: StreamMetadataSnapshot,
+) {
+  if (
+    left.ids.size !== right.ids.size ||
+    left.messages.size !== right.messages.size
+  ) {
+    return false;
+  }
+
+  for (const [id, metadata] of left.ids) {
+    if (right.ids.get(id) !== metadata) {
+      return false;
+    }
+  }
+  for (const [message, metadata] of left.messages) {
+    if (right.messages.get(message) !== metadata) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function getStreamMetadataSnapshot(
+  messages: Message[],
+  getMessagesMetadata?: MessageMetadataLookup,
+): StreamMetadataSnapshot {
+  const metadataById = new Map<string, Record<string, unknown>>();
+  const metadataByMessage = new Map<Message, Record<string, unknown>>();
+
+  messages.forEach((message, index) => {
+    const streamMetadata = getMessagesMetadata?.(
+      message,
+      index,
+    )?.streamMetadata;
+    if (!streamMetadata) {
+      return;
+    }
+
+    if (typeof message.id === "string" && message.id.length > 0) {
+      metadataById.set(message.id, streamMetadata);
+    } else {
+      metadataByMessage.set(message, streamMetadata);
+    }
+  });
+
+  return {
+    ids: metadataById,
+    messages: metadataByMessage,
+  };
+}
+
 export function getStreamingMessageLookup(
   messages: Message[],
   isStreaming: boolean,
   getMessagesMetadata?: MessageMetadataLookup,
+  settledMetadata?: StreamMetadataSnapshot,
 ): StreamingMessageLookup {
   const streamingMessageIds = new Set<string>();
   const streamingMessages = new Set<Message>();
@@ -476,12 +535,25 @@ export function getStreamingMessageLookup(
   }
 
   messages.forEach((message, index) => {
-    if (!getMessagesMetadata?.(message, index)?.streamMetadata) {
+    const streamMetadata = getMessagesMetadata?.(
+      message,
+      index,
+    )?.streamMetadata;
+    if (!streamMetadata) {
       return;
     }
 
     if (typeof message.id === "string" && message.id.length > 0) {
+      // MessageTupleManager retains metadata until the whole stream instance is
+      // cleared. A later run therefore exposes the completed turn's metadata
+      // again. Only an unchanged metadata object is stale: a new object for the
+      // same message id means that message received another stream event.
+      if (settledMetadata?.ids.get(message.id) === streamMetadata) {
+        return;
+      }
       streamingMessageIds.add(message.id);
+    } else if (settledMetadata?.messages.get(message) === streamMetadata) {
+      return;
     }
     streamingMessages.add(message);
   });
@@ -510,6 +582,18 @@ export function isAssistantMessageGroupStreaming(
   });
 }
 
+// `deriveStableMessageGroups` preserves the identity of a settled group's
+// `messages` array across streaming chunks, so caching on that array lets the
+// message list re-render per chunk without re-running the derivation for
+// every settled turn (#5094). For string-content turns the saved work is the
+// reverse/filter/map traversal and its allocations — the regex/trim split
+// itself is already cached per message by `inlineReasoningCache`; for
+// array-content turns `extractContentFromMessage` has no lower-level cache,
+// so this also skips its O(bytes) map/join/trim re-run. Settled group arrays
+// are treated as immutable everywhere else, so the same reference always
+// yields the same result.
+const assistantTurnCopyDataCache = new WeakMap<Message[], string>();
+
 export function getAssistantTurnCopyData(
   messages: Message[],
   { isStreaming = false }: { isStreaming?: boolean } = {},
@@ -518,7 +602,12 @@ export function getAssistantTurnCopyData(
     return null;
   }
 
-  return (
+  const cached = assistantTurnCopyDataCache.get(messages);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const copyData =
     [...messages]
       .reverse()
       .filter((message) => message.type === "ai")
@@ -531,8 +620,11 @@ export function getAssistantTurnCopyData(
           ? content
           : (extractReasoningContentFromMessage(message) ?? "");
       })
-      .find((content) => content.length > 0) ?? null
-  );
+      .find((content) => content.length > 0) ?? null;
+  if (copyData !== null) {
+    assistantTurnCopyDataCache.set(messages, copyData);
+  }
+  return copyData;
 }
 
 export function getMessageCopyData(message: Message) {
@@ -817,15 +909,8 @@ export function isHiddenFromUIMessage(message: Message) {
   ) {
     return true;
   }
-  // Only the human branch consults the text. Extracting it up front made every
-  // caller pay a full content scan for every AI message it was about to
-  // discard, and this predicate runs over the whole message list on each
-  // stream chunk (grouping, dedup, human-input state).
-  if (message.type !== "human") {
-    return false;
-  }
-  const content = extractTextFromMessage(message);
   if (message.type === "tool") {
+    const content = extractTextFromMessage(message);
     if (
       isDataQueryLabelsToolMessage(message) ||
       isDataQuerySqlResultToolMessage(message)
@@ -841,7 +926,16 @@ export function isHiddenFromUIMessage(message: Message) {
     if (message.name !== "task" && isDataQueryInternalPayloadText(content)) {
       return true;
     }
+    return false;
   }
+  // Only the human branch consults the text. Extracting it up front made every
+  // caller pay a full content scan for every AI message it was about to
+  // discard, and this predicate runs over the whole message list on each
+  // stream chunk (grouping, dedup, human-input state).
+  if (message.type !== "human") {
+    return false;
+  }
+  const content = extractTextFromMessage(message);
   return (
     content.includes("<slash_skill_activation>") &&
     stripUploadedFilesTag(content).length === 0
@@ -863,6 +957,18 @@ export interface FileInMessage {
  * Strip backend-injected human context tags from message content.
  * Kept under its historical name because callers use it for uploaded-file
  * display cleanup.
+ *
+ * Display-only backward compatibility for #4212: ``<uploaded_files>`` is no
+ * longer emitted by the backend and is treated as plain content by the
+ * memory/sanitization pipelines, but threads persisted before #4174 still
+ * carry legacy blocks in their history. This display/export layer keeps
+ * stripping it so old threads render cleanly instead of showing raw XML
+ * with server-side upload paths.
+ *
+ * Accepted tradeoff (review): a live user typing the legacy spelling can
+ * hide their own message text / fabricate file chips — display-only and
+ * self-inflicted, with no backend semantics. Age-gating the legacy
+ * spelling is a possible follow-up if this ever matters.
  */
 export function stripUploadedFilesTag(content: string): string {
   return content
@@ -879,8 +985,9 @@ export function stripUploadedFilesTag(content: string): string {
  *
  * These markers are *not* user copy — they come from:
  *
- * - ``UploadsMiddleware`` → ``<current_uploads>`` (``<uploaded_files>``
- *   before #4174; still emitted by IM channels and present in history)
+ * - ``UploadsMiddleware`` → ``<current_uploads>`` (``<uploaded_files>`` is
+ *   the pre-#4174 spelling, still stripped here for display/export only so
+ *   legacy history does not leak raw blocks or server paths — see #4212)
  * - ``SkillActivationMiddleware`` → ``<slash_skill_activation>``
  * - ``DynamicContextMiddleware`` → ``<system-reminder>`` (carrying
  *   ``<memory>`` / ``<current_date>`` inside)
@@ -943,8 +1050,9 @@ function parseHumanReadableSize(raw: string): number {
 }
 
 export function parseUploadedFiles(content: string): FileInMessage[] {
-  // Match the upload context block; the tag name depends on backend version
-  // (<current_uploads> since #4174, <uploaded_files> before / on IM paths).
+  // Match the upload context block. <current_uploads> is what
+  // UploadsMiddleware emits (#4174); <uploaded_files> is kept for
+  // display-only backward compatibility with pre-#4174 history (#4212).
   const uploadedFilesRegex =
     /<(current_uploads|uploaded_files)>([\s\S]*?)<\/\1>/;
   // eslint-disable-next-line @typescript-eslint/prefer-regexp-exec

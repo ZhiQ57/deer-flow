@@ -1,10 +1,8 @@
 # AGENTS.md
 
-This file provides guidance to AI coding agents (Claude Code, Codex, and others) when working with code in this repository. It is the source of truth; the sibling `CLAUDE.md` imports it via `@AGENTS.md`.
-
 ## Project Overview
 
-DeerFlow is a LangGraph-based AI super agent system with a full-stack architecture. The backend provides a "super agent" with sandbox execution, persistent memory, subagent delegation, and extensible tool integration - all operating in per-thread isolated environments.
+The backend runs a LangGraph-based super agent with sandbox execution, persistent memory, subagent delegation, and extensible tools in isolated per-thread environments.
 
 **Architecture**:
 - **Gateway API** (port 8001): REST API plus embedded LangGraph-compatible agent runtime
@@ -14,10 +12,16 @@ DeerFlow is a LangGraph-based AI super agent system with a full-stack architectu
 
 **Runtime**:
 - `make dev`, Docker dev, and production all run the agent runtime in Gateway via `RunManager` + `run_agent()` + `StreamBridge` (`packages/harness/deerflow/runtime/`). Nginx exposes that runtime at `/api/langgraph/*` and rewrites it to Gateway's native `/api/*` routers.
-- Gateway streams `write_file` and `str_replace` argument deltas in bounded batches when clients also subscribe to `values`; messages-only consumers retain the original per-chunk contract, while `values` preserves the complete tool call.
+- Gateway streams `write_file` and `str_replace` argument deltas in bounded batches for multi-mode `messages-tuple` consumers; single-mode message consumers retain the original per-chunk contract. Non-message frames flush pending batches, and `values` remains an optional complete-state snapshot rather than a prerequisite for batching.
 - With `stream_subgraphs`, subgraph frames keep their namespace in the SSE event name (`values|<ns>`, LangGraph Platform style) instead of impersonating root frames — a delegated subagent inherits the parent checkpoint namespace, so publishing its `values` snapshot as bare `values` replaces the whole thread view in SDK clients (#4399). Root-only consumers (file-tool chunk batcher, subagent event persistence, LLM error-fallback detection) ignore namespaced frames. The web frontend does not request subgraph streaming; subtask progress rides root-namespace `task_*` custom events.
-- Scheduled-task executions must reuse that same Gateway run lifecycle. The scheduler may decide *when* work runs, but it must dispatch through the existing run path rather than introducing a parallel execution stack.
-- Scheduled-task dispatch enforces "at most one active run per task when `overlap_policy=skip`" at the DB layer via the partial unique index `uq_scheduled_task_run_active` (`scheduled_task_runs.task_id WHERE status IN ('queued','running')`). `ScheduledTaskService.dispatch_task`'s `has_active_runs` check is a non-atomic fast path (its own session, separated from the `create()` insert by `await` points), so two concurrent dispatches — a manual `POST /scheduled-tasks/{id}/trigger` racing the poller, a double-click, or a client retry — can both pass it; the index is the atomic arbiter, and the losing `create` surfaces as `ActiveScheduledRunConflict` (translated from `IntegrityError` in the repository) and collapses to the same outcome as the fast path (manual → 409 conflict, scheduled → a `"skipped"` tombstone). The scheduled-skip tombstone is created directly as terminal `"skipped"` (not a transient `"queued"`) so it never occupies the active slot the pre-existing run still holds. Sibling of the `runs` table's `uq_runs_thread_active` (PR #4003), which keys on `thread_id` and so does not cover the default `fresh_thread_per_run` context where every dispatch gets a new thread. Index is status-only, not `overlap_policy`-conditional (the policy is fixed to `"skip"` in the MVP).
+- Background subagent identity is deliberately split: the provider `tool_call_id` remains the correlation key for `ToolMessage`, `task_*` SSE events, persisted lifecycle events, frontend cards, and the public `ExtensionData.scope_id` contract (stored as `SubagentResult.external_task_id`), while `SubagentExecutor.execute_async()` generates a full server-side `execution_id` for `SubagentResult.task_id`, the process-wide registry, polling, cancellation, timeout handling, and cleanup. Provider IDs are not globally unique across parent runs, so they must never become registry ownership keys; scheduler closures retain their own `SubagentResult` rather than resolving ownership again through the mutable registry. Terminal subagent token usage travels in the current run's `ToolMessage.additional_kwargs` and is attributed from message state, never through a process-global provider-ID cache.
+- Scheduled-task executions must reuse that same Gateway run lifecycle. The scheduler may decide *when* work runs, but it must dispatch through the existing run path rather than introducing a parallel execution stack. Scheduled launches pass `scheduler.recursion_limit` (default 1000, matching the web UI's `recursion_limit: 1000`, clamped by `max_recursion_limit`) via `launch_scheduled_thread_run`; the value is read from `get_app_config()` at dispatch, so a YAML edit applies to the next scheduled run without a Gateway restart.
+- The background scheduler is single-instance by default. `scheduler.multi_instance=true` opts into lease-aware recovery across Gateway instances and requires shared Postgres, `run_ownership.heartbeat_enabled=true`, and `run_events.backend=db`; otherwise startup rejects the configuration. Live scheduled runs are preserved when a peer starts; expired launch claims return to the durable queue, expired run leases are atomically taken over, stale launch writes are fenced by lease ownership, and the Postgres advisory-locked budget makes `max_concurrent_runs` a shared global cap for `launching`/`running` rows.
+- Long-running MCP work uses a separate durable task runtime (`McpTaskService` + `mcp_tasks`, lease-based recovery) rather than keeping remote task IDs or status polling inside the Agent loop; only submit remains Agent-visible, the database is the source of truth, and `ThreadState` receives only a bounded current-thread projection. Full contract (leases, cancellation fencing, delivery idempotency, management-tool exposure): [packages/harness/deerflow/mcp/AGENTS.md](packages/harness/deerflow/mcp/AGENTS.md).
+- MCP task notification retries, dead-lettering, and the cancel endpoint's worker-stopped 503 are part of that same contract — see [packages/harness/deerflow/mcp/AGENTS.md](packages/harness/deerflow/mcp/AGENTS.md).
+- Scheduled-task dispatch permits one active occurrence per task via `uq_scheduled_task_run_active` (`task_id WHERE status IN ('queued','launching','running')`). Durable `queued` rows survive restarts; only lease-fenced `launching` may call Gateway launch; `running` references the durable run. Stable admission idempotency keys reuse that run after recovery. Reused-thread `ConflictError` returns `launching` to `queued`; other launch errors become `failed`. Atomic queue claims enforce `max_concurrent_runs`, excluding waiting rows. Repeated triggers coalesce; same-thread FIFO blocks behind older active rows. Queue admission, PATCH/resume, pause and delete lock the parent before the occurrence, freezing active task definitions. Pause/delete atomically cancel `queued` work but reject `launching`/`running`; PATCH/resume reject all active states. Only queued conflicts offer pause cancellation. Manual triggers may queue/run while paused. Recovery locks task/run pairs in task-id/run-id order and restores `run_id`, `started_at` and live errors before releasing launch claims. Launch/failure/timeout updates use one parent-first transaction to prevent interleaved claims. Queue timeout fails the occurrence and advances scheduled work to prevent immediate requeue. Repository boundaries coerce serialized timestamps before SQL `DateTime` binding.
+- `POST /api/scheduled-tasks/preview-cron` requires authenticated `threads:read`. Bounded cron previews call the shared scheduler calculator in `asyncio.to_thread`, preserving its DST semantics. Capture the optional aware reference once; return UTC and offset-bearing local occurrences without acquiring task/thread/run stores or dispatching work. This advisory API does not reserve execution.
+- `extensions_config.json` is written at runtime by the Gateway (`PUT`/`PATCH /api/mcp/config`, the MCP enable switch, skill updates), so the production compose mounts it read-write while `config.yaml` stays `:ro`; Helm copies its ConfigMap seed into a writable home-volume directory before Gateway starts. Every read-modify-write holds both `extensions_config_write_lock` and the sidecar advisory `extensions_config_file_lock`, because the process-local lock alone loses updates across workers. Docker mounts the compose file as its own mount point, and Linux refuses `rename()` over a mount point with `EBUSY` even when the mount is writable — so `atomic_write_extensions_config` keeps the temp-file-plus-rename path and falls back to an in-place overwrite only on `EBUSY`. That fallback is deliberately non-atomic (a crash mid-write truncates the file); it exists because the alternative is a write that can never succeed, and only its first occurrence per target is logged at warning level. Any other `errno` still propagates. Pinned by `tests/test_compose_extensions_config_writable.py`, `tests/test_extensions_config_atomic_write.py`, and `tests/test_helm_extensions_config_writable.py`.
 
 **Project Structure**:
 ```
@@ -63,6 +67,7 @@ deer-flow/
 │   │   │   ├── app.py         # FastAPI application
 │   │   │   └── routers/       # FastAPI route modules (models, mcp, memory, skills, uploads, threads, artifacts, agents, suggestions, channels)
 │   │   └── channels/          # IM platform integrations
+│   ├── scripts/benchmark/       # Standalone reproducible backend benchmarks
 │   ├── tests/                 # Test suite
 │   └── docs/                  # Documentation
 ├── frontend/                   # Next.js frontend application
@@ -70,6 +75,10 @@ deer-flow/
     ├── public/                # Public skills (committed)
     └── custom/                # Custom skills (gitignored)
 ```
+
+ATX outline closing markers use a linear suffix scan; do not use unanchored
+whitespace regex searches on unbounded uploaded headings. The long-heading
+regression exercises the production extractor under a generous process deadline.
 
 ## Important Development Guidelines
 
@@ -82,12 +91,78 @@ When making code changes, you MUST update the relevant documentation:
 - Keep documentation synchronized with the codebase at all times
 - Ensure accuracy and timeliness of all documentation
 
+### Backend Benchmarks
+
+`scripts/benchmark/context_snapshot/`: explicit `run-live` needs provider env
+vars; `summarize` and pytest are offline. See its README for the protocol.
+
+`scripts/benchmark/` contains standalone, reproducible measurements and
+evaluations of production backend behavior. A benchmark may import the
+production function it measures, but it must not duplicate or introduce an
+alternative runtime implementation.
+
+- Pin every external dataset by immutable revision and SHA-256. Callers provide
+  the local dataset path; evaluation commands must not silently download data.
+- Never commit upstream dataset text, credentials, complete provider requests,
+  or response headers. Committed manifests may contain stable IDs and source
+  locators. Synthetic cases must identify themselves as synthetic.
+- Read provider credentials and endpoints from named environment variables.
+  Version model IDs, inference parameters, prompts, retry rules, clocks, and
+  random seeds in the evaluation config.
+- Public raw results may contain case IDs, policy decisions, model hypotheses,
+  grades, and non-secret response metadata. Keep dataset questions, reference
+  answers, memory content, and full provider payloads in ignored local run
+  directories.
+- Use fixed clocks and deterministic ordering for offline selection. Results
+  must record the config, manifest, prompt, dataset, and git revisions used.
+
+`scripts/benchmark/deermem_eviction/` evaluates the production
+`select_facts_for_capacity()` implementation used by DeerMem. It compares only
+the historical `confidence` policy and PR #4789's opt-in `hybrid-v1`; do not add
+another eviction strategy to this evaluation. Run its offline checks from
+`backend/`:
+
+```bash
+PYTHONPATH=. uv run python -m scripts.benchmark.deermem_eviction validate-contracts
+PYTHONPATH=. uv run python -m scripts.benchmark.deermem_eviction validate --dataset "$LONGMEMEVAL_ORACLE_PATH"
+PYTHONPATH=. uv run python -m scripts.benchmark.deermem_eviction run-policy \
+  --dataset "$LONGMEMEVAL_ORACLE_PATH" \
+  --output-dir /tmp/deermem-eviction-policy-run
+PYTHONPATH=. uv run pytest tests/test_bench_deermem_eviction_*.py -q
+```
+
+The offline test suite must not require network access, provider credentials,
+or the LongMemEval dataset. Small LongMemEval-shaped fixtures must be synthetic
+and generated by tests.
+
+`scripts/benchmark/concurrency/` measures multi-process contention on the
+`users` table (N separate OS processes, not asyncio tasks) for SQLite vs
+Postgres -- the scenario `CONFIGURATION.md` requires Postgres for. `worker.py`
+connects directly via SQLAlchemy (skipping the ~8.5s Alembic bootstrap the
+orchestrator already ran once) and mirrors the app's per-connection SQLite
+PRAGMAs; `run_concurrency_bench.py` seeds a disposable per-run Postgres schema,
+synchronises workers on a READY/GO barrier before timing, and exits non-zero on
+any crash, short op count, or `errors > 0`. Postgres runs need a throwaway
+database via `--pg-url`; nothing here touches `public`. Run from `backend/`:
+
+```bash
+uv run python scripts/benchmark/concurrency/run_concurrency_bench.py \
+  --backend sqlite --workers 2,4,8,16 --ops-per-worker 50 --read-ratio 0.7
+uv run pytest tests/test_bench_concurrency.py tests/test_bench_worker.py -q
+```
+
 ## Commands
 
 **Root directory** (for full application):
 ```bash
 make check      # Check system requirements
 make install    # Install all dependencies (frontend + backend)
+make extension-install SOURCE=...  # Install and enable a trusted Python extension
+make extension-upgrade SOURCE=...  # Replace an installed extension and keep its config
+make extension-list                # List configured Python extensions
+make extension-enable NAME=...     # Enable an installed extension
+make extension-disable NAME=...    # Disable an extension without uninstalling it
+make extension-remove NAME=...     # Remove a managed extension
 make detect-thread-boundaries  # Inventory backend executor/thread/event-loop boundaries
 make dev        # Start all services (Gateway + Frontend + Nginx), with config.yaml preflight
 make start      # Start production services locally
@@ -97,228 +172,25 @@ make stop       # Stop all services
 **Backend directory** (for backend development only):
 ```bash
 make install            # Install backend dependencies
-make dev                # Run Gateway API with reload (port 8001)
-make gateway            # Run Gateway API only (port 8001)
-make test               # Run offline backend tests (excludes live external-API tests)
-make test-live          # Explicitly run live DeerFlowClient tests with real APIs
-make test-blocking-io   # Run strict Blockbuster runtime gate on tests/blocking_io/
-make lint               # Lint with ruff
-make format             # Format code with ruff
+make dev                # Gateway API, reload (port 8001)
+make gateway            # Gateway API only (port 8001)
+make test               # offline tests (no live/blocking-io)
+make test-live          # live tests (real APIs)
+make test-blocking-io   # strict Blockbuster gate on tests/blocking_io/
+make test-shard SPLITS=4 GROUP=2  # one duration-aware shard
+make test-shard-durations  # refresh baseline
+make lint               # ruff lint
+make format             # ruff format
 make migrate-rev MSG="..."  # Autogenerate a new alembic revision (see Schema Migrations section)
 ```
 
-The root `detect-thread-boundaries` target statically inventories execution
-boundaries under `backend/app/` and `backend/packages/harness/deerflow/`. It
-prints a concise count by execution domain and writes the complete, versioned
-JSON payload to `.deer-flow/thread-boundary-inventory.json`. Every finding has
-a stable `boundary_kind`: `asyncio_default_executor`, `dedicated_executor`,
-`anyio_worker_thread`, `direct_event_loop_blocking`, `separate_event_loop`, or
-`unresolved_dynamic_boundary`.
+The backend `make dev` target pre-creates and excludes `DEER_FLOW_HOME`
+(default: `backend/.deer-flow`) and `backend/sandbox` from Uvicorn's reload
+watcher. Do not replace it with a bare `uvicorn --reload`: agent tasks write
+Python and other runtime files below `DEER_FLOW_HOME`, which would otherwise
+restart the Gateway during an active run.
 
-The AST inventory covers `asyncio.to_thread`, default and explicit
-`run_in_executor` submissions, imported aliases, simple same-module helper
-wrappers (after pre-registering dedicated executor targets), `set_default_executor`,
-`ThreadPoolExecutor` construction/submission,
-additional event loops, synchronous LangChain tools, and direct
-`BaseChatModel` fallback inheritance. It remains read-only and does not alter
-executor routing or sizing.
-
-To supplement the static scan with configured runtime types, run:
-
-```bash
-python scripts/detect_thread_boundaries.py \
-  --runtime-config config.yaml \
-  --json-output .deer-flow/thread-boundary-inventory.json
-```
-
-Runtime inspection imports configured tool objects and model classes so it can
-record concrete tool names/types/modules, sync functions, async coroutines,
-and `_agenerate`/`_astream` ownership. It does not invoke tools, instantiate
-models, or call external services; import failures remain in the JSON as
-`unresolved_dynamic_boundary` records. The detector implementation and focused
-coverage live in `tests/support/detectors/thread_boundaries.py` and
-`tests/test_detect_thread_boundaries.py`.
-
-The `detect-blocking-io` target parses `app/`, `packages/harness/deerflow/`,
-and `scripts/` with AST. By default it reports only blocking IO candidates that
-are inside async code, reachable from async code in the same file, or reachable
-from sync-only `AgentMiddleware` before/after hooks that LangGraph can execute
-on the async graph path. It prints a concise summary and writes complete JSON
-findings to `.deer-flow/blocking-io-findings.json` at the repository root
-(both `make detect-blocking-io` from the repo root and `cd backend && make
-detect-blocking-io` resolve to the same repo-root path). JSON findings include
-`priority`, `location`, `blocking_call`, `event_loop_exposure`, `reason`, and
-`code` for model-assisted or manual review. `priority` is a deterministic
-review ordering from operation type, not proof of a bug. Bare-name same-file
-calls are resolved by function name, so duplicate helper names in one file can
-conservatively over-report async reachability. The call graph also resolves
-multi-hop `self.`/`cls.` attribute chains (`self.store.flush()`) and local
-variables or parameters traced back — within the same function only — to a
-`self.`/`cls.` attribute (`store = self.store; store.flush()`); both fall back
-to the same bare-method-name resolution as an unresolvable receiver, so they
-share its over-report risk rather than adding a new kind. Deeper cross-function
-or cross-module aliasing is out of scope and stays an unreported false
-negative.
-
-That same-function alias tracing is deliberately narrower than the symbolic
-names `dotted_name()` builds for blocking-call pattern matching elsewhere in
-this module: receiver/alias extraction uses a restricted extractor that only
-recognizes `Name`/`Attribute` chains, so a `Call` or `Subscript` result (e.g.
-`factory().flush()`, or `client = factory(); client.flush()` /
-`client = clients[0]; client.flush()`) is never treated as inheriting its
-base's alias-worthiness — including when the unsupported node is buried
-deeper in the chain (`factory().client.flush()`, `clients[0].client.flush()`):
-an unrecognized shape anywhere in the chain makes the whole receiver
-unresolved, it never falls back to just the chain's trailing attribute name,
-or that name alone could still collide with an unrelated traced parameter or
-local alias. Reassigning a traced name to a non-traceable value (anything
-other than a `self.`/`cls.` attribute or an already-traced name) kills its
-alias instead of leaving it traceable, so a stale alias from an earlier
-assignment cannot keep exposing an unrelated same-named method after the
-variable is reassigned to something else; the assignment's right-hand side is
-always analyzed against the alias state as it stood *before* this kill-or-add
-update, matching Python's own evaluate-then-bind order, so
-`client = client.flush()` still resolves that call against `client`'s prior
-(pre-reassignment) alias instead of the state after it's gone. `if`/`else`
-branches get isolated alias state — an alias added in one branch cannot leak
-into the other — and the state after the whole `if` is the union of what each
-branch produced (a conservative may-alias join), so the result no longer
-depends on which branch is textually `body` vs. `orelse`. This branch
-isolation is deliberately scoped to `ast.If` only; `ast.Try`/`ast.Match` have
-different, more complex control-flow semantics and keep the older unisolated
-traversal. Finally, a function's decorators and parameter defaults are
-analyzed in the *enclosing* scope rather than the new function's own, and
-parameter/return annotations get the same enclosing-scope treatment unless
-the module postpones annotation evaluation (`from __future__ import
-annotations`), in which case they are skipped entirely, in either scope —
-those expressions run at definition time, before the function has ever been
-called (or, when postponed, never run at all), so a call there is never
-attributed to the function being defined (it moves to whatever scope actually
-contains the `def`, e.g. the enclosing function, or disappears if that scope
-is module/class level and therefore never async-reachable). PEP 695
-type-parameter bounds are not visited in either scope: CPython evaluates each
-one lazily, in its own hidden function, only if something like `T.__bound__`
-is actually accessed, never as part of running the `def` statement itself.
-A `lambda`'s body and a bare generator expression's element/filters/later
-`for` clauses are excluded from traversal ONLY while walking another
-function's own definition-time expressions (decorators, parameter defaults/
-annotations, return annotation): there, we know structurally that the
-enclosing `def` statement is executing right now, and neither a lambda body
-nor a generator's element runs just because the lambda/generator object is
-created — only a lambda's own parameter defaults and a generator's
-outermost iterable are genuinely eager at that moment. This exclusion is
-absolute and has no exceptions: even a lambda that is immediately invoked at
-its own definition site (`(lambda: ...)()`), or a generator passed directly
-to an eager-consuming builtin, is still excluded when it appears inside
-another function's decorator/default/annotation — a narrow, intentional
-limitation given how rarely a definition-time expression contains an
-executed call at all, preferred over special-casing specific shapes there.
-
-Everywhere else — module level, class bodies, and ordinary function-body
-statements — a lambda body or generator expression's element is scanned
-unconditionally, the same conservative, over-report-rather-than-infer stance
-this file already takes for reachability elsewhere (the `ast.If` may-alias
-union, the bare-name call-graph resolution). This file does not attempt to
-distinguish a lambda that is invoked immediately, invoked later through a
-stored variable, passed as a callback, or never called at all, nor a
-generator that is consumed by an eager builtin (`list`, `sum`, `any`, etc.),
-wrapped in another lazy iterator (`map`, `filter`), or never consumed —
-telling these apart in the general case would mean inferring evaluation
-order and consumption across arbitrary code rather than reading a fixed,
-structural fact, so none of them are special-cased; all are scanned the
-same way. This is intentionally informational and is not run from CI in
-this round.
-
-For a diff-scoped view of the same findings, `scripts/scan_changed_blocking_io.py`
-(repo root) reports findings on the added lines of `git diff <base>...HEAD`
-plus findings new versus the merge base (so a new async caller exposing an
-untouched sync helper in the same file is still reported) — used by the
-`blocking-io-guard` skill (`.agent/skills/blocking-io-guard/`) as the
-deterministic scope step before routing each candidate to a fix and/or a
-`tests/blocking_io/` runtime anchor.
-
-Regression tests related to Docker/provisioner behavior:
-- `tests/test_docker_sandbox_mode_detection.py` (mode detection from `config.yaml`)
-- `tests/test_provisioner_kubeconfig.py` (kubeconfig file/directory handling)
-- `tests/test_provisioner_request_threading.py` (keeps provisioner sandbox CRUD
-  endpoints as sync FastAPI handlers so synchronous K8s client calls run in the
-  Starlette worker pool instead of on the ASGI event loop)
-
-Blocking-IO runtime gate (`tests/blocking_io/`):
-- Wraps every item under `tests/blocking_io/` with a strict Blockbuster
-  context scoped to `app.*` and `deerflow.*` (see
-  `tests/support/detectors/blocking_io_runtime.py`). Any sync blocking IO
-  call whose stack passes through DeerFlow business code while running on
-  the asyncio event loop raises `BlockingError` and fails the test.
-- Regression anchors live there: `test_skills_load.py` (locks the
-  `asyncio.to_thread` offload around `LocalSkillStorage.load_skills`, fix
-  for #1917); `test_sqlite_lifespan.py` (locks the offload around
-  SQLite path resolution plus `ensure_sqlite_parent_dir`, fix for #1912);
-  `test_jsonl_run_event_store.py` (locks `JsonlRunEventStore`'s async
-  API — including idempotent singleton-event writes — offloading its file IO
-  via `asyncio.to_thread`); `test_run_journal_callbacks.py` (locks
-  `RunJournal.run_inline` tool callbacks to in-memory/event-loop-safe work);
-  `test_integrations_router.py` (locks Lark integration install and auth
-  completion route handlers offloading archive filesystem work and `lark-cli`
-  subprocesses);
-  `test_uploads_middleware.py` (locks `UploadsMiddleware.abefore_agent`
-  offloading the uploads-directory scan off the event loop);
-  `test_uploads_router.py` (locks Gateway upload/list/delete endpoints
-  offloading upload directory creation, staged writes, chmod/cleanup,
-  directory scans/deletes, and remote sandbox sync off the event loop);
-  `test_feishu_receive_file.py` (locks Feishu attachment path preparation and
-  persistence plus remote sandbox acquisition/sync off the event loop, and
-  skips redundant sandbox sync when thread data is already mounted);
-  `test_channel_outbound_files.py` (locks Feishu, Telegram, and WeCom outbound
-  attachment open/read/hash work off the event loop);
-  `test_openviking_memory_backend.py` (locks the official OpenViking backend's
-  async add/context/search entrypoints offloading synchronous SDK and cursor
-  filesystem IO); and
-  `test_workspace_changes_recorder.py` (locks the offload around the snapshot
-  text cache lifecycle — roots resolution, `mkdtemp`, and the `shutil.rmtree`
-  on both the capture-failure branch and `record_workspace_changes`' `finally`).
-- `test_gate_smoke.py` is a meta-test asserting the gate actually catches
-  unoffloaded blocking IO and that the `@pytest.mark.allow_blocking_io`
-  opt-out works.
-- Coverage boundary: the gate only sees code that test execution actually
-  touches. Static AST coverage is a separate concern (out of scope for
-  this PR).
-- CI: runs on every PR via `.github/workflows/backend-blocking-io-tests.yml`,
-  hard-fail.
-
-Boundary check (harness → app import firewall):
-- `tests/test_harness_boundary.py` — ensures `packages/harness/deerflow/` never imports from `app.*`
-
-Memory backend async boundary:
-- `MemoryMiddleware.aafter_agent` calls `MemoryManager.aadd`; network-backed
-  managers must override their `a*` methods to offload or use native async I/O.
-- The mem0 backend requires an HTTPS `base_url` by default because requests
-  carry an API token. Plain HTTP requires the explicit
-  `backend_config.allow_insecure_http: true` local-development opt-in.
-- Gateway memory routes offload the synchronous management contract with
-  `asyncio.to_thread`, so backend file or HTTP I/O does not run on the ASGI
-  event loop. Gateway startup and shutdown also resolve the manager off-loop,
-  because a backend's `from_config` may perform a fail-fast connectivity check.
-- A backend may set `requires_passive_writes_in_tool_mode = True` when tool-mode
-  search is supported but durable writes still depend on conversation-level
-  extraction. Such backends receive memory tools and retain `MemoryMiddleware`.
-- Prompt recall rethrows `MemoryManagerError` only when backend config declares
-  `failure_policy.read: fail_closed`; other recall errors preserve the existing
-  log-and-empty-context behavior.
-
-CI runs these regression tests for every pull request via [.github/workflows/backend-unit-tests.yml](../.github/workflows/backend-unit-tests.yml).
-
-Agentic browser sessions are process-local. The Gateway startup safety gate rejects
-`GATEWAY_WORKERS > 1` when `browser_navigate` is configured, because ordinary
-uvicorn worker dispatch does not provide thread affinity for browser tools, REST
-navigation, and the Live WebSocket.
-
-Browser Live screenshots remain JPEG bytes inside the harness and the Gateway's
-bounded, drop-oldest frame queue. WebSocket clients that request
-`frame_format=binary` receive binary messages; control metadata remains JSON.
-The legacy no-parameter protocol still base64-encodes frames into JSON at the
-Gateway boundary for backward compatibility. Unknown `frame_format` values
-receive a JSON error and close code 1008.
+More specific `AGENTS.md` files in backend code directories contain the subsystem sections split from this file. Follow the nearest file in the directory tree.
 
 ## Architecture
 
@@ -362,23 +234,6 @@ tool graph or subagent executor during state/schema imports.
 - Tools loaded via `get_available_tools()` - combines sandbox, built-in, MCP, community, and subagent tools
 - System prompt generated by `apply_prompt_template()` with skills, memory, and subagent instructions
 
-**DataAgent and external SQL MCP**:
-- The historical experimental DataAgent graph factory, top-level DataAgent state,
-  TableRAG orchestration middleware, MySQL prototype tools, console runner, and local
-  debug page have been removed.
-- Production DataAgent runs on the regular lead-agent custom-agent path. Its database
-  abilities are external MCP services under the repository root
-  `mcp-extensions/`: `sqltable-rag` exposes `sqlrag_retrieve`, and `sql-execute`
-  exposes `sql_execute`.
-- The Gateway's legacy `app/gateway/modules/sql_execution/` route remains available
-  only for the frontend's explicit manual Execute button. It may resolve the
-  configured DataAgent DSN and execute the bounded read-only request on that
-  route. The Harness/model/subagent path must not use that route or inject
-  `SqlStageMiddleware`; it uses the external MCP services instead. Tool visibility
-  is controlled by normal MCP configuration and per-agent/subagent tool allowlists.
-  The MCP server returns the actual bounded `rows` and a readable SQL/result
-  wrapper to the model.
-
 **ThreadState** (`packages/harness/deerflow/agents/thread_state.py`):
 - Extends `AgentState` with: `sandbox`, `thread_data`, `title`, `artifacts`, `todos`, `uploaded_files`, `viewed_images`, `goal`, `promoted`, `delegations`, `skill_context`, `summary_text`
 - Uses custom reducers: `merge_artifacts` (deduplicate), `merge_viewed_images` (merge/clear), `merge_goal` (preserve the active goal across ordinary state updates unless the goal writer replaces it), `merge_promoted` (catalog-hash-scoped deferred tool promotions), `merge_delegations` (append task delegation entries, same id latest wins, terminal status never downgraded, capped to the most recent entries), and `merge_skill_context` (dedupe active-skill references by path, keep the most recently read entries; entries store a name/path/description reference, not the SKILL.md body). `summary_text` is a LastValue channel updated by summarization and projected into model requests as durable context data instead of being stored as a `messages` item.
@@ -404,22 +259,6 @@ tool graph or subagent executor during state/schema imports.
   counts the thread's full delegation ledger (fail-restrictive) and emits a warning.
 
 ### Middleware Chain
-
-DataAgent model/subagent SQL execution does not use `AgentConfig.service_ability`.
-The field remains present so the frontend-only Gateway SQL route can load its
-read-only execution limits and DSN reference. The `deerflow-harness` MCP client
-loads the external servers as ordinary HTTP/stdio MCP tools. `sql_execute` receives
-one SQL string and returns structured `columns`, real `rows`, row counts, truncation
-state, and a `content` summary containing the SQL and result. `sqltable-rag` keeps
-the existing `sqlrag_retrieve` contract behind an independent process and
-configuration.
-
-Do not add DataAgent-specific graphs, top-level state keys, SQL middleware, globally
-registered SQL tools, or a second model-facing database execution implementation.
-The frontend-only Gateway SQL route is intentionally retained for the existing
-manual Execute button, but it must not be reconnected to the AgentLoop or
-SubAgent tool provider. If model SQL access must be limited, use the MCP server's
-deployment boundary plus the Lead-Agent/SubAgent MCP tool allowlists.
 
 Lead-agent middlewares are assembled in strict order across three functions: the shared base in `packages/harness/deerflow/agents/middlewares/tool_error_handling_middleware.py` (`_build_runtime_middlewares`, exposed via `build_lead_runtime_middlewares`), then the lead-only middlewares appended in `packages/harness/deerflow/agents/lead_agent/agent.py` (`build_middlewares`). Items marked *(optional)* are appended only when their config/runtime condition holds, so the live chain length varies.
 
@@ -686,7 +525,6 @@ JSONL event stores when `GATEWAY_WORKERS > 1`.
 - Edit-and-rerun visibility is derived from edit replay runs (`metadata.replay_kind="edit"` plus `regenerate_from_run_id`) by `RunManager.list_edit_replay_visibility()`: the newest attempt for each source run is authoritative. Pending/running/success attempts hide the original source run; failed, timed-out, or interrupted attempts hide only the failed attempt so the original conversation reappears.
 - When a persistent `RunStore` is configured, `get()` and `list_by_thread()` hydrate historical runs from the store. In-memory records win for the same `run_id` so task, abort, and stream-control state stays attached to active local runs.
 - Thread metadata status switches to `running` only after `RunManager.try_start()` succeeds. Pending-cancelled runs therefore skip the old `running` projection, while clients may observe the prior thread status during the short worker-startup window.
-- Gateway DataAgent SQL context has a split lifecycle: `prepare_sql_execution_run_context()` resolves the binding and detaches the database secret before durable admission; `register_sql_execution_run_context()` synchronously binds that prepared capability after `RunRecord.run_id` exists but before task attachment. There must be no `await` between admission and attachment. The attached task's done callback releases the registry entry on success, failure, or cancellation, including cancellation before the coroutine's first step; task-attachment failure releases it on the synchronous error path.
 - `cancel()` returns a :class:`~deerflow.runtime.CancelOutcome` enum: `cancelled` (local cancel), `requested` (the non-owning worker durably recorded the first cancellation action for the live owner), `taken_over` (non-owning worker claimed the run because the owner's lease expired — marks it as `error`), `lease_valid_elsewhere` (legacy/custom store lacks the durable request primitive — caller retains the safe 409 + `Retry-After` fallback), `not_active_locally` (heartbeat disabled, preserving the old 409 path), `not_cancellable` (terminal state), or `unknown` (not found in memory or store). `create_or_reject(..., multitask_strategy="interrupt"|"rollback")` persists interrupted status through `RunStore.update_status()`, matching normal `set_status()` transitions.
 - Interrupt/rollback admission registers the replacement before its best-effort persistence of locally interrupted predecessors. If the admitting caller is cancelled during that post-registration await, `RunManager` drains a shielded replacement cleanup before propagating `CancelledError`, including across repeated cancellation. The cleanup normally persists `interrupted`; if that best-effort transition fails, it retries the active-to-`interrupted` store transition strictly and verifies the result with the replacement's captured owner identity. A concurrent peer terminal transition wins and is synchronized back into the local record rather than being overwritten or deleted.
 - Store-only hydrated runs are readable history. In multi-worker mode with heartbeat enabled, cancel on a store-only run records `runs.cancel_action` / `cancel_requested_at` while the owner's lease is live; the first action wins even if a retry later lands on the owner. `RunStore.request_cancel()` and owner completion through `finalize_if_not_cancelled()` are competing active-row CAS operations, so an accepted cancel cannot be overwritten by a later success. `RunStore.renew_lease()` renews and observes the request atomically in the SQL implementation. The owner then executes the normal process-local interrupt/rollback and terminal stream path without transferring the lease. An expired owner is still taken over and marked `error`. `wait=true` and cancel-then-stream use the shared bridge to observe owner finalization; a non-standard process-local bridge returns accepted 202 instead of subscribing to an unreachable stream. In single-worker mode (heartbeat off), store-only runs still return 409.
@@ -936,14 +774,6 @@ Lets a caller pass per-request, short-lived end-user credentials (e.g. an ERP to
 - Supports `supports_vision` flag for image understanding models
 - Config values starting with `$` resolved as environment variables
 - Missing provider modules surface actionable install hints from reflection resolvers (for example `uv add langchain-google-genai`)
-
-### DashScope Qwen Provider (`packages/harness/deerflow/models/qwen_provider.py`)
-
-- `QwenChatModel` subclasses `PatchedChatDeepSeek`, preserving multi-turn `reasoning_content` replay for DashScope's OpenAI-compatible API
-- Explicit prompt caching is opt-in through `enable_prompt_caching: true`; the provider defaults to no payload change for backward compatibility
-- `prompt_cache_ttl` accepts `"5m"` or `"1h"` and is serialized as DashScope `cache_control` on the last non-empty text block of the final system message
-- User messages, dynamic memory/date reminders, tool results, SQL results, and approval content are never marked by the provider
-- DashScope `prompt_tokens_details.cached_tokens` continues through langchain-openai as `usage_metadata.input_token_details.cache_read`, so the existing runtime journal and console cache-hit accounting require no new execution path
 
 ### vLLM Provider (`packages/harness/deerflow/models/vllm_provider.py`)
 
@@ -1359,8 +1189,6 @@ Config is env-driven like the others — `MonocleTracingConfig`, built in `get_t
 - vLLM reasoning models should use `deerflow.models.vllm_provider:VllmChatModel`; for Qwen-style parsers prefer `when_thinking_enabled.extra_body.chat_template_kwargs.enable_thinking`, and DeerFlow will also normalize the older `thinking` alias
 - `tools[]` - Tool configs with `use` variable path and `group`
 - `tool_groups[]` - Logical groupings for tools
-- custom-agent `mcp_tools` - Optional Lead-Agent MCP tool allowlist; `null` inherits
-  enabled MCP tools, `[]` disables MCP tools, and names match exposed tool names.
 - `sandbox.use` - Sandbox provider class path
 - `skills.path` / `skills.container_path` - Host and container paths to skills directory
 - `skills.deferred_discovery` - When `true`, replaces the full-metadata `<available_skills>` prompt block with a compact `<skill_index>` (names only) and registers the `describe_skill` tool so the agent fetches metadata on demand. Defaults to `false` (legacy full-metadata injection)
@@ -1427,14 +1255,17 @@ CI.
 **Every new feature or bug fix MUST be accompanied by unit tests. No exceptions.**
 
 - Write tests in `backend/tests/` following the existing naming convention `test_<feature>.py`
-- Run the full offline suite before and after your change: `make test`
+- Run both offline targets before and after your change: `make test` and `make test-blocking-io`
 - Tests must pass before a feature is considered complete
 - For lightweight config/utility modules, prefer pure unit tests with no external dependencies
 - If a module causes circular import issues in tests, add a `sys.modules` mock in `tests/conftest.py` (see existing example for `deerflow.subagents.executor`)
 
 ```bash
-# Run all offline tests
+# Run default offline tests
 make test
+
+# Run strict blocking-I/O tests
+make test-blocking-io
 
 # Explicit live integration tests (requires config.yaml and credentials;
 # calls real APIs and may create local side effects)
@@ -1444,9 +1275,12 @@ make test-live
 PYTHONPATH=. uv run pytest tests/test_<feature>.py -v
 ```
 
-Direct pytest collection or execution of `tests/test_client_live.py` remains
-skipped unless `DEER_FLOW_RUN_LIVE_TESTS=1` is set. Do not add that opt-in to
-default CI workflows.
+Keep live tests opt-in via `DEER_FLOW_RUN_LIVE_TESTS=1`; guard POSIX-only
+markers with `os.name` for Windows collection.
+
+Jina logging tests use dummy keys (`tests/test_jina_client.py`).
+Jina/Browserless/InfoQuest resolve URLs without rebuilding HTML.
+InfoQuest connect/read timeout is 30s, separate from crawl timeouts (`tests/test_infoquest_http_timeout.py`).
 
 ### Running the Full Application
 
@@ -1496,19 +1330,33 @@ When using `make dev` from root, the frontend automatically connects through ngi
 
 ## Key Features
 
+### Web Search Recency
+
+DDG, Brave, Tavily, SearXNG, and Sofya `web_search` share optional
+`time_range=day|week|month|year`; omission preserves request shape. DDG maps to
+`d|w|m|y`, Brave to `pd|pw|pm|py`, Tavily/SearXNG pass values unchanged, and
+Sofya passes them unchanged as `freshness`.
+For recency, DDGS 9.14.1 uses only enabled Brave, DuckDuckGo, and Yahoo engines
+that honor `timelimit`: `auto`/`all` resolves to this set, incompatible configured
+engines are removed, and an empty set falls back to it. Re-check on DDGS upgrades.
+
+### Tavily Fetch
+
+Title fallback: result URL, then request URL.
+
 ### File Upload
 
-Multi-file upload with automatic document conversion:
+Outlines use ATX syntax (1–6 hashes, space/tab separator, ≤3 leading spaces), strip closing hashes and skip fenced code.
 - Endpoint: `POST /api/threads/{thread_id}/uploads`
 - Supports: PDF, PPT, Excel, Word documents (converted via `markitdown`)
-- Rejects directory inputs before copying so uploads stay all-or-nothing
-- Reuses one conversion worker per request when called from an active event loop
+- Rejects directories before copying to keep uploads all-or-nothing
+- One conversion worker per request when called from an active event loop
 - Files stored in thread-isolated directories under the resolving user's bucket (`users/{user_id}/threads/{thread_id}/user-data/uploads`). For IM channels the owner is threaded explicitly via the `user_id=` kwarg (see IM Channels → Owner-scoped file storage); HTTP/embedded callers resolve it from `get_effective_user_id()`
-- Duplicate filenames in a single upload request are auto-renamed with `_N` suffixes so later files do not truncate earlier files
+- Duplicate filenames within one request get `_N` suffixes to prevent overwrites.
 - Gateway HTTP uploads stage bytes as `.upload-*.part` files and atomically replace the destination only after size validation. These staging files are hidden from upload listings, agent upload context, and sandbox listing/search tools, and swept on Gateway startup if a hard crash leaves one behind.
 - Gateway HTTP upload/list/delete handlers offload filesystem work through `deerflow.utils.file_io.run_file_io`, a dedicated ContextVar-preserving file IO executor. Non-mounted sandbox uploads acquire sandboxes with `SandboxProvider.acquire_async()` and offload `read_bytes()` plus `sandbox.update_file()` together.
-- Mounted upload paths skip both sandbox acquisition and per-file synchronization. For AIO remote/provisioner deployments this requires an explicit, accurate `sandbox.thread_data_mounts: true`; omission preserves backend auto-detection.
-- Agent receives uploaded file list via `UploadsMiddleware`
+- Mounted uploads skip sandbox acquire/sync. AIO remote/provisioner requires accurate `sandbox.thread_data_mounts: true`; omission keeps backend auto-detection.
+- `UploadsMiddleware` caps outline titles at 200 characters and previews at 2000 including markers. Titles use `original_user_content`, not upload-prefixed content; attachment-only titles use a sanitized, bounded filename or count.
 
 See [docs/FILE_UPLOAD.md](docs/FILE_UPLOAD.md) for details.
 
@@ -1542,7 +1390,7 @@ See [docs/summarization.md](docs/summarization.md) for details.
 For models with `supports_vision: true`:
 - `ViewImageMiddleware` processes images in conversation
 - `view_image_tool` added to agent's toolset
-- Images are converted to base64 and injected into a hidden message carrying both a reserved ID prefix and a server-owned metadata marker for the model call; Gateway strips that marker from untrusted input, and the middleware requires both identifiers before removing the message. The `before_model` and `model` node checkpoints for that call still contain the payload; after `after_model` cleanup, subsequent checkpoints retain only lightweight `viewed_images` metadata, while client-chosen IDs survive
+- Images are converted to base64 and appended to the model request as a hidden message carrying both a reserved ID prefix and a server-owned metadata marker; Gateway strips that marker from untrusted input, and the middleware requires both identifiers to recognize its own message. The middleware injects inside `wrap_model_call`, so the payload never enters graph state: checkpoints retain only lightweight `viewed_images` metadata, while client-chosen IDs survive. It also sweeps its own message out of every request before rebuilding it, so a payload stranded in an older checkpoint by an interrupted run stops being resent
 
 ## Code Style
 

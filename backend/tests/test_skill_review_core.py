@@ -23,6 +23,13 @@ def test_skill_review_uses_package_level_skillscan_fallback() -> None:
 
     assert analyzer.scan_skill_dir is package_scan_skill_dir
 
+def test_video_generation_runtime_credentials_pass_skill_review():
+    skill_dir = Path(__file__).resolve().parents[2] / "skills" / "public" / "video-generation"
+    facts = analyze_skill_package(LocalDirectoryReader(skill_dir).read())
+
+    assert facts["summary"]["blockers"] == 0
+    assert facts["summary"]["errors"] == 0, facts["findings"]
+
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

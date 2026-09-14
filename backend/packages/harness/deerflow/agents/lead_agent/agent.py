@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import secrets
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents import create_agent
@@ -49,6 +50,7 @@ from deerflow.agents.middlewares.token_usage_middleware import TokenUsageMiddlew
 from deerflow.agents.middlewares.tool_error_handling_middleware import build_lead_runtime_middlewares
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
 from deerflow.agents.service_agent.registry import ServiceAbilityAdapter, resolve_nested_service_ability_safely, resolve_service_ability_safely
+from deerflow.agents.task_continuity.tools import append_task_continuity_tools
 from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
 from deerflow.authz.principal import build_principal_from_context
 from deerflow.authz.provider import AuthzDecision, AuthzRequest
@@ -57,7 +59,10 @@ from deerflow.authz.tool_filter import apply_tool_authorization
 from deerflow.config.agents_config import load_agent_config, validate_agent_name
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.memory_config import should_use_memory_tools
-from deerflow.config.subagents_config import DEFAULT_MAX_TOTAL_SUBAGENTS_PER_RUN
+from deerflow.config.subagents_config import (
+    DEFAULT_MAX_TOTAL_SUBAGENTS_PER_RUN,
+    effective_subagent_concurrency,
+)
 from deerflow.models import create_chat_model
 from deerflow.runtime.checkpoint_mode import (
     INTERNAL_CHECKPOINT_MODE_KEY,
@@ -67,11 +72,13 @@ from deerflow.runtime.checkpoint_mode import (
     inject_checkpoint_mode,
 )
 from deerflow.skills.types import Skill
+from deerflow.subagents.capacity import configured_subagent_max_running
 from deerflow.tracing import build_tracing_callbacks
 
 logger = logging.getLogger(__name__)
 
 _BOOTSTRAP_SKILL_NAMES = {"bootstrap"}
+_NON_INTERACTIVE_DISABLED_TOOL_NAMES = frozenset({"ask_clarification"})
 
 
 # Channels whose inbound messages originate from untrusted external
@@ -83,9 +90,80 @@ _BOOTSTRAP_SKILL_NAMES = {"bootstrap"}
 _WEBHOOK_CHANNELS: frozenset[str] = frozenset({"github"})
 
 
+@dataclass(frozen=True)
+class LeadAgentAssembly:
+    """The compiled graph plus what it was assembled from.
+
+    ``descriptor`` is typed loosely on purpose: this module is imported during
+    LangGraph Server startup and must not pull the extension contract package
+    into that import path.
+    """
+
+    graph: Any
+    descriptor: Any
+
+
+def unwrap_agent_graph(agent_result: Any) -> Any:
+    """Unwrap a lead assembly, leaving any other factory result untouched.
+
+    The Gateway factory returns ``LeadAgentAssembly(graph, descriptor)``, but a
+    third-party or test factory may still return a bare graph. Type-checking
+    the result rather than duck-typing ``.graph`` keeps both contracts valid.
+
+    Lives beside the dataclass so "what counts as an assembly, and which
+    attribute holds the graph" is answered in one place. Callers that must
+    survive this module failing to import (the runtime worker, the Gateway's
+    state accessor — both of which have to keep serving custom factories that
+    never produce an assembly) guard the import and fall back to the result
+    unchanged.
+    """
+    return agent_result.graph if isinstance(agent_result, LeadAgentAssembly) else agent_result
+
+
 def _default_max_total_subagents(app_config: object) -> int:
     subagents_config = getattr(app_config, "subagents", None)
     return getattr(subagents_config, "max_total_per_run", DEFAULT_MAX_TOTAL_SUBAGENTS_PER_RUN)
+
+
+def _subagent_release_policy(
+    app_config: AppConfig,
+    *,
+    enabled: bool,
+    max_concurrent: int,
+    max_total: int,
+    allowed_subagents: list[str] | None = None,
+) -> dict[str, object]:
+    """Delegation limits as the run will actually enforce them.
+
+    The per-type turn/timeout caps are read here rather than left implicit
+    because a subagent config edit changes what the lead agent can spend
+    without changing anything visible in the lead's own configuration.
+    """
+    policy: dict[str, object] = {
+        "enabled": enabled,
+        "max_concurrent": max_concurrent,
+        "max_total": max_total,
+        "type_allowlist": [],
+        "runtime_limits": {},
+    }
+    if not enabled:
+        return policy
+
+    from deerflow.subagents import get_available_subagent_names, get_subagent_config
+
+    type_allowlist = sorted(set(get_available_subagent_names(app_config=app_config, allowed_subagents=allowed_subagents)))
+    runtime_limits: dict[str, object] = {}
+    for name in type_allowlist:
+        subagent_config = get_subagent_config(name, app_config=app_config)
+        if subagent_config is None:
+            continue
+        runtime_limits[name] = {
+            "max_turns": subagent_config.max_turns,
+            "timeout_seconds": subagent_config.timeout_seconds,
+        }
+    policy["type_allowlist"] = type_allowlist
+    policy["runtime_limits"] = runtime_limits
+    return policy
 
 
 def _resolve_runtime_option(cfg: dict, key: str, agent_value, default):
@@ -236,14 +314,23 @@ def _authorize_model_name(
     return model_name
 
 
-def _create_summarization_middleware(*, app_config: AppConfig | None = None, run_model_name: str | None = None) -> DeerFlowSummarizationMiddleware | None:
+def _create_summarization_middleware(
+    *,
+    app_config: AppConfig | None = None,
+    run_model_name: str | None = None,
+    extensions=None,
+) -> DeerFlowSummarizationMiddleware | None:
     """Create and configure the summarization middleware from config.
 
     ``run_model_name`` is the resolved run model; it is the source of truth for
     ``model_name: null`` summarization and the explicit-summary-model fallback, so a
     custom agent's model is used instead of ``config.models[0]``.
     """
-    return create_summarization_middleware(app_config=app_config, run_model_name=run_model_name)
+    return create_summarization_middleware(
+        app_config=app_config,
+        run_model_name=run_model_name,
+        extensions=extensions,
+    )
 
 
 def _create_todo_list_middleware(is_plan_mode: bool) -> TodoMiddleware | None:
@@ -378,6 +465,7 @@ def build_middlewares(
     custom_middlewares: list[AgentMiddleware] | None = None,
     *,
     available_skills: set[str] | None = None,
+    owns_agent_skill_projection: bool = True,
     app_config: AppConfig | None = None,
     deferred_setup=None,
     mcp_routing_middleware: AgentMiddleware | None = None,
@@ -385,6 +473,7 @@ def build_middlewares(
     authorization_provider=None,
     service_ability: ServiceAbilityAdapter | None = None,
     extensions=None,
+    subagent_execution_capacity: int | None = None,
 ):
     """Build the lead-agent middleware chain based on runtime configuration.
 
@@ -398,6 +487,9 @@ def build_middlewares(
         model_name: Resolved runtime model name; gates vision-only middleware.
         agent_name: If provided, MemoryMiddleware will use per-agent memory storage.
         custom_middlewares: Optional list of custom middlewares to inject into the chain.
+        owns_agent_skill_projection: Whether this lead middleware chain owns the
+            thread's physical skill projection. Prompt-only bootstrap agents do
+            not; their narrow skill set must not replace the thread view.
         app_config: Explicit AppConfig; falls back to ``get_app_config()`` when omitted.
         deferred_setup: Optional deferred-MCP-tool setup that attaches
             ``DeferredToolFilterMiddleware`` when ``tool_search`` is enabled.
@@ -407,6 +499,8 @@ def build_middlewares(
             to ``SkillActivationMiddleware`` so it can resolve per-user custom skills.
         authorization_provider: Provider already resolved for assembly-time
             filtering. Reused by the execution-time authorization middleware.
+        subagent_execution_capacity: Startup-frozen process capacity used to
+            keep advertised and enforced task concurrency aligned after reloads.
         extensions: Loaded extensions whose middleware contributions are merged
             into the final stack. Defaults to the process-wide set.
 
@@ -414,10 +508,17 @@ def build_middlewares(
         List of middleware instances.
     """
     resolved_app_config = app_config or get_app_config()
+    from deerflow.extensions import get_agent_build_extensions
+
+    resolved_extensions = extensions if extensions is not None else get_agent_build_extensions()
     runtime_middleware_kwargs = {
         "app_config": resolved_app_config,
         "lazy_init": True,
     }
+    if available_skills is not None:
+        runtime_middleware_kwargs["available_skills"] = available_skills
+    if not owns_agent_skill_projection:
+        runtime_middleware_kwargs["owns_agent_skill_projection"] = False
     if authorization_provider is not None:
         runtime_middleware_kwargs["authorization_provider"] = authorization_provider
     if authorization_provider is not None and deferred_setup is not None:
@@ -445,6 +546,14 @@ def build_middlewares(
         )
     )
 
+    # Observe the final tool_search Command after every inner policy/result
+    # transformer has run. Tool wrappers are first-in-list outermost, so this
+    # must be registered before SkillToolPolicyMiddleware.
+    if deferred_setup is not None and deferred_setup.deferred_names:
+        from deerflow.agents.middlewares.tool_promotion_audit_middleware import DeferredToolPromotionAuditMiddleware
+
+        middlewares.append(DeferredToolPromotionAuditMiddleware(deferred_setup.deferred_names, deferred_setup.catalog_hash))
+
     # Enabled skills are only discoverable metadata. Apply allowed-tools at
     # runtime after explicit slash activation or an actual skill-file load.
     from deerflow.agents.middlewares.skill_tool_policy_middleware import SkillToolPolicyMiddleware
@@ -467,11 +576,16 @@ def build_middlewares(
         DurableContextMiddleware(
             skills_container_path=resolved_app_config.skills.container_path,
             skill_file_read_tool_names=resolved_app_config.summarization.skill_file_read_tool_names,
+            task_continuity_enabled=getattr(getattr(resolved_app_config, "task_continuity", None), "enabled", False) is True,
         )
     )
 
     # Add summarization middleware if enabled
-    summarization_middleware = _create_summarization_middleware(app_config=resolved_app_config, run_model_name=model_name)
+    summarization_middleware = _create_summarization_middleware(
+        app_config=resolved_app_config,
+        run_model_name=model_name,
+        extensions=resolved_extensions,
+    )
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
@@ -495,7 +609,12 @@ def build_middlewares(
         middlewares.append(TokenUsageMiddleware())
 
     # Add TitleMiddleware
-    middlewares.append(TitleMiddleware(app_config=resolved_app_config))
+    middlewares.append(
+        TitleMiddleware(
+            app_config=resolved_app_config,
+            extensions=resolved_extensions,
+        )
+    )
 
     # Add MemoryMiddleware after TitleMiddleware. Tool mode normally skips it;
     # conversation-extraction backends may explicitly retain passive writes.
@@ -543,7 +662,11 @@ def build_middlewares(
     subagent_enabled = cfg.get("subagent_enabled", False)
     effective_max_subagents_per_run: int | None = None
     if subagent_enabled:
-        max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
+        max_concurrent_subagents = effective_subagent_concurrency(
+            cfg.get("max_concurrent_subagents"),
+            resolved_app_config,
+            execution_capacity=subagent_execution_capacity,
+        )
         max_total_subagents = cfg.get("max_total_subagents", _default_max_total_subagents(resolved_app_config))
         effective_max_subagents_per_run = max_total_subagents
         middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents, max_total=max_total_subagents))
@@ -601,10 +724,8 @@ def build_middlewares(
     # above, changing what "the final request" means for observers.
     from deerflow_extension_api import AgentScope
 
-    from deerflow.extensions import get_agent_build_extensions
     from deerflow.extensions.stack import compose_with_extensions
 
-    resolved_extensions = extensions if extensions is not None else get_agent_build_extensions()
     if not resolved_extensions.has_middleware_contributors:
         return compose_with_extensions(middlewares, AgentScope.LEAD, None, resolved_extensions)
 
@@ -644,21 +765,13 @@ def _available_subagents(agent_config, subagent_enabled: bool) -> set[str] | Non
     """
     if not subagent_enabled:
         return None
+    if agent_config and getattr(agent_config, "allowed_subagents", None) is not None:
+        return set(agent_config.allowed_subagents)
     if agent_config and agent_config.allowable_subagents is not None:
         return set(agent_config.allowable_subagents)
-    return set(["default"])
-
-
-def _available_subagents(agent_config, subagent_enabled: bool) -> set[str] | None:
-    """读取 custom agent 配置的 allowable_subagents 列表.
-    - 如果 subagent_enabled 为 False, 则返回 None
-    - 如果 allowable_subagents 未配置, 则返回默认值 ["default"], 否则返回配置的 allowable_subagents 列表
-    """
-    if not subagent_enabled:
-        return None
-    if agent_config and agent_config.allowable_subagents is not None:
-        return set(agent_config.allowable_subagents)
-    return set(["default"])
+    # No policy means the complete enabled catalog, matching the upstream
+    # managed-subagent runtime. The legacy DataAgent allowlist is handled above.
+    return None
 
 
 def _load_enabled_available_skills(available_skills: set[str] | None, *, app_config: AppConfig, user_id: str | None = None) -> list[Skill]:
@@ -677,8 +790,23 @@ def _load_enabled_available_skills(available_skills: set[str] | None, *, app_con
 
 def make_lead_agent(config: RunnableConfig):
     """LangGraph graph factory; keep the signature compatible with LangGraph Server."""
+    return assemble_lead_agent(config).graph
+
+
+def assemble_lead_agent(
+    config: RunnableConfig,
+    *,
+    app_config: AppConfig | None = None,
+) -> LeadAgentAssembly:
+    """Return the compiled lead graph together with its assembly descriptor.
+
+    Gateway workers use this explicit assembly result so what the agent was
+    built from does not have to be recovered from LangGraph private runtime
+    keys or mutable graph attributes. ``make_lead_agent`` remains the
+    graph-only LangGraph Server ABI declared in ``langgraph.json``.
+    """
     runtime_config = _get_runtime_config(config)
-    runtime_app_config = runtime_config.get("app_config")
+    runtime_app_config = app_config or runtime_config.get("app_config")
     if not isinstance(runtime_app_config, AppConfig):
         runtime_app_config = get_app_config()
     # Mode selection precedence, pinned by test_checkpoint_mode.py:
@@ -703,10 +831,84 @@ def make_lead_agent(config: RunnableConfig):
     # configurable key must not recompile the channel table either).
     freeze_checkpoint_snapshot_frequency(runtime_app_config.database.checkpoint_delta.snapshot_frequency)
     inject_checkpoint_mode(config, mode)
-    return _make_lead_agent(config, app_config=runtime_app_config)
+    return _assemble_lead_agent(config, app_config=runtime_app_config)
 
 
 def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
+    """Internal graph-only entry point.
+
+    Kept as a graph-returning wrapper because callers inside the harness (and
+    the model-resolution tests) want the compiled graph without the mode
+    freeze that :func:`assemble_lead_agent` performs.
+    """
+    return _assemble_lead_agent(config, app_config=app_config).graph
+
+
+def _complete_assembly(
+    *,
+    config: RunnableConfig,
+    graph: Any,
+    namespace: str,
+    agent_name: str,
+    requested_model: str | None,
+    effective_model: str,
+    model_config: object,
+    model_overrides: dict[str, object] | None = None,
+    thinking_enabled: bool,
+    reasoning_effort: object,
+    rendered_base_prompt: str,
+    tools: list[object],
+    middlewares: list[object],
+    deferred_names: frozenset[str],
+    enabled_skills: list[object],
+    effective_policies: dict[str, object],
+) -> LeadAgentAssembly:
+    """Describe the finished graph and hand the description to observers.
+
+    The recursion limit is folded in here rather than at either call site: it
+    is a per-invocation budget the Gateway clamps, so it belongs to the
+    assembly even though nothing inside the factory chose it.
+
+    Building the descriptor hashes every tool's description and JSON schema
+    and probes every middleware — real work on every assembly. Skipped
+    entirely when no observer is registered to receive it, mirroring
+    ``notify_agent_assembled``'s own zero-observer fast path.
+    """
+    from deerflow.extensions import get_agent_build_extensions
+
+    resolved_extensions = get_agent_build_extensions()
+    if not resolved_extensions.has_agent_assembly_observers:
+        return LeadAgentAssembly(graph=graph, descriptor=None)
+
+    from deerflow.agents.assembly_descriptor import build_assembly_descriptor
+    from deerflow.extensions.notify import notify_agent_assembled
+
+    resolved_policies = dict(effective_policies)
+    resolved_policies.setdefault(
+        "recursion_limit",
+        config.get("recursion_limit", "framework-default"),
+    )
+    descriptor = build_assembly_descriptor(
+        namespace=namespace,
+        agent_name=agent_name,
+        requested_model=requested_model,
+        effective_model=effective_model,
+        model_config=model_config,
+        model_overrides=model_overrides,
+        thinking_enabled=thinking_enabled,
+        reasoning_effort=reasoning_effort,
+        rendered_base_prompt=rendered_base_prompt,
+        tools=tools,
+        middlewares=middlewares,
+        deferred_names=deferred_names,
+        enabled_skills=enabled_skills,
+        effective_policies=resolved_policies,
+    )
+    notify_agent_assembled(descriptor, resolved_extensions)
+    return LeadAgentAssembly(graph=graph, descriptor=descriptor)
+
+
+def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> LeadAgentAssembly:
     # Lazy import to avoid circular dependency
     from deerflow.tools import get_available_tools
     from deerflow.tools.builtins import setup_agent, update_agent
@@ -728,8 +930,14 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     requested_model_name: str | None = cfg.get("model_name") or cfg.get("model")
     is_plan_mode = cfg.get("is_plan_mode", False)
-    subagent_enabled = cfg.get("subagent_enabled", False)
-    max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
+    requested_subagent_enabled = cfg.get("subagent_enabled", False)
+    non_interactive = bool(cfg.get("non_interactive", False))
+    subagent_execution_capacity = configured_subagent_max_running()
+    max_concurrent_subagents = effective_subagent_concurrency(
+        cfg.get("max_concurrent_subagents"),
+        resolved_app_config,
+        execution_capacity=subagent_execution_capacity,
+    )
     max_total_subagents = cfg.get("max_total_subagents", _default_max_total_subagents(resolved_app_config))
     is_bootstrap = cfg.get("is_bootstrap", False)
     agent_name = validate_agent_name(cfg.get("agent_name"))  # cfg.get("agent_name")可读取配置的智能体名称
@@ -743,14 +951,20 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     # custom-agent 显式声明 allowable_subagents 即开启 task 工具。SQL 权限仍由
     # 外部 MCP 工具白名单控制，不在 AgentLoop 中增加 SQL 特判。
+    # 新版 allowed_subagents 是运行时硬限制；旧版 allowable_subagents 仍用于
+    # DataAgent 定制 Agent 的 task/SQL 子代理授权。
+    allowed_subagents = getattr(agent_config, "allowed_subagents", None) if agent_config is not None else None
     if agent_config is not None and agent_config.allowable_subagents is not None:
-        subagent_enabled = bool(agent_config.allowable_subagents)
-
-    if subagent_enabled:
-        context = config.setdefault("context", {})
-        if isinstance(context, dict):
-            context["subagent_enabled"] = subagent_enabled
-
+        # Legacy DataAgent agents enable delegation from their explicit
+        # allowlist; this remains authoritative for that compatibility path.
+        requested_subagent_enabled = bool(agent_config.allowable_subagents)
+    subagent_enabled = bool(requested_subagent_enabled and allowed_subagents != [])
+    if agent_config is not None and agent_config.allowable_subagents is not None:
+        subagent_enabled = bool(agent_config.allowable_subagents) and subagent_enabled
+    config.setdefault("configurable", {})["subagent_enabled"] = subagent_enabled
+    context = config.setdefault("context", {})
+    if isinstance(context, dict):
+        context["subagent_enabled"] = subagent_enabled
     available_skills = _available_skill_names(agent_config, is_bootstrap)
     available_subagents = _available_subagents(agent_config, subagent_enabled)
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
@@ -812,6 +1026,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             "available_skills": sorted(available_skills) if available_skills is not None else None,
             # ADD: public_metadata()即注册 DataAgentServiceAbility
             "service_ability": service_ability.public_metadata() if service_ability is not None else None,
+            "allowed_subagents": list(allowed_subagents) if allowed_subagents is not None else None,
         }
     )
     # 仅向通用运行上下文写入脱敏的 DataAgent 能力元数据，供查询标签/
@@ -860,11 +1075,14 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         )
         raw_tools = get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, app_config=resolved_app_config) + [setup_agent]
         configured_tools = raw_tools
+        if non_interactive:
+            configured_tools = [tool for tool in configured_tools if tool.name not in _NON_INTERACTIVE_DISABLED_TOOL_NAMES]
         authorization_candidates = [*configured_tools]
         if skill_setup.describe_skill_tool:
             authorization_candidates.append(skill_setup.describe_skill_tool)
         if should_use_memory_tools(resolved_app_config.memory):
             _append_memory_tools_without_name_conflicts(authorization_candidates)
+        append_task_continuity_tools(authorization_candidates, resolved_app_config)
         configured_tool_ids = {id(tool) for tool in configured_tools}
         authorized_tools, _authz_provider = apply_tool_authorization(
             authorization_candidates,
@@ -880,35 +1098,72 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             setup,
             top_k=resolved_app_config.tool_search.auto_promote_top_k,
         )
-        return create_agent(
+        middlewares = build_middlewares(
+            config,
+            model_name=model_name,
+            agent_name=agent_name,
+            available_skills=set(_BOOTSTRAP_SKILL_NAMES),
+            owns_agent_skill_projection=False,
+            app_config=resolved_app_config,
+            deferred_setup=setup,
+            mcp_routing_middleware=mcp_routing_middleware,
+            user_id=resolved_user_id,
+            service_ability=service_ability,
+            authorization_provider=_authz_provider,
+            subagent_execution_capacity=subagent_execution_capacity,
+        )
+        system_prompt = apply_prompt_template(
+            subagent_enabled=subagent_enabled,
+            max_concurrent_subagents=max_concurrent_subagents,
+            max_total_subagents=max_total_subagents,
+            available_skills=set(_BOOTSTRAP_SKILL_NAMES),
+            app_config=resolved_app_config,
+            deferred_names=setup.deferred_names,
+            user_id=resolved_user_id,
+            skill_names=skill_setup.skill_names or None,
+            allowable_subagents=available_subagents,
+            allowed_subagents=allowed_subagents,
+            subagent_execution_capacity=subagent_execution_capacity,
+        )
+        graph = create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False),
             tools=final_tools,
-            middleware=normalize_middleware_state_schemas(
-                build_middlewares(
-                    config,
-                    model_name=model_name,
-                    available_skills=set(_BOOTSTRAP_SKILL_NAMES),
-                    app_config=resolved_app_config,
-                    deferred_setup=setup,
-                    mcp_routing_middleware=mcp_routing_middleware,
-                    user_id=resolved_user_id,
-                    service_ability=service_ability,
-                    authorization_provider=_authz_provider,
-                ),
-                mode,
-            ),
-            system_prompt=apply_prompt_template(
-                subagent_enabled=subagent_enabled,
-                allowable_subagents=available_subagents,
-                max_concurrent_subagents=max_concurrent_subagents,
-                max_total_subagents=max_total_subagents,
-                available_skills=set(_BOOTSTRAP_SKILL_NAMES),
-                app_config=resolved_app_config,
-                deferred_names=setup.deferred_names,
-                user_id=resolved_user_id,
-                skill_names=skill_setup.skill_names or None,
-            ),
+            middleware=normalize_middleware_state_schemas(middlewares, mode),
+            system_prompt=system_prompt,
             state_schema=get_thread_state_schema(mode),
+        )
+        return _complete_assembly(
+            config=config,
+            graph=graph,
+            namespace="deerflow",
+            agent_name="bootstrap",
+            requested_model=requested_model_name or agent_model_name,
+            effective_model=model_name,
+            model_config=model_config,
+            thinking_enabled=thinking_enabled,
+            reasoning_effort=None,
+            rendered_base_prompt=system_prompt,
+            tools=final_tools,
+            middlewares=middlewares,
+            deferred_names=setup.deferred_names,
+            enabled_skills=bootstrap_skills,
+            effective_policies={
+                "bootstrap": True,
+                "non_interactive": non_interactive,
+                "plan_mode": is_plan_mode,
+                "subagents": _subagent_release_policy(
+                    resolved_app_config,
+                    enabled=subagent_enabled,
+                    max_concurrent=max_concurrent_subagents,
+                    max_total=max_total_subagents,
+                    allowed_subagents=allowed_subagents,
+                ),
+                "deferred_tools": {
+                    "enabled": resolved_app_config.tool_search.enabled,
+                    "catalog_hash": setup.catalog_hash,
+                },
+                "deferred_skills": skill_search_enabled,
+            },
         )
 
     # Custom agents can update their own SOUL.md / config via update_agent.
@@ -949,12 +1204,15 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         raw_tools = service_ability.filter_tools(raw_tools)
         raw_tools.extend(service_ability.build_tools())
     configured_tools = raw_tools + extra_tools
+    if non_interactive:
+        configured_tools = [tool for tool in configured_tools if tool.name not in _NON_INTERACTIVE_DISABLED_TOOL_NAMES]
 
     authorization_candidates = [*configured_tools]
     if skill_setup.describe_skill_tool:
         authorization_candidates.append(skill_setup.describe_skill_tool)
     if should_use_memory_tools(resolved_app_config.memory):
         _append_memory_tools_without_name_conflicts(authorization_candidates)
+    append_task_continuity_tools(authorization_candidates, resolved_app_config)
     configured_tool_ids = {id(tool) for tool in configured_tools}
     authorized_tools, _authz_provider = apply_tool_authorization(
         authorization_candidates,
@@ -974,36 +1232,72 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         top_k=resolved_app_config.tool_search.auto_promote_top_k,
     )
     mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=setup.deferred_names)
-    return create_agent(
+    middlewares = build_middlewares(
+        config,
+        model_name=model_name,
+        agent_name=agent_name,
+        available_skills=available_skills,
+        app_config=resolved_app_config,
+        deferred_setup=setup,
+        mcp_routing_middleware=mcp_routing_middleware,
+        user_id=resolved_user_id,
+        service_ability=service_ability,
+        authorization_provider=_authz_provider,
+        subagent_execution_capacity=subagent_execution_capacity,
+    )
+    system_prompt = apply_prompt_template(
+        subagent_enabled=subagent_enabled,
+        max_concurrent_subagents=max_concurrent_subagents,
+        max_total_subagents=max_total_subagents,
+        agent_name=agent_name,
+        available_skills=available_skills,
+        app_config=resolved_app_config,
+        deferred_names=setup.deferred_names,
+        mcp_routing_hints_section=mcp_routing_hints_section,
+        user_id=resolved_user_id,
+        skill_names=skill_setup.skill_names or None,
+        allowable_subagents=available_subagents,
+        allowed_subagents=allowed_subagents,
+        subagent_execution_capacity=subagent_execution_capacity,
+    )
+    graph = create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides),
         tools=final_tools,
-        middleware=normalize_middleware_state_schemas(
-            build_middlewares(
-                config,
-                model_name=model_name,
-                agent_name=agent_name,
-                available_skills=available_skills,
-                app_config=resolved_app_config,
-                deferred_setup=setup,
-                mcp_routing_middleware=mcp_routing_middleware,
-                user_id=resolved_user_id,
-                service_ability=service_ability,
-                authorization_provider=_authz_provider,
-            ),
-            mode,
-        ),
-        system_prompt=apply_prompt_template(
-            subagent_enabled=subagent_enabled,
-            allowable_subagents=available_subagents,
-            max_concurrent_subagents=max_concurrent_subagents,
-            max_total_subagents=max_total_subagents,
-            agent_name=agent_name,
-            available_skills=available_skills,
-            app_config=resolved_app_config,
-            deferred_names=setup.deferred_names,
-            mcp_routing_hints_section=mcp_routing_hints_section,
-            user_id=resolved_user_id,
-            skill_names=skill_setup.skill_names or None,
-        ),
+        middleware=normalize_middleware_state_schemas(middlewares, mode),
+        system_prompt=system_prompt,
         state_schema=get_thread_state_schema(mode),
+    )
+    return _complete_assembly(
+        config=config,
+        graph=graph,
+        namespace="deerflow",
+        agent_name=agent_name or "lead-agent",
+        requested_model=requested_model_name or agent_model_name,
+        effective_model=model_name,
+        model_config=model_config,
+        model_overrides=agent_model_overrides,
+        thinking_enabled=thinking_enabled,
+        reasoning_effort=reasoning_effort,
+        rendered_base_prompt=system_prompt,
+        tools=final_tools,
+        middlewares=middlewares,
+        deferred_names=setup.deferred_names,
+        enabled_skills=enabled_skills,
+        effective_policies={
+            "bootstrap": False,
+            "non_interactive": non_interactive,
+            "plan_mode": is_plan_mode,
+            "subagents": _subagent_release_policy(
+                resolved_app_config,
+                enabled=subagent_enabled,
+                max_concurrent=max_concurrent_subagents,
+                max_total=max_total_subagents,
+                allowed_subagents=allowed_subagents,
+            ),
+            "deferred_tools": {
+                "enabled": resolved_app_config.tool_search.enabled,
+                "catalog_hash": setup.catalog_hash,
+            },
+            "deferred_skills": skill_search_enabled,
+        },
     )
