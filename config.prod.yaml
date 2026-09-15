@@ -103,6 +103,7 @@ models:
   #     extra_body:
   #       thinking:
   #         type: disabled
+
   - name: Qwen3.8-27B-FP8-Local
     display_name: Qwen3.8-27B-FP8-Local
     use: deerflow.models.qwen_provider:QwenChatModel

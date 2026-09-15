@@ -2,20 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "调试 data-agent 组装工厂 web ",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/backend/tests/service_agent/test-data-agent/run_data_agent_web.py",
-      "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
-      "console": "integratedTerminal",
-      "env": {
-        "TABLERAG_CONFIG": "D:\\A-PythonWork\\AOpenGithub\\deer-flow\\tablerag.yaml",
-        "TABLERAG_MCP_INDEX_DSN": "postgresql://postgres:postgres@127.0.0.1:55433/text2sql",
-        "DATA_AGENT_MYSQL_DSN": "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql"
-      }
-    },
-    {
-      "name": "DeerFlow: 调试 Gateway",
+      "name": "DeerFlow: Windows本地调试 Gateway",
       "type": "debugpy",
       "request": "launch",
       "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
@@ -36,17 +23,7 @@
       "env": {
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
-        "PYTHONPATH": ".",
-        "DEER_FLOW_PROJECT_ROOT": "${workspaceFolder}",
-        "DEER_FLOW_HOME": "${workspaceFolder}/backend/.deer-flow",
-        "DEER_FLOW_CONFIG_PATH": "${workspaceFolder}/config.yaml",
-        "DEER_FLOW_EXTENSIONS_CONFIG_PATH": "${workspaceFolder}/extensions_config.json",
-        "DEER_FLOW_STREAM_BRIDGE_REDIS_URL": "redis://localhost:6379/0",
-        "GATEWAY_CORS_ORIGINS": "http://localhost:3000,http://127.0.0.1:3000",
-        "TABLERAG_CONFIG": "D:\\A-PythonWork\\AOpenGithub\\deer-flow\\tablerag.yaml",
-        "TABLERAG_MCP_INDEX_DSN": "postgresql://postgres:postgres@127.0.0.1:55433/text2sql",
-        "DATA_AGENT_MYSQL_DSN": "mysql+pymysql://root:root%40123456@127.0.0.1:3308/text2sql",
-        "DATABASE_URL": "postgresql://myuser:123456@127.0.0.1:55432/deerflow",
+        "PYTHONPATH": "."
       },
       "console": "integratedTerminal",
       "justMyCode": false,

@@ -2,7 +2,7 @@
 #
 # 用途：
 #   - 复用 docs/guide/linux-local-start.md 已创建的 PostgreSQL、Redis、Nginx 容器；
-#   - 仅启动源码映射版 frontend 和 gateway；
+#   - 启动源码映射版 frontend、gateway 及 SQL MCP 服务；
 #   - 使用 Linux host network，让容器内的 gateway/frontend 可以直接访问
 #     宿主机上的 PostgreSQL、Redis，并继续被现有 Nginx 代理。
 #
@@ -50,7 +50,13 @@ services:
       CI: "true"
       DEER_FLOW_PROJECT_ROOT: /app
       DEER_FLOW_HOME: /app/backend/.deer-flow
-      DEER_FLOW_CONFIG_PATH: /app/project/config.yaml
+      # MCP stdio 配置中的 $DEER_FLOW_EXECUTE / $TABLERAG_CONFIG
+      # 必须解析为容器内路径，不能继承 Windows/Linux 宿主机路径。
+      DEER_FLOW_EXECUTE: /app/backend/.venv/bin/python
+      TABLERAG_CONFIG: /app/project/tablerag.yaml
+      # 源码映射部署使用阶段配置文件；Linux 服务器默认选择测试配置，
+      # 可通过 .env 的 DEER_FLOW_CONFIG_FILE 切换为 config.prod.yaml。
+      DEER_FLOW_CONFIG_PATH: /app/project/${DEER_FLOW_CONFIG_FILE:-config.test.yaml}
       DEER_FLOW_EXTENSIONS_CONFIG_PATH: /app/project/extensions_config.json
       # PostgreSQL 配置需要 harness 的 postgres extra；源码映射模式默认启用。
       UV_EXTRAS: postgres,${UV_EXTRAS:-}

@@ -4,6 +4,7 @@
 
 - 服务器上保留 `docs/guide/linux-local-start.md` 已经创建的 PostgreSQL、Redis 和 Nginx 容器。
 - 前端和 Gateway 后端改为由 Docker Compose 启动。
+- SQL Execute 和 TableRAG MCP 也由同一个 Compose 项目启动（端口 `8003`、`8004`）。
 - 前端、后端使用服务器上的 Git 工作区作为源码挂载目录。
 - Docker 容器设置为 `unless-stopped`，服务器重启或 Docker 服务重启后自动拉起。
 - 代码更新后执行一次 Compose 重建/重启，不需要再手动打开两个终端启动前后端。
@@ -36,11 +37,13 @@ http://<服务器IP>:2026
 Docker Nginx     :2026
 ```
 
-本文会把前两个进程替换为两个 Docker 容器：
+本文会把前两个进程替换为 Docker 容器，并同时启动 SQL MCP 依赖：
 
 ```text
 Docker Gateway   :8001
 Docker Frontend  :3000
+Docker SQL Execute :8003
+Docker TableRAG    :8004
 Docker Nginx     :2026
 ```
 
@@ -52,16 +55,23 @@ Docker Nginx     :2026
 docker/docker-compose-source-host.yaml
 ```
 
-它只定义 `gateway` 和 `frontend`，不会重复定义或删除现有 PostgreSQL、Redis、Nginx 容器。
+它定义 `gateway`、`frontend`、`sql-execute` 和 `sqltable-rag`，不会重复定义或删除
+现有 PostgreSQL、Redis、Nginx 容器。SQL MCP 服务会读取 `.env` 中的
+`DATA_AGENT_MYSQL_DSN`、`DATA_AGENT_POSTGRES_DSN` 和 `TABLERAG_MCP_INDEX_DSN`。
 
 ## 2. 前置条件
 
-以下命令以 Bash 为例。假设服务器代码目录为 `/opt/deer-flow`，请按实际路径修改 `ROOT`：
+以下命令以 Bash 为例。请先把服务器代码目录、阶段配置文件和运行时参数写入
+仓库根目录 `.env`，再从仓库根目录执行命令。Compose 会通过显式的
+`--env-file .env` 读取配置，不需要在当前 shell 中 `export` 临时变量：
 
 ```bash
-export ROOT="/opt/deer-flow"
-cd "$ROOT"
+cd /opt/deer-flow
 ```
+
+源码映射部署默认使用 `config.test.yaml`；正式部署可在 `.env` 中将
+`DEER_FLOW_CONFIG_FILE` 改为 `config.prod.yaml`。不要在启动命令中 `export`
+数据库、Redis、CORS 或路径变量。
 
 确认 Docker 和 Compose 可用：
 
@@ -78,24 +88,39 @@ git status --short --branch
 git branch --show-current
 ```
 
-确认代码、配置文件和扩展配置已经存在：
+确认代码、三个阶段配置文件和扩展配置已经存在：
 
 ```bash
-test -f "$ROOT/config.yaml"
-test -f "$ROOT/extensions_config.json"
-test -f "$ROOT/.env"
-test -f "$ROOT/frontend/.env"
+test -f config.dev.yaml
+test -f config.test.yaml
+test -f config.prod.yaml
+test -f extensions_config.json
+test -f .env
+test -f frontend/.env
+```
+
+先验证 Compose 能正确读取 `.env` 并展开阶段配置：
+
+```bash
+docker compose --env-file .env \
+  -f docker/docker-compose-source-host.yaml \
+  config --quiet
 ```
 
 如果是首次配置，可以按需从示例复制，不能覆盖已有配置：
 
 ```bash
-test -f "$ROOT/config.yaml" || cp "$ROOT/config.example.yaml" "$ROOT/config.yaml"
-test -f "$ROOT/extensions_config.json" || cp "$ROOT/extensions_config.example.json" "$ROOT/extensions_config.json"
-test -f "$ROOT/frontend/.env" || cp "$ROOT/frontend/.env.example" "$ROOT/frontend/.env"
+test -f config.dev.yaml -a -f config.test.yaml -a -f config.prod.yaml || {
+  echo "缺少阶段配置文件，请先创建 config.dev.yaml、config.test.yaml 和 config.prod.yaml"
+  exit 1
+}
+test -f extensions_config.json || cp extensions_config.example.json extensions_config.json
+test -f frontend/.env || cp frontend/.env.example frontend/.env
 ```
 
-`config.yaml` 中的模型、数据库和 sandbox 配置仍按项目实际情况填写。真实 API Key、数据库密码和其他凭据只写入服务器上的 `.env` 或配置文件，不要提交 Git。
+`.env` 中 `DEER_FLOW_CONFIG_FILE` 选择的阶段配置文件，其模型、数据库和
+sandbox 配置仍按项目实际情况填写。真实 API Key、数据库密码和其他凭据只写入
+服务器上的 `.env` 或配置文件，不要提交 Git。
 
 ## 3. 确认现有中间件容器
 
@@ -106,6 +131,13 @@ test -f "$ROOT/frontend/.env" || cp "$ROOT/frontend/.env.example" "$ROOT/fronten
 | `deerflow-postgres` | PostgreSQL 持久化数据库 | `127.0.0.1:55432` |
 | `deer-flow-redis` | Redis Stream Bridge | `127.0.0.1:6379` |
 | `deer-flow-nginx-host` | DeerFlow 统一入口 | `0.0.0.0:2026` |
+
+源码映射 Compose 另外创建：
+
+| 容器 | 用途 | 宿主机端口 |
+| --- | --- | --- |
+| `deer-flow-source-sql-execute` | 只读 SQL 执行 MCP | `0.0.0.0:8003` |
+| `deer-flow-source-sqltable-rag` | TableRAG MCP | `0.0.0.0:8004` |
 
 查看状态：
 
@@ -162,7 +194,8 @@ sudo fuser -k 8001/tcp 3000/tcp
 
 ```bash
 docker compose -p deer-flow-dev \
-  -f "$ROOT/docker/docker-compose-dev.yaml" \
+  --env-file .env \
+  -f docker/docker-compose-dev.yaml \
   down
 ```
 
@@ -172,15 +205,16 @@ docker compose -p deer-flow-dev \
 
 ### 5.1 数据库和 Redis 地址
 
-由于本文的前后端容器使用 Linux host network，容器内的 `127.0.0.1` 就是服务器的网络命名空间。因此，已有 `linux-local-start.md` 配置的下面地址可以继续使用：
+由于本文的前后端容器使用 Linux host network，容器内的 `127.0.0.1` 就是服务器的网络命名空间。因此，请在 `.env` 中确认下面的地址：
 
 ```dotenv
+DEER_FLOW_CONFIG_FILE=config.test.yaml
 DATABASE_URL=postgresql://<数据库用户>:<数据库密码>@127.0.0.1:55432/deerflow
 DEER_FLOW_STREAM_BRIDGE_REDIS_URL=redis://127.0.0.1:6379/0
 UV_EXTRAS=postgres
 ```
 
-并确认 `config.yaml` 引用了数据库环境变量：
+并确认 `.env` 中 `DEER_FLOW_CONFIG_FILE` 选择的阶段配置引用了数据库环境变量：
 
 ```yaml
 database:
@@ -217,7 +251,7 @@ NEXT_PUBLIC_LANGGRAPH_BASE_URL=
 
 ### 5.3 AIO sandbox（纯 DooD）模式
 
-如果 `config.yaml` 使用：
+如果当前阶段配置使用：
 
 ```yaml
 sandbox:
@@ -233,7 +267,7 @@ DEER_FLOW_HOST_BASE_DIR=/opt/deer-flow/backend/.deer-flow
 启动时追加仓库已有的 DooD overlay：
 
 ```bash
--f "$ROOT/docker/docker-compose.dood.yaml"
+-f docker/docker-compose.dood.yaml
 ```
 
 挂载 Docker socket 等价于允许 Gateway 控制宿主机 Docker，具有较高权限。只有明确使用纯 DooD sandbox 时才追加该 overlay。
@@ -243,7 +277,7 @@ DEER_FLOW_HOST_BASE_DIR=/opt/deer-flow/backend/.deer-flow
 ## 6. 首次启动前端和 Gateway
 
 ```bash
-cd ~/.../deer-flow
+cd /opt/deer-flow
 
 docker compose \
   --env-file .env \
@@ -267,11 +301,11 @@ docker compose \
 
 这条命令会完成以下工作：
 
-1. 构建 backend/frontend 的开发镜像。
+1. 构建 backend/frontend 及两个 SQL MCP 的开发镜像。
 2. 将服务器上的 `backend/` 映射到 Gateway 容器。
 3. 将服务器上的 `frontend/` 映射到 Frontend 容器。
 4. 启动时执行 `uv sync --all-packages` 和 `pnpm install --frozen-lockfile`。
-5. 启动 Gateway 和 Next.js dev server。
+5. 启动 SQL MCP、Gateway 和 Next.js dev server。
 6. 将容器设置为 `unless-stopped`。
 
 检查服务端口：
@@ -417,7 +451,7 @@ docker compose \
 旧的 Docker 开发 Compose 会把 Gateway 日志写入仓库的 `logs/gateway.log`：
 
 ```bash
-tail -f "$ROOT/logs/gateway.log"
+tail -f logs/gateway.log
 ```
 
 源码映射 Compose 已将 Gateway 日志直接输出到 Docker 日志，可直接查看：
@@ -644,7 +678,7 @@ docker compose --env-file .env -p deer-flow-source \
 
 确认：
 
-1. `config.yaml` 使用了 `AioSandboxProvider`。
+1. `.env` 中 `DEER_FLOW_CONFIG_FILE` 选择的阶段配置使用了 `AioSandboxProvider`。
 2. 追加了 `docker/docker-compose.dood.yaml`。
 3. Docker daemon 正常运行。
 4. `.env` 中的 `DEER_FLOW_HOST_BASE_DIR` 是服务器上的绝对路径。

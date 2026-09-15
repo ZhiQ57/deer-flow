@@ -2,6 +2,16 @@
 
 本文记录当前推荐的 Windows 本地启动方式：**前端和后端在宿主机运行，Docker 只运行中间件**。
 
+本文约定先在 DeerFlow 仓库根目录执行命令；启动参数统一从根目录 `.env` 和
+`frontend/.env` 读取，不在 PowerShell 中逐项设置 `$env:` 临时变量。
+Windows 的 `.env` 路径请填写绝对路径并使用正斜杠（例如
+`D:/A-PythonWork/AOpenGithub/deer-flow/config.dev.yaml`）。不要写
+`$DEER_FLOW_PROJECT_ROOT\config.dev.yaml`，VS Code 的 `envFile` 不会可靠展开这种
+变量拼接。
+切换测试或生产配置时，同时修改 `.env` 中的
+`DEER_FLOW_CONFIG_PATH`（对应绝对路径）和 `DEER_FLOW_CONFIG_FILE`，并确保只保留
+一组未注释的阶段配置。
+
 - 宿主机后端：Gateway API，端口 `8001`
 - 宿主机前端：Next.js，端口 `3000`
 - Docker 中间件：Redis，端口 `6379`
@@ -29,12 +39,13 @@ Get-NetTCPConnection -LocalPort 8001,3000,2026 -State Listen -ErrorAction Silent
 需要已准备：
 
 1. Docker Desktop 已启动。
-2. `config.yaml` 已配置模型。
+2. `config.dev.yaml` 已配置模型（Windows 本地开发阶段配置）。
 3. `extensions_config.json` 存在。
 4. 后端依赖已安装：
 
 ```powershell
-Set-Location "$Root\backend"
+Set-Location (git rev-parse --show-toplevel)
+Set-Location .\backend
 uv sync --all-packages
 uv sync --all-packages --extra postgres
 ```
@@ -42,7 +53,8 @@ uv sync --all-packages --extra postgres
 5. 前端依赖已安装：
 
 ```powershell
-Set-Location "$Root\frontend"
+Set-Location (git rev-parse --show-toplevel)
+Set-Location .\frontend
 pnpm install
 ```
 
@@ -56,11 +68,9 @@ pnpm install
 ## 2. 启动 Redis 中间件（Docker）
 
 ```powershell
-$Root = "D:\A-PythonWork\AOpenGithub\deer-flow"
-Set-Location $Root
-
-$RedisExists = docker ps -a --filter "name=^/deer-flow-redis$" --format "{{.Names}}"
-if ($RedisExists -eq "deer-flow-redis") {
+Set-Location (git rev-parse --show-toplevel)
+if (docker ps -a --filter "name=^/deer-flow-redis$" --format "{{.Names}}" |
+    Select-String -Quiet "^deer-flow-redis$") {
   docker start deer-flow-redis
 } else {
   docker run -d `
@@ -85,20 +95,13 @@ PONG
 新开一个 PowerShell 窗口，执行：
 
 ```powershell
-$Root = "D:\A-PythonWork\AOpenGithub\deer-flow"
-
-$env:PYTHONIOENCODING = "utf-8"
-$env:PYTHONUTF8 = "1"
-$env:PYTHONPATH = "."
-$env:DEER_FLOW_PROJECT_ROOT = $Root
-$env:DEER_FLOW_HOME = "$Root\backend\.deer-flow"
-$env:DEER_FLOW_CONFIG_PATH = "$Root\config.yaml"
-$env:DEER_FLOW_EXTENSIONS_CONFIG_PATH = "$Root\extensions_config.json"
-$env:DEER_FLOW_STREAM_BRIDGE_REDIS_URL = "redis://localhost:6379/0"
-$env:GATEWAY_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
-Set-Location "$Root\backend"
-uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
+Set-Location (git rev-parse --show-toplevel)
+Set-Location .\backend
+uv run --env-file ../.env uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop asyncio:SelectorEventLoop
 ```
+
+`uv run --env-file ../.env` 会把 `.env` 中选定的 `config.dev.yaml`、数据库、Redis、
+TableRAG 和 CORS 配置传给 Gateway。
 
 验证：
 
@@ -122,12 +125,19 @@ Password: root@123456
 ```
 
 DeerFlow Postgresql数据库容器:
-```docker
-docker run -d --name deerflow-postgres -e POSTGRES_USER=myuser -e POSTGRES_PASS
-WORD=123456 -e POSTGRES_DB=deerflow -p 55432:5432 -v postgres_data:/var/lib/postgresql postgres:15
+```powershell
+Set-Location (git rev-parse --show-toplevel)
+docker run -d --name deerflow-postgres --env-file .env `
+  -p 127.0.0.1:55432:5432 `
+  -v postgres_data:/var/lib/postgresql/data `
+  --restart unless-stopped `
+  postgres:15
 ```
 
-> 修改 `config.yaml` 的模型配置后，需要重启后端 Gateway。
+`POSTGRES_USER`、`POSTGRES_PASSWORD` 和 `POSTGRES_DB` 请写在根目录 `.env`；
+不要在 `docker run` 命令中重复写数据库凭据。
+
+> 修改 `config.dev.yaml` 的模型配置后，需要重启后端 Gateway。
 
 ### 3.1 使用 VS Code 调试 Gateway
 
@@ -147,14 +157,15 @@ PowerShell 手动启动方式一致。该配置只启动宿主机 Gateway，不�
 
 1. 在需要调试的 DeerFlow Python 源码中设置断点。
 2. 打开 VS Code“运行和调试”面板。
-3. 选择 `DeerFlow: 调试 Gateway`。
+3. 选择 `DeerFlow: Windows本地调试 Gateway`。
 4. 按 `F5` 启动。
 
 调试器等价执行：
 
 ```powershell
-Set-Location "$Root\backend"
-uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
+Set-Location (git rev-parse --show-toplevel)
+Set-Location .\backend
+uv run --env-file ../.env uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop asyncio:SelectorEventLoop
 ```
 
 其中 VS Code 会直接使用 `uv` 创建的
@@ -174,7 +185,7 @@ C:\Users\<用户名>\AppData\Local\Programs\Python\Python311\python.exe
 
 1. `Ctrl+Shift+P` 打开命令面板。
 2. 执行 `Developer: Reload Window`。
-3. 重新选择 `DeerFlow: 调试 Gateway` 并按 `F5`。
+3. 重新选择 `DeerFlow: Windows本地调试 Gateway` 并按 `F5`。
 
 正常情况下，调试终端命令开头应为：
 
@@ -187,20 +198,13 @@ D:\A-PythonWork\AOpenGithub\deer-flow\backend\.venv\Scripts\python.exe
 再新开一个 PowerShell 窗口，执行：
 
 ```powershell
-$Root = "D:\A-PythonWork\AOpenGithub\deer-flow"
-
-# 标准本地入口走 Nginx 当前域名 /api，不让浏览器直连 8001。
-$env:NEXT_PUBLIC_BACKEND_BASE_URL = ""
-$env:NEXT_PUBLIC_LANGGRAPH_BASE_URL = ""
-
-# Next.js 服务端内部访问 Gateway。
-$env:DEER_FLOW_INTERNAL_GATEWAY_BASE_URL = "http://localhost:8001"
-$env:DEER_FLOW_TRUSTED_ORIGINS = "http://localhost:3000,http://localhost:2026"
-$env:SKIP_ENV_VALIDATION = "1"
-
-Set-Location "$Root\frontend"
-corepack pnpm dev
+Set-Location (git rev-parse --show-toplevel)
+Set-Location .\frontend
+uv run --env-file ../.env python ../scripts/pnpm.py dev
 ```
+
+前端启动参数由 `frontend/.env` 和根目录 `.env` 提供；需要调整入口、可信来源或
+开发域名时，修改对应 `.env` 后重启前端。
 
 验证：
 
@@ -215,31 +219,24 @@ curl.exe http://localhost:3000
 Nginx 运行在 Docker 中，但代理到宿主机的前端和后端。
 
 ```powershell
-$Root = "D:\A-PythonWork\AOpenGithub\deer-flow"
-Set-Location $Root
+Set-Location (git rev-parse --show-toplevel)
+New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
+((Get-Content ".\docker\nginx\nginx.local.conf" -Raw -Encoding UTF8).
+  Replace("error_log logs/nginx-error.log warn;", "error_log /dev/stderr warn;").
+  Replace("pid logs/nginx.pid;", "pid /tmp/nginx.pid;").
+  Replace("access_log logs/nginx-access.log;", "access_log /dev/stdout;").
+  Replace("error_log logs/nginx-error.log;", "error_log /dev/stderr;").
+  Replace("server 127.0.0.1:8001;", "server host.docker.internal:8001;").
+  Replace("server 127.0.0.1:3000;", "server host.docker.internal:3000;")) |
+  Set-Content -Path ".\logs\nginx-host.conf" -Encoding UTF8
 
-New-Item -ItemType Directory -Force -Path "$Root\logs" | Out-Null
-$NginxConf = "$Root\logs\nginx-host.conf"
-
-$Text = Get-Content "$Root\docker\nginx\nginx.local.conf" -Raw -Encoding UTF8
-$Text = $Text.Replace("error_log logs/nginx-error.log warn;", "error_log /dev/stderr warn;")
-$Text = $Text.Replace("pid logs/nginx.pid;", "pid /tmp/nginx.pid;")
-$Text = $Text.Replace("access_log logs/nginx-access.log;", "access_log /dev/stdout;")
-$Text = $Text.Replace("error_log logs/nginx-error.log;", "error_log /dev/stderr;")
-$Text = $Text.Replace("server 127.0.0.1:8001;", "server host.docker.internal:8001;")
-$Text = $Text.Replace("server 127.0.0.1:3000;", "server host.docker.internal:3000;")
-Set-Content -Path $NginxConf -Value $Text -Encoding UTF8
-
-$NginxExists = docker ps -a --filter "name=^/deer-flow-nginx-host$" --format "{{.Names}}"
-if ($NginxExists -eq "deer-flow-nginx-host") {
-  docker rm -f deer-flow-nginx-host
-}
+docker rm -f deer-flow-nginx-host 2>$null
 
 docker run -d `
   --name deer-flow-nginx-host `
   -p 2026:2026 `
   --add-host=host.docker.internal:host-gateway `
-  -v "${NginxConf}:/etc/nginx/nginx.conf:ro" `
+  -v "${PWD}\logs\nginx-host.conf:/etc/nginx/nginx.conf:ro" `
   --restart unless-stopped `
   nginx:latest
 ```
@@ -348,15 +345,15 @@ foreach ($port in 8001,3000) {
 
 只需要重启后端 Gateway。Redis、Nginx、前端通常不需要重启。
 
-### 8.4 `config.yaml` 没有模型会怎样？
+### 8.4 `config.dev.yaml` 没有模型会怎样？
 
 Gateway 可以启动，但聊天无法正常调用模型。日志会提示：
 
 ```text
-No models are configured in config.yaml
+No models are configured in config.dev.yaml
 ```
 
-需要在 `config.yaml` 的 `models:` 下配置至少一个模型。
+需要在 `config.dev.yaml` 的 `models:` 下配置至少一个模型。
 
 ### 8.5 不要绕过终端安全软件
 

@@ -16,14 +16,22 @@
 
 ## 1. 前置条件
 
-本文命令以 Bash 为例，假设仓库目录为：
+本文命令以 Bash 为例。请先把服务器实际路径和阶段配置写入仓库根目录
+`.env`（Linux 测试/联调通常选择 `config.test.yaml`），再进入仓库根目录。
+启动命令通过 `uv run --env-file` 或 Docker 的 `--env-file` 读取 `.env`，
+不需要在当前 shell 中 `export` 临时变量：
 
 ```bash
-export ROOT="$HOME/deer-flow"
-cd "$ROOT"
+cd /opt/deer-flow
 ```
 
-如果你的仓库在 `/opt/deer-flow` 或其他路径，请把 `ROOT` 改成实际目录。
+如果你的仓库不在 `/opt/deer-flow`，只修改上面的 `cd` 路径，并把 `.env` 中的
+`DEER_FLOW_PROJECT_ROOT`、`DEER_FLOW_HOME`、`DEER_FLOW_CONFIG_PATH`、
+`DEER_FLOW_EXECUTE` 和 `TABLERAG_CONFIG` 改成同一台 Linux 主机上的绝对路径。
+不要写 `$HOME/...` 或 `$DEER_FLOW_PROJECT_ROOT/...` 这种依赖 dotenv 插值的路径。
+Linux 测试/联调使用 `DEER_FLOW_CONFIG_PATH=/opt/deer-flow/config.test.yaml`
+和 `DEER_FLOW_CONFIG_FILE=config.test.yaml`；生产部署则成对改为
+`config.prod.yaml`。两个变量只保留一组活动值。
 
 查看当前 Linux 局域网 IP：
 
@@ -53,7 +61,7 @@ sudo fuser -k 8001/tcp 3000/tcp 2026/tcp
 
 1. Docker Engine 已安装并运行。
 2. 当前用户可执行 Docker 命令；如果没有权限，先配置 docker 用户组或在命令前加 `sudo`。
-3. `config.yaml` 已配置模型。
+3. `config.test.yaml` 已配置模型（Linux 测试/联调阶段配置）。
 4. `extensions_config.json` 存在。
 5. 已安装 `uv`、Node.js、Corepack。
 
@@ -76,7 +84,7 @@ corepack enable
 后端依赖安装：
 
 ```bash
-cd "$ROOT/backend"
+cd /opt/deer-flow/backend
 uv python install 3.12
 uv sync --all-packages
 uv sync --all-packages --extra postgres --extra redis
@@ -85,14 +93,14 @@ uv sync --all-packages --extra postgres --extra redis
 前端依赖安装：
 
 ```bash
-cd "$ROOT"
+cd /opt/deer-flow
 python3 scripts/pnpm.py install
 ```
 
 如果 `pnpm install` 提示 ignored builds，可执行：
 
 ```bash
-cd "$ROOT"
+cd /opt/deer-flow
 python3 scripts/pnpm.py approve-builds --all
 python3 scripts/pnpm.py install
 ```
@@ -102,16 +110,14 @@ python3 scripts/pnpm.py install
 PostgreSQL 用于 DeerFlow 持久化数据库。本文默认只绑定到 `127.0.0.1:55432`，让宿主机后端访问，不直接暴露给局域网。
 
 ```bash
-cd "$ROOT"
+cd /opt/deer-flow
 
 if docker ps -a --filter "name=^/deerflow-postgres$" --format "{{.Names}}" | grep -qx "deerflow-postgres"; then
   docker start deerflow-postgres
 else
   docker run -d \
     --name deerflow-postgres \
-    -e POSTGRES_USER=myuser \
-    -e POSTGRES_PASSWORD=123456 \
-    -e POSTGRES_DB=deerflow \
+    --env-file .env \
     -p 127.0.0.1:55432:5432 \
     -v deerflow-postgres-data:/var/lib/postgresql/data \
     --restart unless-stopped \
@@ -141,11 +147,9 @@ docker exec -it deerflow-postgres psql -U myuser -d deerflow -c "select version(
 
 DeerFlow 后端使用的连接串：
 
-```bash
-export DATABASE_URL="postgresql://myuser:123456@127.0.0.1:55432/deerflow"
-```
+请在 `.env` 中设置 `DATABASE_URL`，启动时由 `uv run --env-file` 自动读取。
 
-如果 `config.yaml` 还没有切到 PostgreSQL，添加或修改下面配置：
+如果 `config.test.yaml` 还没有切到 PostgreSQL，添加或修改下面配置：
 
 ```yaml
 database:
@@ -169,7 +173,7 @@ database:
 Redis 只给宿主机后端使用，默认绑定到 `127.0.0.1:6379`，不暴露给局域网。
 
 ```bash
-cd "$ROOT"
+  cd /opt/deer-flow
 
 if docker ps -a --filter "name=^/deer-flow-redis$" --format "{{.Names}}" | grep -qx "deer-flow-redis"; then
   docker start deer-flow-redis
@@ -196,23 +200,8 @@ PONG
 新开一个终端窗口，执行：
 
 ```bash
-export ROOT="$HOME/workspace/code/deer-flow"
-export LAN_IP="$(hostname -I | awk '{print $1}')"
-
-export PYTHONIOENCODING="utf-8"
-export PYTHONUTF8="1"
-export PYTHONPATH="."
-export DEER_FLOW_PROJECT_ROOT="$ROOT"
-export DEER_FLOW_HOME="$ROOT/backend/.deer-flow"
-export DEER_FLOW_CONFIG_PATH="$ROOT/config.yaml"
-export TABLERAG_CONFIG="$ROOT/tablerag.yaml"
-export DEER_FLOW_EXTENSIONS_CONFIG_PATH="$ROOT/extensions_config.json"
-export DATABASE_URL="postgresql://deerflow:deerflow.123456@127.0.0.1:55432/deerflow"
-export DEER_FLOW_STREAM_BRIDGE_REDIS_URL="redis://127.0.0.1:6379/0"
-export GATEWAY_CORS_ORIGINS="http://$LAN_IP:3000,http://$LAN_IP:2026,http://localhost:3000,http://127.0.0.1:3000"
-
-cd "$ROOT/backend"
-uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop asyncio:SelectorEventLoop
+cd /opt/deer-flow/backend
+uv run --env-file ../.env uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop asyncio:SelectorEventLoop
 ```
 
 本机验证：
@@ -221,10 +210,10 @@ uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop asyncio:Sel
 curl -i http://127.0.0.1:8001/health
 ```
 
-局域网验证：
+局域网验证（将 `<Linux局域网IP>` 替换为实际地址）：
 
 ```bash
-curl -i "http://$LAN_IP:8001/health"
+curl -i "http://<Linux局域网IP>:8001/health"
 ```
 
 期望返回：
@@ -233,35 +222,19 @@ curl -i "http://$LAN_IP:8001/health"
 {"status":"healthy","service":"deer-flow-gateway"}
 ```
 
-> 修改 `config.yaml` 的模型配置或 `database` 配置后，需要重启后端 Gateway。
+> 修改 `config.test.yaml` 的模型配置或 `database` 配置后，需要重启后端 Gateway。
 
 ## 5. 启动前端 Frontend（宿主机控制台）
 
 再新开一个终端窗口，执行：
 
 ```bash
-export LAN_IP="$(hostname -I | awk '{print $1}')"
-export DEER_FLOW_DEV_ALLOWED_ORIGINS="$LAN_IP"
-
-export ROOT="$HOME/workspace/code/deer-flow"
-export LAN_IP="$(hostname -I | awk '{print $1}')"
-
-# 标准局域网入口走 Nginx 当前域名 /api，不让浏览器直连 8001。
-export NEXT_PUBLIC_BACKEND_BASE_URL=""
-export NEXT_PUBLIC_LANGGRAPH_BASE_URL=""
-
-# Next.js 服务端内部访问 Gateway。
-export DEER_FLOW_INTERNAL_GATEWAY_BASE_URL="http://127.0.0.1:8001"
-export DEER_FLOW_TRUSTED_ORIGINS="http://$LAN_IP:3000,http://$LAN_IP:2026,http://localhost:3000,http://localhost:2026"
-
-# Next.js dev 模式允许局域网 IP 加载 /_next/*、字体和 HMR 资源。
-# 否则页面会只渲染 SSR HTML，浏览器端不会完成 hydration。
-export DEER_FLOW_DEV_ALLOWED_ORIGINS="$LAN_IP"
-export SKIP_ENV_VALIDATION="1"
-
-cd "$ROOT/frontend"
-corepack pnpm dev --turbo --hostname 0.0.0.0 --port 3000
+cd /opt/deer-flow/frontend
+uv run --env-file ../.env python ../scripts/pnpm.py dev --turbo --hostname 0.0.0.0 --port 3000
 ```
+
+前端的 `NEXT_PUBLIC_*`、Gateway SSR 地址、可信来源和开发域名均从
+`.env`/`frontend/.env` 读取；不要在启动命令中重新 `export`。
 
 本机验证：
 
@@ -269,10 +242,10 @@ corepack pnpm dev --turbo --hostname 0.0.0.0 --port 3000
 curl -I http://127.0.0.1:3000
 ```
 
-局域网验证：
+局域网验证（将 `<Linux局域网IP>` 替换为实际地址）：
 
 ```bash
-curl -I "http://$LAN_IP:3000"
+curl -I "http://<Linux局域网IP>:3000"
 ```
 
 返回 HTML 响应头即代表前端启动成功。
@@ -288,11 +261,8 @@ Nginx 运行在 Docker 中，但代理到宿主机的前端和后端。Linux 下
 启动命令：
 
 ```bash
-export ROOT="$HOME/deer-flow"
-cd "$ROOT"
-
-mkdir -p "$ROOT/logs"
-NGINX_CONF="$ROOT/logs/nginx-host.conf"
+cd /opt/deer-flow
+mkdir -p logs
 
 sed \
   -e 's#error_log logs/nginx-error.log warn;#error_log /dev/stderr warn;#' \
@@ -301,7 +271,7 @@ sed \
   -e 's#error_log logs/nginx-error.log;#error_log /dev/stderr;#' \
   -e 's#server 127.0.0.1:8001;#server host.docker.internal:8001;#' \
   -e 's#server 127.0.0.1:3000;#server host.docker.internal:3000;#' \
-  "$ROOT/docker/nginx/nginx.local.conf" > "$NGINX_CONF"
+  docker/nginx/nginx.local.conf > logs/nginx-host.conf
 
 if docker ps -a --filter "name=^/deer-flow-nginx-host$" --format "{{.Names}}" | grep -qx "deer-flow-nginx-host"; then
   docker rm -f deer-flow-nginx-host
@@ -311,7 +281,7 @@ docker run -d \
   --name deer-flow-nginx-host \
   -p 0.0.0.0:2026:2026 \
   --add-host=host.docker.internal:host-gateway \
-  -v "$NGINX_CONF:/etc/nginx/nginx.conf:ro" \
+  -v "$(pwd)/logs/nginx-host.conf:/etc/nginx/nginx.conf:ro" \
   --restart unless-stopped \
   nginx:latest
 ```
@@ -319,8 +289,8 @@ docker run -d \
 验证统一入口：
 
 ```bash
-curl -i "http://$LAN_IP:2026/health"
-curl -I "http://$LAN_IP:2026"
+curl -i "http://<Linux局域网IP>:2026/health"
+curl -I "http://<Linux局域网IP>:2026"
 ```
 
 浏览器打开：
@@ -454,20 +424,17 @@ sudo fuser -k 8001/tcp 3000/tcp
 
 ### 10.3 Gateway 启动时报 `database.postgres_url is required` 怎么办？
 
-说明 `config.yaml` 已配置：
+说明 `config.test.yaml` 已配置：
 
 ```yaml
 database:
   backend: postgres
 ```
 
-但 Gateway 启动环境里没有 `DATABASE_URL`，或者 `config.yaml` 的 `postgres_url` 没有写正确。按本文方式启动 Gateway 时应包含：
+但 Gateway 启动环境里没有 `DATABASE_URL`，或者 `config.test.yaml` 的 `postgres_url` 没有写正确。
+请修正 `.env` 中的 `DATABASE_URL`，然后重新启动 Gateway。
 
-```bash
-export DATABASE_URL="postgresql://myuser:123456@127.0.0.1:55432/deerflow"
-```
-
-并确保 `config.yaml` 中有：
+并确保 `config.test.yaml` 中有：
 
 ```yaml
 database:
@@ -505,15 +472,15 @@ server host.docker.internal:3000;
 
 只需要重启后端 Gateway。Redis、Nginx、前端通常不需要重启。
 
-### 10.7 `config.yaml` 没有模型会怎样？
+### 10.7 `config.test.yaml` 没有模型会怎样？
 
 Gateway 可以启动，但聊天无法正常调用模型。日志会提示：
 
 ```text
-No models are configured in config.yaml
+No models are configured in config.test.yaml
 ```
 
-需要在 `config.yaml` 的 `models:` 下配置至少一个模型。
+需要在 `config.test.yaml` 的 `models:` 下配置至少一个模型。
 
 ### 10.8 局域网机器打不开 `2026` 怎么排查？
 
@@ -534,7 +501,7 @@ curl -I "http://$(hostname -I | awk '{print $1}'):2026"
 先确认 setup 状态接口返回正常：
 
 ```bash
-curl -sS "http://$LAN_IP:2026/api/v1/auth/setup-status"
+curl -sS "http://<Linux局域网IP>:2026/api/v1/auth/setup-status"
 echo
 ```
 
@@ -544,17 +511,15 @@ echo
 {"needs_setup":true,"registration_enabled":true}
 ```
 
-如果接口正常但页面仍卡在 `Loading...`，通常是 Next.js dev 模式拦截了局域网 origin 加载 `/_next/*`、字体或 HMR 资源，导致页面只拿到 SSR HTML，没有完成浏览器端 hydration。前端启动前必须设置：
-
-```bash
-export DEER_FLOW_DEV_ALLOWED_ORIGINS="$LAN_IP"
-```
+如果接口正常但页面仍卡在 `Loading...`，通常是 Next.js dev 模式拦截了局域网 origin 加载
+`/_next/*`、字体或 HMR 资源，导致页面只拿到 SSR HTML，没有完成浏览器端 hydration。
+请把 `DEER_FLOW_DEV_ALLOWED_ORIGINS` 写入 `.env`，然后重启前端。
 
 然后重启前端：
 
 ```bash
-cd "$ROOT"
-python3 scripts/pnpm.py exec next dev --turbo --hostname 0.0.0.0 --port 3000
+cd /opt/deer-flow/frontend
+uv run --env-file ../.env python ../scripts/pnpm.py exec next dev --turbo --hostname 0.0.0.0 --port 3000
 ```
 
 如果浏览器控制台还有 `Immersive Translate`、翻译插件、广告拦截插件相关报错，请先用无痕窗口或禁用插件验证，避免插件脚本干扰页面初始化。
