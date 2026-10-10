@@ -278,6 +278,47 @@ Lead-agent middlewares are assembled in strict order across three functions: the
 12. **ToolProgressMiddleware** - *(optional, if `tool_progress.enabled`)* State-machine-based stagnation guard (RFC #3177). Outer wrapper around ToolErrorHandlingMiddleware so its `wrap_tool_call` receives results already stamped with `deerflow_tool_meta`. Tracks per-(thread, tool) consecutive "no-new-info" calls across three error categories: (a) `recoverable_by_model=True` (no_results, not_found, permission, Jaccard-duplicate success): ACTIVE → WARNED (terminal — hint re-injected on each subsequent problem); (b) `recoverable_by_model=False, action≠stop` (rate_limited, transient): ACTIVE → WARNED → BLOCKED after `warn_escalation_count` more problems; (c) `recoverable_by_model=False, action=stop` (auth, config, internal): immediately BLOCKED on first occurrence. **Division of labor with LoopDetectionMiddleware:** ToolProgressMiddleware is a result-quality guard — fires after tool execution and blocks specific tools that stop producing new information; LoopDetectionMiddleware is a call-pattern guard — fires after the model responds and hard-stops the whole turn when the model repeatedly issues identical tool_calls. Both can inject HumanMessage hints in the same model call without conflict; neither reads the other's internal state.
 13. **ToolErrorHandlingMiddleware** - Receives `AppConfig`, converts tool exceptions into error `ToolMessage`s so the run can continue instead of aborting, stamps every result with `deerflow_tool_meta` (status / error_type / recoverable_by_model / recommended_next_action / source) via `tool_result_meta.normalize_tool_result`, stamps structured metadata for task exception wrappers, and stamps skill-read metadata for downstream durable-context capture. Task tool result text is generated from the same status/result/error inputs as the structured metadata so callers do not hand-write a second protocol string.
 
+### VSSAG MCP Retrieval
+
+The external package in `mcp-extensions/vssag/` owns the optional
+knowledge integration. Do not add VSSAG imports, Agent Middleware, Bash routes,
+prompt tags or directory state to Harness. The existing MCP discovery, pooled
+stdio calls, authorization, result sanitization and ToolMessage flow are reused.
+
+The external `middlewares.vssag_directory:VssagDirectoryMiddleware` is loaded by
+the existing configured-middleware loader. Before each model request it calls
+the configured private MCP server's `build_vfs` from the host and injects a
+transient, provenance-stamped HumanMessage alongside existing Sandbox context.
+It does not synthesize AI tool calls or persist the tree in message state.
+Host loading explicitly checks the agent capability set, active skill policy,
+configured authorization and guardrails; it reuses the MCP interceptors/session
+pool but does NOT run through ToolNode. Deferred capability names come only from
+the existing framework system section, not user/tool content. Standard Codex
+plugin resources do not register DeerFlow middleware or provide authentication.
+
+The server package is `vssag_mcp_server`; its SDK lives alongside it at
+`mcp-extensions/vssag/extension/`. Install the `server` extra into that
+project's own virtual environment. The bundled `extension/` is read-only for this
+integration task; report SDK contract gaps to its owner instead of modifying it.
+Gateway needs only the base package for the
+stdlib-only interceptor, not the SDK/server extra. Do not restore the former
+`backend/packages/extension` source path or old import-name aliases.
+
+The `vssag` stdio server exposes `build_vfs`, `search`, and `grep_file` only.
+The external `mcpInterceptors` entry stamps current authenticated runtime fields
+into private stdio call metadata; identity and grants never come from model tool
+arguments. Missing identity fails closed. This trust model depends on a private
+operator-owned child process and must not be published as unauthenticated HTTP.
+The Gateway currently supplies no shared-KB grants producer; do not invent grants
+or treat model filters as authorization. SDK metadata controls owner visibility.
+
+Each server lifecycle owns one SDK client; requests serialize per client while
+DeerFlow keeps its existing user/thread/loop-isolated stdio pools. Directory
+context is refreshed for every actual model request without a shared tree cache.
+Explicit directory tools remain available for on-demand browsing. Workspace writes require separate
+ordinary file-tool calls. SQL grounding remains unexposed until its trusted ACL
+source is specified. See `docs/guide/vssag-mcp.md` for setup and tests.
+
 Authorization identity plumbing is independent of whether authorization enforcement is enabled. Gateway removes client-supplied `is_internal` / `authz_attributes` / `channel_user_id`, derives `is_internal` only from the server-owned `request.state.auth_source`, and accepts `channel_user_id` only from an internally authenticated IM caller's top-level `body.context`; free-form `body.config` can never supply it. `build_principal_from_context` is the shared Principal builder for assembly-time authorization and `GuardrailAuthorizationAdapter`; it applies `default_role`, strict-boolean internal provenance, and copy-on-read `authz_attributes`. The built-in RBAC provider validates `authorization.default_role` during provider resolution so an unknown fallback role fails agent construction instead of degrading into an empty tool set. Task delegation carries `is_internal` plus copied attributes through `SubagentExecutor`, while `GuardrailMiddleware` maps the same runtime fields into `GuardrailRequest`. Phase 1B applies Layer 1 before deferred-tool assembly on the lead, native-subagent, and embedded-client paths, then passes the same provider instance into Layer 2. Framework-provided `describe_skill` and memory tools are included in Layer 1 but restored to their legacy post-`tool_search` ordering afterward. `DeerFlowClient.stream()` treats its in-process caller as trusted and accepts the same identity fields as keyword overrides; it includes the complete Principal in its agent cache key and deep-copies nested attributes so caller mutation cannot make a stale tool set look current.
 
 Gateway route authorization uses `authz.py::resolve_route_permissions()` as the single provider integration point for both `AuthMiddleware` and decorator-only authentication. When enabled, it evaluates the six registered `threads:*` / `runs:*` permissions as `resource="route"` requests whose targets are the full `resource:action` strings. Decisions use the async provider API and are cached for the request in `AuthContext`; decorators do not call the provider again. Provider resolution or decision errors follow `authorization.fail_closed`, scoped per permission for decision errors. When authorization is disabled, the legacy complete permission set is returned without resolving a provider. Existing `owner_check` enforcement and `require_admin_user()` management gates remain independent and unchanged. Tests: `tests/test_authorization_route_permissions.py`, `tests/test_auth.py`, and `tests/test_auth_middleware.py`.

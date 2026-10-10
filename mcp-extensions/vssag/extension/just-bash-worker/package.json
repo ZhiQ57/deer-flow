@@ -1,0 +1,8 @@
+{
+  "name": "@ownmindforge/blockfs-just-bash-worker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "just-bash": "3.4.2"
+  }
+}

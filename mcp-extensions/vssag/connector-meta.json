@@ -1,0 +1,19 @@
+{
+  "name": "VSSAG SDK",
+  "name_zh": "VSSAG SDK",
+  "name_en": "VSSAG SDK",
+  "description": "授权知识库目录与文档检索",
+  "description_zh": "授权知识库目录与文档检索",
+  "description_en": "Authorized knowledge directories and document retrieval",
+  "source": "ownmindforge-vssag-sdk",
+  "type": "mcp",
+  "version": "0.1.0",
+  "examples_zh": [
+    "检索知识库文档并注明来源",
+    "浏览授权虚拟目录并读取文档"
+  ],
+  "examples_en": [
+    "Search knowledge documents with citations",
+    "Browse authorized virtual directories and read documents"
+  ]
+}

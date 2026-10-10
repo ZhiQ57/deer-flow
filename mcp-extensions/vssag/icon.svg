@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VSSAG SDK">
+  <rect width="64" height="64" rx="14" fill="#17324D"/>
+  <circle cx="32" cy="32" r="21" fill="#2E8B8B"/>
+  <text x="32" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#FFFFFF">V</text>
+</svg>

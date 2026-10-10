@@ -10,6 +10,9 @@ Gateway 和 AgentLoop，数据库连接、SQL 执行、TableRAG 配置以及服�
   `rows`、行数和截断状态。
 - `sqltable-rag`：TableRAG MCP 的独立启动包装，开发阶段可单独启动，部署阶段
   可作为 Compose 服务运行。
+- `vssag`：知识库虚拟目录及文档检索 MCP，使用独立 Python 环境；当前由
+  DeerFlow 按需自动启动私有 stdio 子进程，不提供 HTTP 端口。接入步骤见
+  [VSSAG 指南](../docs/guide/vssag-mcp.md)。
 
 ## 开发阶段手动启动
 

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "vssag-sdk",
+  "version": "0.1.0",
+  "description": "通过 MCP 浏览授权知识库目录、检索文档并读取来源",
+  "author": {
+    "name": "OwnMindForge"
+  },
+  "extensions": {
+    "com.openai": {
+      "hooks": "./hooks/hooks.json",
+      "interface": {
+        "displayName": "VSSAG SDK",
+        "shortDescription": "授权知识库目录与文档检索",
+        "category": "Productivity",
+        "defaultPrompt": ["使用 VSSAG MCP 检索知识库，并注明文档来源。"]
+      }
+    }
+  }
+}

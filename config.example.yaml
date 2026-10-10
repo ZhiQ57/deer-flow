@@ -2999,3 +2999,7 @@ authorization:
 #                                         # also match a host-owned table name.
 #     config:
 #       label: example                    # extension-private values, if any
+#
+# VSSAG 使用标准 MCP 工具和外置目录中间件，不拦截 Bash。
+# 接入片段见 mcp-extensions/vssag/extensions_config.example.json，
+# 操作步骤见 docs/guide/vssag-mcp.md；保持内置 Bash 和文件工具不变。

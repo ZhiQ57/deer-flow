@@ -14,6 +14,8 @@ EXPECTED_GUIDANCE_PATHS = {
     "frontend/AGENTS.md",
     "backend/app/gateway/AGENTS.md",
     "backend/app/channels/AGENTS.md",
+    "mcp-extensions/vssag/AGENTS.md",
+    "mcp-extensions/vssag/extension/vssag/AGENTS.md",
     "backend/packages/harness/deerflow/AGENTS.md",
     "backend/packages/harness/deerflow/agents/AGENTS.md",
     "backend/packages/harness/deerflow/agents/middlewares/AGENTS.md",

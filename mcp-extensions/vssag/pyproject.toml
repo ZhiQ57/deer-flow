@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deerflow-vssag-mcp"
+version = "0.1.0"
+description = "Standalone read-only VSSAG MCP integration for DeerFlow"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+server = ["mcp>=1.26,<2", "ownmindforge-vssag>=0.1.0.dev0"]
+postgres = ["ownmindforge-vssag[pgvector,providers,sql]>=0.1.0.dev0"]
+
+[project.scripts]
+deerflow-vssag-mcp = "vssag_mcp_server.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vssag_mcp_server", "middlewares"]
+
+[tool.uv.sources]
+ownmindforge-vssag = { path = "extension", editable = true }

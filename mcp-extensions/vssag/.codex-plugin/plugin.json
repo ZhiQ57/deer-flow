@@ -1,0 +1,11 @@
+{
+  "name": "vssag-sdk",
+  "version": "0.1.0",
+  "description": "通过 MCP 浏览授权知识库目录、检索文档并读取来源",
+  "author": {
+    "name": "OwnMindForge"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json"
+}

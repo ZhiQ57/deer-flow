@@ -1057,6 +1057,44 @@ Advanced deployments can enable pluggable authorization with `authorization.enab
 
 Advanced deployments can also extend the agent runtime itself by declaring `AgentMiddleware` classes under `extensions.middlewares` in `config.yaml` or `extensions_config.json`. Each entry is a `module.path:ClassName` string (zero-argument constructor) or an object `{class, kwargs}` whose `kwargs` are passed to the constructor. `kwargs` values must be JSON types (object, array, string, number, boolean, or null); YAML dates and timestamps are coerced to ISO strings so they match JSON. DeerFlow loads the same configured list into the lead-agent and subagent pipelines after their built-in runtime middlewares and loop/token guards, but before the terminal-response/safety/clarification tail, so enterprise forks can add domain guardrails, tool-call governance, or observability hooks without patching the built-in middleware builders. Missing packages, invalid classes, broken modules, and constructor errors fail loudly at agent creation. Treat `config.yaml` and `extensions_config.json` as trusted operator-controlled files: middleware paths are code execution, just like custom tool, model, sandbox, guardrail, MCP server, and MCP interceptor declarations. Gateway skill/MCP toggle endpoints preserve this field but do not expose an API write path for `extensions.middlewares`. Separate lead-only/subagent-only middleware lists are not supported yet.
 
+Optional VSSAG knowledge retrieval uses the standalone package in
+`mcp-extensions/vssag/` and DeerFlow's existing MCP pipeline. Its three
+read-only tools list the authorized directory (`vssag_build_vfs`), search
+documents (`vssag_search`), and read virtual files (`vssag_grep_file`). An external
+`middlewares.vssag_directory:VssagDirectoryMiddleware` fetches the authorized
+tree before each model request and injects it as transient data alongside the
+existing Sandbox directory instructions. It never fabricates model tool calls
+or stores directory messages in conversation history. Host-side loading checks
+capabilities, authorization and guardrails explicitly and reuses the MCP session
+pool; no Harness changes, Bash interception or physical knowledge mount are required.
+To save a result, the agent separately calls the existing `write_file` tool;
+ordinary Bash keeps its default sandbox, authorization and audit behavior.
+
+The Python server package is `vssag_mcp_server`, with the SDK under that
+MCP extension's `extension/` directory. Run it in its own virtual environment
+with the `server` extra; Gateway installs only the lightweight base package for
+the identity interceptor and directory middleware, keeping SDK dependencies out
+of the backend environment. The package also contains standard portable Codex
+plugin resources; its DeerFlow middleware is not a Codex auto-discovered component.
+
+The first version uses a private stdio child process. An external MCP interceptor
+passes the authenticated runtime identity outside model-visible tool arguments;
+missing context fails closed. The SDK and database enforce document permissions.
+This is not an authenticated public HTTP service. Cross-platform installation and
+stdio configuration are in [the VSSAG MCP guide](docs/guide/vssag-mcp.md).
+DeerFlow starts the MCP child process on demand; do not manually start a separate server.
+After moving the package, reinstall the editable Gateway base package, update the
+service Python/config paths, and restart Gateway to load the new environment.
+Stdio does not inherit all Gateway environment variables: keep SDK credentials
+in the service dotenv or explicitly forward the required variables in the server's `env`.
+The root `extensions_config.example.json` now includes the disabled VSSAG server
+and opt-in instructions; merge all three entries from the standalone example
+(middleware, identity interceptor, server), rather than enabling the server alone.
+Local startup must preserve the separately installed Gateway base package:
+do not allow dependency synchronization to remove the external package.
+No just-bash Worker is needed
+for this structured-tool workflow.
+
 For packaged and configurable runtime integrations, use DeerFlow's extension manager.
 It accepts a Python package requirement, a public HTTPS Git URL, or a local directory, installs the
 package into the backend's dedicated `extensions` dependency group, updates

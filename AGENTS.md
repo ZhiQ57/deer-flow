@@ -117,6 +117,7 @@ deer-flow/
 │                                    # Integration credentials and enabled state remain per-user
 ├── contracts/                      # Cross-component JSON contracts (e.g. subagent status, skill review)
 ├── examples/deerflow-extension-example/ # Standalone package demonstrating all extension contribution kinds
+├── mcp-extensions/                 # External MCP servers; vssag/ owns its SDK, stdio server, and directory middleware
 ├── scripts/                        # Root orchestration scripts invoked by the Makefile (check, configure, doctor, support_bundle, serve, nginx, docker, deploy, setup_wizard)
 ├── tests/                          # Root-level tests (currently tests/skills/ — public skill tests)
 └── docs/                           # Cross-cutting docs, plans, and design notes

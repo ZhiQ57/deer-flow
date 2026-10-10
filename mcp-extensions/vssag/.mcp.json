@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "vssag": {
+      "command": "python",
+      "args": [
+        "-I",
+        "-c",
+        "import os,runpy;root=os.environ.get('PLUGIN_ROOT') or os.environ.get('CLAUDE_PLUGIN_ROOT');runpy.run_path(os.path.join(root,'hooks','entry.py'),run_name='__main__')",
+        "serve"
+      ]
+    }
+  }
+}

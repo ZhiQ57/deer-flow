@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"${PLUGIN_ROOT}/hooks/entry.py\" hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
