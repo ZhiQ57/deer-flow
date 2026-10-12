@@ -530,6 +530,7 @@ already received by the browser, without an additional secret-redaction layer.
 
 DeerFlow supports configurable MCP servers and skills to extend its capabilities.
 For HTTP/SSE MCP servers, OAuth token flows are supported (`client_credentials`, `refresh_token`).
+The [VFSSQL HTTP MCP guide](docs/guide/vfssql-http-mcp.md) shows a Keycloak client-credentials setup with automatic token renewal for read-only schema retrieval. Its disabled example lives in `extensions_config.example.json`; load the client secret through the Gateway environment.
 For stdio MCP servers, per-tool call timeouts can be configured with `tool_call_timeout`.
 Servers that already expose globally unique names can set `tool_name_prefix: false`; the
 DataAgent TableRAG entry uses this so its only visible MCP tool is exactly

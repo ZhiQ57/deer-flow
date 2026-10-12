@@ -28,6 +28,34 @@
       "console": "integratedTerminal",
       "justMyCode": false,
       "subProcess": true
+    },
+    {
+      "name": "DeerFlow: Windows本地调试 Gateway（VFSSQL OAuth）",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "debugAdapterPython": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "debugLauncherPython": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "module": "uvicorn",
+      "args": [
+        "app.gateway.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8001",
+        "--loop",
+        "asyncio:SelectorEventLoop"
+      ],
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/.env.vfssql.local",
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+        "PYTHONPATH": "."
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": true
     }
   ]
 }

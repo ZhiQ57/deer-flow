@@ -3,6 +3,28 @@
   "middlewares": [],
   "mcpInterceptors": [],
   "mcpServers": {
+    "vfssql": {
+      "enabled": false,
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp",
+      "tool_name_prefix": true,
+      "session_init_timeout": 60,
+      "oauth": {
+        "enabled": true,
+        "token_url": "http://localhost:8333/realms/mcp/protocol/openid-connect/token",
+        "grant_type": "client_credentials",
+        "client_id": "backend-mcp-server",
+        "client_secret": "$VFSSQL_OAUTH_CLIENT_SECRET",
+        "scope": "vfssql:read",
+        "refresh_skew_seconds": 60
+      },
+      "description": "VFSSQL 只读 SQL Schema、字段值和业务规则检索；虚拟目录操作，不执行数据库 SQL。接入见 docs/guide/vfssql-http-mcp.md。",
+      "routing": {
+        "mode": "prefer",
+        "priority": 100,
+        "keywords": ["VFSSQL", "vfssql", "SQL Schema", "表结构", "字段", "业务规则", "字段值"]
+      }
+    },
     "vssag": {
       "enabled": false,
       "type": "stdio",

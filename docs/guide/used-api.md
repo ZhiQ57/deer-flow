@@ -1,4 +1,4 @@
-# DeerFlow 知识库集成公共入口
+# DeerFlow 知识库与 SQL Schema 集成公共入口
 
 2026-10-09 纠偏：先由外置 Middleware 注入授权 tree，与原 Sandbox 目录上下文共同可见；模型随后通过 MCP 检索。MCP 仅替代检索执行方式，不取消目录上下文。Bash 保持默认。旧 `deerflow.knowledge:install` 与 `deerflow.knowledge.directory` 已删除，不保留兼容入口。
 
@@ -54,3 +54,18 @@ await client.close()
 `request.runtime.context` → 外置 interceptor → `X-DeerFlow-VSSAG-Context` → 既有 stdio `_meta.headers` → SDK context。仅信任私有 stdio 父进程，不提供公共 HTTP 认证。元数据上限 16 KiB；缺失/非法时拒绝。Gateway 尚无共享 KB 授权属性生产者；默认 `{}` 依赖 SDK 实际 owner 等规则，不能伪造用户 grant。
 
 安装、凭据和验收见 [部署指南](vssag-mcp.md)。最新状态见 [计划](../plans/2026-10-09-vssag-plugin-middleware.md) 与 [评审](../reviews/2026-10-09-vssag-plugin-middleware.md)。本文仅记录该集成入口，不替代其他模块 API 文档。
+
+## 5、VFSSQL HTTP MCP 配置入口
+
+`extensions_config.json -> mcpServers.vfssql` 通过现有 HTTP MCP adapter 和 `OAuthTokenManager` 接入独立服务，不增加 SDK 导入入口、middleware 或 interceptor。OAuth 采用 `token_url`、`grant_type=client_credentials`、`client_id`、`client_secret=$VFSSQL_OAUTH_CLIENT_SECRET`、`scope=vfssql:read`；当前 Keycloak 接受宿主既有 `client_secret_post` 表单。令牌获取、缓存及到期前重新申请均由宿主现有实现完成。
+
+| 原始工具 | 默认模型可见名 | 业务参数 |
+| --- | --- | --- |
+| `capabilities` | `vfssql_capabilities` | 无 |
+| `search_sql_schema` | `vfssql_search_sql_schema` | query、top_k 等，以服务发现的 schema 为准 |
+| `sql_bash` | `vfssql_sql_bash` | command；服务虚拟目录的只读操作 |
+| `grep_sql_schema` | `vfssql_grep_sql_schema` | pattern、path、limit 等，以服务发现的 schema 为准 |
+
+调用身份来自 Keycloak 后台 Client 的 Access Token，不从模型业务参数读取。MCP 服务校验 issuer/audience/scope，当前服务尚未实施表字段权限隔离，也不提供 SQL 执行。完整地址必须包含 `/mcp`；默认虚拟根为 `/home/vfssql`，其路径不属于 DeerFlow Sandbox。
+
+安装和验收见 [接入指南](vfssql-http-mcp.md)、[计划](../plans/2026-10-12-vfssql-http-mcp.md) 与 [评审](../reviews/2026-10-12-vfssql-http-mcp.md)。本集成未改变 Harness 的公共 Python API。
