@@ -8,6 +8,8 @@
 
 新增 console evaluation_stopped 事件，写入明确退出原因和题数，避免未知故障只留下历史堆栈。55 项合成检查通过，覆盖输入校验的四种包装/格式、五类不可认定未执行的异常、服务错误码和实际停止事件。
 
+2026-10-22 19:33:10（北京时间）恢复同一轮，worker PID 51664，监督器代码提交 835b28732，快照 SHA-256=b60f21f2994c4e5d272798212a04ed05b53e952e01d2ae6dbbd4c632c85914b8。原 95 题预测哈希全部保持一致；已回看此前 6 题中的全部学习尝试，均识别为明确执行前拒绝。第 96 题自然结束（约 10 秒），第 97 题已运行，19:33:39 新心跳及进度推进已独立核验；第 96 题输入仍为单条原问题、Ultra/high 指定模型。
+
 ## 第 36 题停批与执行前拒绝分类
 
 2026-10-22 15:54:30（北京时间），第 36 题自然 success，耗时 84.211772 秒，有 177 字符最终答复，capture_complete=true 且原始证据审计通过。sql_learn 返回“is deferred and has not been promoted yet”，is_error=true。核对 DeferredToolFilterMiddleware：命中未 promoted 工具时直接返回错误 ToolMessage，没有调用 handler，故 MCP 学习未执行。
