@@ -24,7 +24,7 @@
 - [X] 4.1 提供 start_evaluation.ps1 / start_evaluation.py；凭据仅由进程环境继承，隐藏进程使用该轮归档代码运行。
 - [X] 4.2 run_pipeline.py 自动采集全部问题、冻结预测、评分并生成 report.md；status_evaluation.py 无需凭据即可只读查看进度。
 - [X] 4.3 处理 `.tool-results` 实际路径、原生 messages SSE 事件和最终响应中的唯一 JSON；原型预测保持原样，采集适配不改变答案或目标标签。
-- [ ] 4.4 启动正式后台进程并验证独立存活及新对话受理。
+- [X] 4.4 已启动正式后台进程，使用 Windows job breakaway 隐藏运行；在父启动命令结束后，由独立进程验证存活，首个 DeerFlow thread/run 已受理。全量采集和评分进度以本轮 pipeline_status.json 为准。
 
 ## 冻结条件
 
