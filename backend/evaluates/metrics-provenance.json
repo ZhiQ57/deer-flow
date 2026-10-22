@@ -1,0 +1,14 @@
+{
+  "source": "ownmindforge/backend/evaluate/vfssql-evaluate",
+  "source_files": {
+    "verify_results.py": "bbfec3a3f011ee8023f5215a559d4b19f18edadccc2de553a058704ac892412a",
+    "evaluation_evidence.py": "36aa2a6021caabb57931452b279fb3a150e8e7c47c754e4d020db9fe5904669b"
+  },
+  "adaptations": [
+    "VFSSQL DeerFlow tool prefix normalization",
+    "capture source codex_cli_json -> deerflow_gateway",
+    "Scope.set_operation_scopes/union_scopes equivalent traversal for installed SQLGlot"
+  ],
+  "original_scorer_version": "2.0",
+  "sqlglot_runtime_version": "30.12.0"
+}
