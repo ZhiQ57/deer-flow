@@ -14,6 +14,8 @@ SSE 与持久化事件/分页消息交叉恢复，流传输告警和证据缺口
 
 本次 34 项评估器合成检查、Ruff check/format 与 git diff --check 均通过。检查不连接业务数据库或模型；实际效果须等原生后台轮完成后以报告为准。
 
+北京时间 2026-10-22 14:01:44 启动原生后台轮，使用 Windows breakaway_from_job；实际 worker PID 35600。独立进程已核对 running/process_alive=true，首个 thread/run 已受理；请求仅有一条 human 消息，content 与原题完全相同（54 字符），没有注入提示。新 run 冻结的代码提交为 637c4d3a4，后续文档更新不改变该轮采集代码。
+
 下方为原型和首轮交付的历史记录。
 
 ## 实现范围
