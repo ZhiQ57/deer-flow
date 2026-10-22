@@ -1,5 +1,13 @@
 # 评估自动化交付记录（2026-10-22）
 
+## 最新要求：等待模型自然结束
+
+用户进一步要求不因耗时或次数中断模型，且本地服务无需限制消耗。当前协议移除单题 1200 秒限制，timeout_seconds=null；评估采集代码没有取消运行的接口调用。活动会话遇到控制接口故障时持续重连等待，确认自然终态后才进入下一题。
+
+每题 elapsed_seconds 优先取 Gateway 终态 created_at→updated_at，另记 observed_elapsed_seconds、capture_elapsed_seconds 和 timing_source。原生首题 thread=c19a407a-5ec2-444d-8ba4-976d60b4326d、run=76e88a08-93a0-4ee2-85f2-035649bd4c93，在只分离采集进程后仍在 Gateway 继续运行，已自然 success；没有调用取消或重发问题。新轮 native-unlimited-01 沿用这些 ID 和原始证据，源摘要保存在 adoption.json，排除切换采集器的观察空档对服务耗时的影响。
+
+36 项合成检查与 Ruff 通过，新增覆盖超过 1200 秒仍允许成功、采集器没有取消 API、服务计时及不改变对话的证据接管。以下记录保留先前协议历史；当前执行以本节、README 与 native-unlimited-01 配置为准。
+
 ## 原生协议修订与停批诊断
 
 旧轮在 16 题停止，实际并发峰值为 1。16 次运行中 6 次 success，10 次 interrupted；SQL 硬上限触发取消 6 题，MCP 硬上限触发取消 4 题。第 16 题第 25 次 MCP 后于 278.111 秒被取消，SSE 未在 15 秒内关闭，未被旧继续条件覆盖，因此整批中止。控制接口为 3125 次 200、10 次取消 202，未见 429。模型端第 5～9 题有上游 502，去重 llm.error 共 20 条；不能由此认定会话并发过高。

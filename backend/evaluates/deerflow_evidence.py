@@ -436,6 +436,7 @@ def make_prediction(run_dir: Path, case_id: str) -> dict:
         "thread_id": admission["thread_id"],
         "run_id": admission["run_id"],
         "elapsed_seconds": terminal["elapsed_seconds"],
+        **({k: terminal[k] for k in ["observed_elapsed_seconds", "timing_source", "server_created_at", "server_updated_at"] if k in terminal} if native else {}),
         "run_status": terminal["run_status"],
         "stop_reason": terminal.get("stop_reason"),
         "protocol_issues": sorted(set(protocol_issues)),

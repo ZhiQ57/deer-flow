@@ -54,6 +54,8 @@ def score_one(sample: dict, record: dict, budgets: dict, *, audit_ok: bool, name
         capture_warnings=record["capture"].get("warnings", []),
         answer_present=bool(record.get("answer_text", "").strip()),
         sql_source=record.get("sql_source", "model_final_json"),
+        timing_source=record.get("timing_source", "host_monotonic_observation"),
+        observed_elapsed_seconds=record.get("observed_elapsed_seconds", record["elapsed_seconds"]),
         tool_observation_threshold_exceeded=len(record["tool_calls"]) > budgets["max_tool_calls"],
         sql_observation_threshold_exceeded=sum(c["tool"] == "sql_execute" for c in record["tool_calls"]) > budgets["max_sql_executions"],
     )
@@ -113,7 +115,9 @@ def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> st
     """生成人类可读报告。Args: config/summary/scores/snapshot。Returns: Markdown。"""
     s = summary
     native = config.get("evaluation_mode") == NATIVE_MODE
-    budget_description = f"每题 {config['budgets']['timeout_seconds']} 秒超时；{config['budgets']['max_tool_calls']} 次 VFSSQL MCP / {config['budgets']['max_sql_executions']} 次 SQL"
+    budget_description = (
+        "等待模型自然结束，不设执行时间上限，记录每题耗时；" if native else f"每题 {config['budgets']['timeout_seconds']} 秒超时；"
+    ) + f"{config['budgets']['max_tool_calls']} 次 VFSSQL MCP / {config['budgets']['max_sql_executions']} 次 SQL"
     budget_description += "为观察阈值，超出只记录，不取消对话；主/子代理、失败/重试/枚举合计。" if native else "为硬上限；主/子代理、失败/重试/枚举合计。"
     lines = [
         "# DeerFlow VFSSQL 独立对话评估报告",
@@ -164,13 +168,13 @@ def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> st
         "## 4、证据与限制",
         "",
         "- 原始 SSE、分页 API 正文、monotonic/UTC 收据、原生消息/工具 ID 和文件哈希均保存在 traces/。评分重放原始证据并比较冻结预测。",
-        "- 工具耗时是宿主观察的接收间隔；服务器事件可能成批到达，不能当作独立服务端调用延迟。",
+        "- 每题耗时优先采用 Gateway run.created_at 至 updated_at 的终态运行时长，另记宿主观察时长；服务时间缺失时才回退至宿主 monotonic。工具耗时是宿主观察的接收间隔，不能当作独立服务端调用延迟。",
         "- Ultra 原生子图证据与步骤摘要分开处理，摘要截断不补造调用 ID；证据缺失单列。工具原始返回与模型收到的截断/摘要存在差异时保留实际原文。",
         "- 题库/目标标签只在全部预测冻结后用于评分。没有用评分反馈指导本轮后续问题。",
         "- 原生 Skill 从 skills/public/z-vfssql-retrieval 自动发现；快照只用于审计，不注入消息。SQL/参数来源标注为最后一次 sql_execute 请求；要求有最终答复和成功运行，执行空结果允许通过。"
         if native
         else "- 旧 Skill 含已删除的结构化工具名，提示词沿用按实际工具 schema 调用的规则；本轮未替换 Skill。",
-        "- SSE 传输异常与证据缺口分别记录；有确认终态和完整持久化消息导出时可恢复流缺口；工具请求/返回仍须逐一对应。单题失败继续，无法确认前题终态或连续环境故障时暂停。",
+        "- 不因耗时、MCP 或 SQL 次数取消模型运行；活动会话遇到控制接口故障时持续重连等待，不创建下一题。模型自然结束后记录其最终输出或错误；原始工具请求/返回缺失仍单列失败。",
         "- 业务数据与 Gold 结果等价性不在本轮成功口径内。",
         "",
         "## 5、与上一轮的对照",

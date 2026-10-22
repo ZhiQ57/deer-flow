@@ -67,7 +67,7 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
     write_json(run_dir / "_private/manifest.json", {"version": 3, "seed": 20261015, "dataset_sha256": DATASET_SHA256, "cases": cases}, exclusive=True)
     inputs = [dataset, *[snapshot_root / relative for relative in hashes]]
     config = {
-        "version": 2,
+        "version": 3,
         "evaluation_mode": NATIVE_MODE,
         "capture_source": "deerflow_gateway",
         "created_at_utc": utc_now(),
@@ -76,9 +76,9 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
         "context": CONTEXT,
         "budgets": NATIVE_BUDGETS,
         "concurrency": 1,
+        "completion_policy": "wait_for_natural_terminal",
         "poll_interval_seconds": 5,
         "transport_retry_attempts": 4,
-        "consecutive_capture_failures_before_pause": 5,
         "recursion_limit": 1000,
         "stream_mode": ["values", "messages-tuple", "custom", "updates"],
         "stream_subgraphs": True,
@@ -98,7 +98,10 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
     write_json(run_dir / "capture_config.json", config, exclusive=True)
     write_json(
         run_dir / "run_metadata.json",
-        {k: config[k] for k in ["created_at_utc", "purpose", "evaluation_mode", "concurrency", "context", "budgets", "repository_revision", "planned_cases", "server_revision", "index_snapshot", "skill_loading", "native_skill"]},
+        {
+            k: config[k]
+            for k in ["created_at_utc", "purpose", "evaluation_mode", "completion_policy", "concurrency", "context", "budgets", "repository_revision", "planned_cases", "server_revision", "index_snapshot", "skill_loading", "native_skill"]
+        },
         exclusive=True,
     )
     # 同时保存可独立运行的代码和输入，后续修订不覆盖既有运行协议。

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from deerflow_evidence import SseDecoder, TraceBuilder, audit_prediction, make_prediction, normalize_name, recorded_chunks, replay_trace
 from eval_common import BUDGETS, NATIVE_BUDGETS, NATIVE_MODE, digest, write_json
 from prepare_dataset import build_prompt
-from run_deerflow import Recorder, observed_budget, stop_for_budget
+from run_deerflow import Recorder, execution_timing, observed_budget
 from schema_metrics import retrieval_metrics
 from score_results import retrieval_rounds, score_one
 
@@ -225,18 +225,25 @@ def test_native_message_is_exact_question_only() -> None:
 
 
 def test_observation_thresholds_do_not_cancel() -> None:
-    config = {"budgets": NATIVE_BUDGETS}
-    assert stop_for_budget(config, 100, 100, 20, False) is None
-    assert stop_for_budget(config, 1200, 1, 0, False) == "case_timeout"
-    assert stop_for_budget(config, 1, 1, 0, True) == "learning_tool_called"
-    assert stop_for_budget({"budgets": BUDGETS}, 100, 25, 1, False) == "tool_call_budget_exceeded"
+    assert NATIVE_BUDGETS["timeout_seconds"] is None
+    assert NATIVE_BUDGETS["enforce_tool_limits"] is False
+    assert "/cancel" not in (Path(__file__).resolve().parents[1] / "run_deerflow.py").read_text(encoding="utf-8")
 
 
 def test_native_score_has_no_tree_first_or_count_limit() -> None:
     sample, record = synthetic()
     record["tool_calls"] = record["tool_calls"][1:3] * 15 + [record["tool_calls"][-1]] * 5
+    record["elapsed_seconds"] = 7200
     assert score_one(sample, record, NATIVE_BUDGETS, audit_ok=True)["primary_success"]
     assert not score_one(sample, record, BUDGETS, audit_ok=True)["primary_success"]
+
+
+def test_server_timing_excludes_collector_handover_gap() -> None:
+    timing = execution_timing({"created_at": "2026-10-22T06:00:00+00:00", "updated_at": "2026-10-22T06:30:00+00:00"}, 3600)
+    assert timing["elapsed_seconds"] == 1800
+    assert timing["observed_elapsed_seconds"] == 3600
+    assert timing["timing_source"] == "gateway_run_created_at_to_updated_at"
+    assert execution_timing({}, 10)["elapsed_seconds"] == 10
 
 
 def native_trace(tmp_path: Path, *, final: bool = True, learning: bool = False) -> dict:
@@ -370,3 +377,25 @@ def test_transient_retry_reuses_run_idempotency_key(monkeypatch) -> None:
     assert len(requests) == 2
     assert all(r.headers["Idempotency-Key"] == "same-synthetic-key" for r in requests)
     assert requests[0].content == requests[1].content
+
+
+def test_adoption_preserves_conversation_and_source_bytes(tmp_path: Path) -> None:
+    from start_evaluation import adopt_capture
+
+    source, target = tmp_path / "old", tmp_path / "new"
+    config = {"evaluation_mode": NATIVE_MODE, "skill_loading": "deerflow_autodiscovery", "questions_sha256": "synthetic", "dataset_sha256": "synthetic", "context": {}, "native_skill": {"name": "synthetic"}}
+    for p in [source, target]:
+        write_json(p / "capture_config.json", config)
+    write_json(source / "pipeline_status.json", {"pid": None})
+    (target / "questions.jsonl").write_text('{"case_id":"synthetic-01","question":"原题"}\n', encoding="utf-8")
+    trace = source / "traces/synthetic-01"
+    admission = {"thread_id": "same-thread", "run_id": "same-run"}
+    write_json(trace / "admission.json", admission)
+    write_json(trace / "request.json", {"input": {"messages": [{"type": "human", "content": "原题"}]}})
+    (trace / "stream.sse").write_bytes(b"synthetic-original-bytes")
+    before = (trace / "stream.sse").read_bytes()
+    adopt_capture(target, source)
+    assert (target / "traces/synthetic-01/stream.sse").read_bytes() == before
+    assert json.loads((target / "traces/synthetic-01/admission.json").read_text(encoding="utf-8")) == admission
+    assert (trace / "stream.sse").read_bytes() == before
+    assert json.loads((target / "_private/adoption.json").read_text(encoding="utf-8"))["same_conversations_no_resubmission"]

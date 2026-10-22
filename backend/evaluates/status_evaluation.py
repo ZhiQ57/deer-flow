@@ -63,6 +63,7 @@ def status(run_dir: Path) -> dict:
         "planned_cases": config["planned_cases"],
         "evaluation_mode": config.get("evaluation_mode", "explicit_text_injection"),
         "concurrency": config.get("concurrency", 1),
+        "completion_policy": config.get("completion_policy", "legacy_budget_cancellation"),
         "threads_created": len(list((run_dir / "traces").glob("*/admission.json"))),
         "predictions_frozen": len(list((run_dir / "predictions").glob("*.json"))),
         "current": current,

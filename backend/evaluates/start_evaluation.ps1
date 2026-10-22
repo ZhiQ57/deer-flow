@@ -1,5 +1,6 @@
 param(
     [string]$RunDir,
+    [string]$AdoptFrom,
     [switch]$Resume
 )
 
@@ -27,6 +28,7 @@ try {
     $vfssqlArguments = @('-X', 'utf8', '-B', (Join-Path $vfssqlEvalRoot 'start_evaluation.py'))
     if ($RunDir) { $vfssqlArguments += @('--run-dir', $RunDir) }
     if ($Resume) { $vfssqlArguments += '--resume' }
+    if ($AdoptFrom) { $vfssqlArguments += @('--adopt-from', $AdoptFrom) }
     & $vfssqlPython @vfssqlArguments
     if ($LASTEXITCODE -ne 0) { throw "评估启动失败，退出码 $LASTEXITCODE" }
 }

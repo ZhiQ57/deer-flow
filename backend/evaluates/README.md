@@ -5,7 +5,7 @@
 ## 1、固定协议
 
 - 模型 Qwen3.8-27B-FP8-Local-cloud；Ultra（思考/计划/子代理均开启）；reasoning_effort=high。
-- 每题 1200 秒超时。原双倍预算的 24 次 VFSSQL MCP、4 次 sql_execute 在原生轮改为观察阈值，超出只记录，不取消回答；所有主/子代理失败、重试和枚举计入。
+- 等待模型自然运行结束，不设单题执行时间上限，不因耗时或调用次数中断。24 次 VFSSQL MCP、4 次 sql_execute 仅为观察阈值；所有主/子代理失败、重试和枚举计入。
 - 数据集 324 题、61 family；seed=20261015；SHA-256=e6d2778929830da9d76ca09f981789d3929692baeeaf63964f477d28734bcae4。
 - Skill 由 DeerFlow 从 skills/public/z-vfssql-retrieval 自主发现；评估器只冻结文件哈希和审计快照，不注入 Skill、题号、预算、输出格式或任何额外提示。
 - 新会话只有一条 human 消息，其 content 与样本 question 逐字一致。模型为自然语言回答；不会追加让模型补 JSON 或 SQL 的消息。
@@ -20,7 +20,7 @@
 & backend/.venv/Scripts/python.exe -X utf8 -B backend/evaluates/prepare_dataset.py `
   --dataset 'D:/A-AICodeWork/ownmindforge/backend/evaluate/vfssql-evluate-data/vfssql-evaluation-dataset.v1.json' `
   --native-skill 'D:/A-PythonWork/AOpenGithub/deer-flow/skills/public/z-vfssql-retrieval' `
-  --run-dir backend/evaluates/runs/20261022-qwen38-ultra-native-01
+  --run-dir backend/evaluates/runs/20261022-qwen38-ultra-native-unlimited-01
 ```
 
 样本已经迁移过时，可直接用下面的后台启动器准备并运行。代码、样本、原生 Skill 文件及参数都会冻结哈希；变化后须新建运行目录。原生 Skill 在运行中变化会暂停，避免混合版本。datasets/skills/runs 均不提交。--pilot 仍可准备三题联调，但既有三次联调已经完成，不需要重复。
@@ -31,7 +31,7 @@
 
 ```powershell
 & backend/.venv/Scripts/python.exe -X utf8 -B backend/evaluates/run_deerflow.py `
-  --run-dir backend/evaluates/runs/20261022-qwen38-ultra-native-01
+  --run-dir backend/evaluates/runs/20261022-qwen38-ultra-native-unlimited-01
 ```
 
 --limit N 只限制本次新处理题数，不改变冻结样本集合。再次运行会跳过冻结预测；对已受理 run 查询原 ID，不重新提交模型任务。新协议必须新建轮次，不能接着旧注入轮次混跑。旧轮恢复只能使用其 _private/frozen_evaluator 代码。
@@ -41,7 +41,7 @@
 ### 独立后台自动执行
 
 ```powershell
-& backend/evaluates/start_evaluation.ps1 -RunDir 'D:/A-PythonWork/AOpenGithub/deer-flow/backend/evaluates/runs/20261022-qwen38-ultra-native-01'
+& backend/evaluates/start_evaluation.ps1 -RunDir 'D:/A-PythonWork/AOpenGithub/deer-flow/backend/evaluates/runs/20261022-qwen38-ultra-native-unlimited-01'
 ```
 
 启动器准备正式 324 题并启动隐藏的独立 Python 进程，使用该轮归档代码持续运行。窗口或本轮 Codex 对话无需保持等待。凭据按提示输入，或由当前进程环境提供；不写入脚本。console.log/error.log 为后台输出。恢复同一目录时显式传入 -Resume；已有存活进程或已完成结果会拒绝重复启动。
@@ -50,16 +50,20 @@
 
 ```powershell
 & backend/.venv/Scripts/python.exe -X utf8 -B backend/evaluates/status_evaluation.py `
-  --run-dir backend/evaluates/runs/20261022-qwen38-ultra-native-01
+  --run-dir backend/evaluates/runs/20261022-qwen38-ultra-native-unlimited-01
 ```
 
-个别题目检索失败、SQL 错误、模型错误、无最终答复、超时或证据缺口会保存失败；确认运行已经终止后继续下一题。超时取消使用 wait=true 并查询终态。无法确认前题终态、发现知识写入、Skill/代码漂移、连续 5 题采集或模型环境失败时进入 needs_attention。GET 和使用稳定 Idempotency-Key 的 run 请求对连接故障、429/502/503/504 做有界重试；重试不会新建模型任务。所有失败保留，不重跑择优计分。
+采集器没有取消模型运行的 API 调用。活动会话遇到 Gateway/事件接口故障会重连等待，记录累计观察时间，不会开始下一题；SQL 错误、模型慢、超过 1200 秒、MCP/SQL 调用多均不会触发中断。模型自然结束后归档其最终答复或服务错误；无最终答复仍计失败，记录后继续。知识写入、Skill/代码漂移或无法保存原始证据时停止后续评估，不打断当前模型。GET 和使用稳定 Idempotency-Key 的 run 请求对连接故障、429/502/503/504 做有界重试；活动运行的状态查询在这些重试用尽后仍持续等待。所有失败保留，不重跑择优计分。
+
+2026-10-22 用户要求移除全部中断预算后，从 native-01 接管首个已受理对话到 native-unlimited-01；只切换采集进程，原模型在 Gateway 内继续运行，未取消或重发问题。`--adopt-from` 仅允许输入、模型和原生 Skill 完全相同的原题轮次，保存源证据哈希，沿用 thread/run ID；不会合并旧注入轮的 16 题。恢复无限等待轮次仍用 `-Resume`，接管旧原题轮则使用新的目录及 `-AdoptFrom <原目录>`。
 
 ## 4、采集与审计
 
 traces/case-XXXX/ 保存请求、thread/run 受理信息、原始 stream.sse、原始 http-bodies.bin、两组带字节位置/哈希/UTC/monotonic 时间的收据，以及工具已公开引用的 tool-results 文件。登录响应、认证头、Cookie 不进入记录器。
 
-原生工具请求/结果按 namespace＋tool_call_id 关联。子代理卡片仅用于发现漏采，不能补造 ID 或被截断的返回。长结果恢复需依据本题工具实际返回的 `.tool-results` 文件引用。宿主接收间隔不等于服务器执行耗时。SSE、事件和分页 messages 正文均可重放；有确认终态及完整消息导出时，流末帧缺失只记 warning，原生工具请求/返回缺失仍使本题失败。自然语言最终答复原文保存在 answer_text，SQL 来源为 last_sql_execute_request；不强制树查询顺序或特殊输出格式。
+原生工具请求/结果按 namespace＋tool_call_id 关联。子代理卡片仅用于发现漏采，不能补造 ID 或被截断的返回。长结果恢复需依据本题工具实际返回的 `.tool-results` 文件引用。SSE、事件和分页 messages 正文均可重放；有确认终态及完整消息导出时，流末帧缺失只记 warning，原生工具请求/返回缺失仍使本题失败。自然语言最终答复原文保存在 answer_text，SQL 来源为 last_sql_execute_request；不强制树查询顺序或特殊输出格式。
+
+每题 `elapsed_seconds` 优先记录 Gateway run.created_at 到终态 updated_at 的运行秒数，`timing_source` 明示来源；`observed_elapsed_seconds` 另记采集器从受理至观察终态的累计时间，`capture_elapsed_seconds` 包含归档耗时。服务时间缺失时回退至宿主 monotonic，并明确标注。这样接管采集器的空档不会混入服务实际运行时间。工具接收间隔不能当作服务端单次调用延迟。
 
 每轮 `_private/frozen_evaluator/` 保存当时代码及输入；当前代码变化后，使用该目录的同名脚本和原 --run-dir 可重放旧轮，既有预测保持原样。
 
@@ -69,7 +73,7 @@ traces/case-XXXX/ 保存请求、thread/run 受理信息、原始 stream.sse、�
 
 ```powershell
 & backend/.venv/Scripts/python.exe -X utf8 -B backend/evaluates/score_results.py `
-  --run-dir backend/evaluates/runs/20261022-qwen38-ultra-native-01
+  --run-dir backend/evaluates/runs/20261022-qwen38-ultra-native-unlimited-01
 ```
 
 schema_metrics.py 复用原纯离线匹配及 SQL 诊断；来源和本地适配见 metrics-provenance.json。主指标与严格 SQL 指标分开。每次评分写独立 scoring/ 快照，并更新根 summary.json/report.md。报告记录首次完成检索轮数、全部定位轮数和读取调用次数，也记录超出观察阈值的题数。审计会重放原始响应并核对冻结预测。

@@ -14,7 +14,7 @@ MODEL = "Qwen3.8-27B-FP8-Local-cloud"
 DATASET_SHA256 = "e6d2778929830da9d76ca09f981789d3929692baeeaf63964f477d28734bcae4"
 BUDGETS = {"timeout_seconds": 1200, "max_tool_calls": 24, "max_sql_executions": 4}
 NATIVE_MODE = "native_question_only"
-NATIVE_BUDGETS = {**BUDGETS, "enforce_tool_limits": False, "require_workspace": False}
+NATIVE_BUDGETS = {**BUDGETS, "timeout_seconds": None, "enforce_tool_limits": False, "require_workspace": False}
 CONTEXT = {"model_name": MODEL, "mode": "ultra", "thinking_enabled": True, "is_plan_mode": True, "subagent_enabled": True, "reasoning_effort": "high"}
 
 

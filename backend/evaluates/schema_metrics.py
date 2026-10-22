@@ -200,7 +200,7 @@ def score_prediction(sample: dict, record: dict, name_map: dict, budgets: dict) 
     if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed) or elapsed < 0:
         review_reasons.append("elapsed_time_not_recorded")
         elapsed = None
-    elif elapsed > budgets["timeout_seconds"]:
+    elif budgets.get("timeout_seconds") is not None and elapsed > budgets["timeout_seconds"]:
         reasons.append("case_timeout")
     if budgets.get("enforce_tool_limits", True) and len(calls) > budgets["max_tool_calls"]:
         reasons.append("tool_call_budget_exceeded")
