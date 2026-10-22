@@ -20,15 +20,23 @@ def learning_rejection_reason(call: dict) -> str | None:
     payload = response_payload(call.get("result", {}))
     if payload.get("ok") is True or payload.get("applied") is True or payload.get("executed") is True or any(payload.get(k) for k in ["change_id", "evidence_id", "edge_id"]):
         return None
-    # 明确的服务关闭/权限拒绝，必须同时确认没有应用变更。
-    if payload.get("ok") is False and payload.get("applied") is False and payload.get("status") in {"disabled", "forbidden"}:
-        return "learning_service_" + payload["status"]
+    # SDK 这两种固定错误码在 submit_sql_knowledge 之前直接返回，不包含 applied 字段。
+    error = payload.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    service_rejections = {"disabled": "sql_learning_disabled", "forbidden": "learning_scope_required"}
+    service_status = payload.get("status")
+    if payload.get("ok") is False and isinstance(service_status, str) and service_status in service_rejections and (payload.get("applied") is False or code == service_rejections[service_status]):
+        return "learning_service_" + service_status
     text = payload.get("content", "")
     if not isinstance(text, str) or not call.get("is_error") or payload.get("isError") is not True:
         return None
     if "McpError: invalid tool arguments; use the advertised input schema" in text:
         return "argument_validation_rejected"
     name = call.get("native_tool", "vfssql_sql_learn")
+    # MCP Tool.run 先校验 <工具名>Arguments，成功后才 call_fn；不匹配输出/业务异常。
+    validation_header = rf"\AError: Tool '{re.escape(name)}' failed with (?:ToolException|ToolError|McpError): Error executing tool sql_learn: [1-9]\d* validation errors? for sql_learnArguments(?:\r?\n|$)"
+    if re.match(validation_header, text):
+        return "mcp_argument_model_validation_rejected"
     deferred = f"Error: Tool '{name}' is deferred and has not been promoted yet. Call tool_search first to expose and promote this tool's schema, then retry."
     if text.strip() == deferred:
         # DeferredToolFilterMiddleware 在调用 handler 前直接返回，MCP 未被执行。
@@ -124,6 +132,13 @@ def supervise(run_dir: Path) -> None:
                 record_safe_continuation(run_dir, handled)
     except BaseException as error:
         update(status="needs_attention", error_type=type(error).__name__, error=str(error))
+        print(
+            json.dumps(
+                {"event": "evaluation_stopped", "at_utc": utc_now(), "stopped": True, "error_type": type(error).__name__, "reason": str(error), "predictions_frozen": len(list((run_dir / "predictions").glob("*.json")))},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
         raise
     finally:
         stopped.set()

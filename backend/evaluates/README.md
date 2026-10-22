@@ -46,7 +46,9 @@
 
 启动器准备正式 324 题并启动隐藏的独立 Python 进程，使用该轮归档代码持续运行。窗口或本轮 Codex 对话无需保持等待。凭据按提示输入，或由当前进程环境提供；不写入脚本。console.log/error.log 为后台输出。恢复同一目录时显式传入 -Resume；已有存活进程或已完成结果会拒绝重复启动。
 
-启动器同时归档独立监督器，原冻结采集/评分代码不变。监督器每 30 秒向 console.log 输出 supervisor_heartbeat，supervisor_status.json 记录其存活状态。旧采集器若在题目自然结束后因 sql_learn 停批，监督器在原始证据重放审计通过后按执行前拒绝契约分类：MCP 参数验证失败、DeerFlow 延迟工具未启用，以及服务明确返回 ok=false/applied=false 的 disabled/forbidden。全部学习调用均确认未执行时自动续跑下一题；原预测字节、失败判定及调用记录均保留，不重做题目。监督续跑原因、逐调用拒绝类型和预测哈希保存到 supervisor_incidents.jsonl。成功写入、pending 候选或状态不明的调用不自动恢复。
+启动器同时归档独立监督器，原冻结采集/评分代码不变。监督器每 30 秒向 console.log 输出 supervisor_heartbeat，supervisor_status.json 记录其存活状态。旧采集器若在题目自然结束后因 sql_learn 停批，监督器在原始证据重放审计通过后按执行前拒绝契约分类：McpError 参数拒绝、MCP sql_learnArguments 参数模型验证失败（覆盖字段错误和多个错误）、DeerFlow 延迟工具未启用，以及服务明确关闭/权限拒绝。SDK 的 disabled/forbidden 原生回执可不含 applied，但须匹配 sql_learning_disabled/learning_scope_required 固定错误码。全部学习调用均确认未执行时自动续跑下一题；原预测字节、失败判定及调用记录均保留，不重做题目。监督续跑原因、逐调用拒绝类型和预测哈希保存到 supervisor_incidents.jsonl。成功写入、pending 候选、输出校验或状态不明的调用不自动恢复。
+
+无法自动恢复时，监督器会在 console.log 最后一行输出 event=evaluation_stopped、stopped=true、明确原因和已归档题数，同时保存 needs_attention 状态；完整堆栈仍在 error.log。正常运行时为 supervisor_heartbeat。以日志末尾事件和状态文件区分正常等待与退出。
 
 只读查看进度：
 
@@ -60,6 +62,8 @@
 2026-10-22 15:11:50（北京时间）旧冻结采集器在第 29 题后触发学习停批：sql_learn 返回 McpError: invalid tool arguments，参数验证拒绝，未成功写入。第 29 题自然 success、耗时 167.707676 秒，但无最终答复，仍为失败。此次通过监督器续跑同一目录、跳过原有 29 题；原始预测与冻结代码不变，没有新建轮次或重发已完成问题。旧 error.log 中的历史停批堆栈保留，最新运行状态以 pipeline_status.json/supervisor_status.json 和日志末尾为准。
 
 15:54:30 第 36 题再次触发旧学习停批；此次为 deferred tool not promoted，DeerFlow 在调用 MCP handler 前直接拒绝。原监督器仅识别参数验证拒绝而退出，属于监督编排遗漏。本次补齐执行前拒绝分类，保留 36 题原记录并继续第 37 题；第 36 题已有自然最终答复，84.211772 秒，其未授权学习调用仍保留在评分诊断中。
+
+18:00:43 第 95 题后再次停批：该题一条 deferred 拒绝、一条 ToolException 包装的 sql_learnArguments 输入模型校验异常，旧监督器没有识别后者。已核对 MCP Tool.run 在 validate_arguments 成功后才 call_fn，故本次没有调用知识写入函数。补齐整个输入模型校验类别和停止事件日志，保留原 95 题及其审计证据，继续第 96 题。
 
 2026-10-22 用户要求移除全部中断预算后，从 native-01 接管首个已受理对话到 native-unlimited-01；只切换采集进程，原模型在 Gateway 内继续运行，未取消或重发问题。`--adopt-from` 仅允许输入、模型和原生 Skill 完全相同的原题轮次，保存源证据哈希，沿用 thread/run ID；不会合并旧注入轮的 16 题。恢复无限等待轮次仍用 `-Resume`，接管旧原题轮则使用新的目录及 `-AdoptFrom <原目录>`。
 

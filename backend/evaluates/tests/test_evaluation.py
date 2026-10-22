@@ -407,13 +407,13 @@ def test_supervisor_rejects_possible_or_unknown_learning_writes() -> None:
     rejected = {"tool": "sql_learn", "is_error": True, "result": {"isError": True, "content": "Error: Tool 'vfssql_sql_learn' failed with McpError: invalid tool arguments; use the advertised input schema. Continue with available context."}}
     assert learning_was_rejected({"tool_calls": [rejected]})
     assert not learning_was_rejected({"tool_calls": []})
-    for payload in [{"ok": True, "applied": False, "status": "pending"}, {"ok": True, "applied": True}, {"ok": False, "error": "unknown_server_failure"}, {"ok": False, "status": "forbidden"}]:
+    for payload in [{"ok": True, "applied": False, "status": "pending"}, {"ok": True, "applied": True}, {"ok": False, "error": "unknown_server_failure"}, {"ok": False, "status": "forbidden"}, {"ok": False, "status": {}, "applied": False}]:
         uncertain = {"tool": "sql_learn", "is_error": True, "result": {"structuredContent": payload}}
         assert not learning_was_rejected({"tool_calls": [uncertain]})
         assert not learning_was_rejected({"tool_calls": [rejected, uncertain]})
 
 
-@pytest.mark.parametrize("rejection", ["schema", "deferred"])
+@pytest.mark.parametrize("rejection", ["schema", "deferred", "mcp_validation"])
 def test_supervisor_preserves_failed_prediction_and_prevents_repeat(tmp_path: Path, monkeypatch, rejection: str) -> None:
     import deerflow_evidence
     from supervise_evaluation import record_safe_continuation
@@ -426,6 +426,8 @@ def test_supervisor_preserves_failed_prediction_and_prevents_repeat(tmp_path: Pa
         if rejection == "schema"
         else "Error: Tool 'vfssql_sql_learn' is deferred and has not been promoted yet. Call tool_search first to expose and promote this tool's schema, then retry."
     )
+    if rejection == "mcp_validation":
+        text = "Error: Tool 'vfssql_sql_learn' failed with ToolException: Error executing tool sql_learn: 1 validation error for sql_learnArguments\nrequest\n  Value error, synthetic missing rule content"
     record = {
         "status": "failed",
         "run_status": "success",
@@ -457,3 +459,58 @@ def test_supervisor_recognizes_explicit_preexecution_rejection(rejection: str) -
     assert learning_was_rejected({"tool_calls": [call]})
     payload["executed"] = True
     assert learning_rejection_reason(call) is None
+
+
+@pytest.mark.parametrize("exception,count,newline", [("ToolException", 1, "\n"), ("ToolException", 3, "\n"), ("ToolError", 2, "\r\n"), ("McpError", 10, "\n")])
+def test_mcp_argument_validation_rejection_independent_of_field_detail(exception: str, count: int, newline: str) -> None:
+    from supervise_evaluation import learning_rejection_reason
+
+    plural = "error" if count == 1 else "errors"
+    text = f"Error: Tool 'vfssql_sql_learn' failed with {exception}: Error executing tool sql_learn: {count} validation {plural} for sql_learnArguments{newline}request{newline}  合成字段验证错误"
+    call = {"native_tool": "vfssql_sql_learn", "is_error": True, "result": {"isError": True, "content": text}}
+    assert learning_rejection_reason(call) == "mcp_argument_model_validation_rejected"
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "write failed",
+        "1 validation error for sql_learnOutput\nresult",
+        "1 validation error for sql_executeArguments\nrequest",
+        "Error executing tool nested: 1 validation error for sql_learnArguments\nrequest",
+        "1 validation error for SQLKnowledgeRequest\nrequest",
+    ],
+)
+def test_validation_after_possible_execution_is_not_assumed_safe(detail: str) -> None:
+    from supervise_evaluation import learning_rejection_reason
+
+    call = {"native_tool": "vfssql_sql_learn", "is_error": True, "result": {"isError": True, "content": "Error: Tool 'vfssql_sql_learn' failed with ToolException: Error executing tool sql_learn: " + detail}}
+    assert learning_rejection_reason(call) is None
+
+
+@pytest.mark.parametrize("status,code", [("disabled", "sql_learning_disabled"), ("forbidden", "learning_scope_required")])
+def test_sdk_early_service_rejection_without_applied_field(status: str, code: str) -> None:
+    from supervise_evaluation import learning_rejection_reason
+
+    call = {"result": {"structuredContent": {"ok": False, "status": status, "error": {"code": code}}}}
+    assert learning_rejection_reason(call) == "learning_service_" + status
+    call["result"]["structuredContent"]["applied"] = True
+    assert learning_rejection_reason(call) is None
+
+
+def test_fatal_supervisor_failure_has_explicit_console_stop_event(tmp_path: Path, monkeypatch, capsys) -> None:
+    import run_pipeline
+    from supervise_evaluation import supervise
+
+    write_json(tmp_path / "capture_config.json", {"completion_policy": "wait_for_natural_terminal", "planned_cases": 1})
+
+    def synthetic_failure(_):
+        raise RuntimeError("synthetic_unclassified_failure")
+
+    monkeypatch.setattr(run_pipeline, "pipeline", synthetic_failure)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    with pytest.raises(RuntimeError, match="synthetic_unclassified_failure"):
+        supervise(tmp_path)
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert lines[-1]["event"] == "evaluation_stopped" and lines[-1]["stopped"] is True
+    assert lines[-1]["reason"] == "synthetic_unclassified_failure"

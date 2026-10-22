@@ -1,5 +1,13 @@
 # 评估自动化交付记录（2026-10-22）
 
+## 第 95 题停批与 MCP 输入模型校验
+
+2026-10-22 18:00:43（北京时间）第 95 题后停批，进程退出；此前监督器已自动越过第 42、53、90 题的已拒绝学习调用。第 95 题自然 success、最终答复 569 字符、172.979191 秒，原始轨迹完整且审计通过。一条学习调用被 deferred guard 拒绝，另一条为 ToolException: Error executing tool sql_learn: 1 validation error for sql_learnArguments，旧判断仅识别 McpError 固定文本，没有覆盖 MCP 的参数模型验证包装。
+
+核对实际运行环境 MCP SDK Tool.run：先 fn_metadata.validate_arguments，捕获 ValidationError 后返回 ToolError，随后才进入 call_fn；本次异常在调用知识函数之前发生。修订按整个 sql_learnArguments 输入校验类别判定，覆盖多个错误、不同字段和异常包装；明确排除输出模型、嵌套工具及业务阶段异常。同步匹配服务原生 disabled/forbidden 固定错误码（实际回执没有 applied 字段）。保留原 95 题预测、未授权学习诊断及冻结采集/评分代码。
+
+新增 console evaluation_stopped 事件，写入明确退出原因和题数，避免未知故障只留下历史堆栈。55 项合成检查通过，覆盖输入校验的四种包装/格式、五类不可认定未执行的异常、服务错误码和实际停止事件。
+
 ## 第 36 题停批与执行前拒绝分类
 
 2026-10-22 15:54:30（北京时间），第 36 题自然 success，耗时 84.211772 秒，有 177 字符最终答复，capture_complete=true 且原始证据审计通过。sql_learn 返回“is deferred and has not been promoted yet”，is_error=true。核对 DeferredToolFilterMiddleware：命中未 promoted 工具时直接返回错误 ToolMessage，没有调用 handler，故 MCP 学习未执行。
