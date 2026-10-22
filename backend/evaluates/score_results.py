@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from deerflow_evidence import audit_prediction
-from eval_common import ROOT, check_frozen, code_hashes, digest, read_json, utc_now, write_json
+from eval_common import NATIVE_MODE, ROOT, check_frozen, code_hashes, digest, read_json, utc_now, write_json
 from schema_metrics import retrieval_metrics, score_prediction
 
 SEARCH_TOOLS = {"vfs_find_file", "vfs_grep_file", "vfs_grep", "search_sql_schema"}
@@ -51,6 +51,11 @@ def score_one(sample: dict, record: dict, budgets: dict, *, audit_ok: bool, name
         capture_issues=record["capture"]["issues"],
         all_tool_calls=len(record.get("all_tool_calls", [])),
         subagent_mcp_calls=sum(bool(c["scope"]) for c in record["tool_calls"]),
+        capture_warnings=record["capture"].get("warnings", []),
+        answer_present=bool(record.get("answer_text", "").strip()),
+        sql_source=record.get("sql_source", "model_final_json"),
+        tool_observation_threshold_exceeded=len(record["tool_calls"]) > budgets["max_tool_calls"],
+        sql_observation_threshold_exceeded=sum(c["tool"] == "sql_execute" for c in record["tool_calls"]) > budgets["max_sql_executions"],
     )
     result.update(retrieval_rounds(sample, record["tool_calls"], name_map))
     return result
@@ -95,6 +100,10 @@ def summarize(scores: list[dict], cases: list[dict]) -> dict:
         "reason_counts": dict(Counter(reason for s in scores for reason in s["reasons"])),
         "protocol_issue_counts": dict(Counter(reason for s in scores for reason in s["protocol_issues"])),
         "capture_issue_counts": dict(Counter(reason for s in scores for reason in s["capture_issues"])),
+        "capture_warning_counts": dict(Counter(reason for s in scores for reason in s.get("capture_warnings", []))),
+        "answers_present": sum(s.get("answer_present", False) for s in scores),
+        "tool_observation_threshold_exceeded": sum(s.get("tool_observation_threshold_exceeded", False) for s in scores),
+        "sql_observation_threshold_exceeded": sum(s.get("sql_observation_threshold_exceeded", False) for s in scores),
         "mean_table_recall": statistics.mean(s["table_recall"] for s in scores),
         "mean_column_coverage": statistics.mean(s["column_coverage"] for s in scores),
     }
@@ -103,6 +112,9 @@ def summarize(scores: list[dict], cases: list[dict]) -> dict:
 def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> str:
     """生成人类可读报告。Args: config/summary/scores/snapshot。Returns: Markdown。"""
     s = summary
+    native = config.get("evaluation_mode") == NATIVE_MODE
+    budget_description = f"每题 {config['budgets']['timeout_seconds']} 秒超时；{config['budgets']['max_tool_calls']} 次 VFSSQL MCP / {config['budgets']['max_sql_executions']} 次 SQL"
+    budget_description += "为观察阈值，超出只记录，不取消对话；主/子代理、失败/重试/枚举合计。" if native else "为硬上限；主/子代理、失败/重试/枚举合计。"
     lines = [
         "# DeerFlow VFSSQL 独立对话评估报告",
         "",
@@ -111,8 +123,8 @@ def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> st
         "## 1、运行条件",
         "",
         f"- 模型：**{config['context']['model_name']}**；Ultra，推理深度 high。",
-        "- 每题一个新 thread；专用账号；Skill 文本显式注入；没有跨题查询计划复用。",
-        f"- 预算：每题 {config['budgets']['timeout_seconds']} 秒、{config['budgets']['max_tool_calls']} 次 VFSSQL MCP、{config['budgets']['max_sql_executions']} 次 SQL；主代理/子代理、失败/重试/枚举合计。",
+        "- 每题一个新 thread；并发固定 1；仅发送原始问题，由 DeerFlow 自主发现原生 Skill；最终答复按自然语言原文归档。" if native else "- 每题一个新 thread；专用账号；Skill 文本显式注入；没有跨题查询计划复用。",
+        f"- 预算：{budget_description}",
         f"- 数据集 SHA-256：`{config['dataset_sha256']}`。",
         f"- Skill SHA-256：`{config['skill_sha256']}`。",
         f"- 仓库提交：`{config['repository_revision']}`；服务版本/索引快照未知项保留 null。",
@@ -130,6 +142,8 @@ def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> st
         f"| Family 宏平均主成功率 | {s['family_macro_primary_success_rate']:.2%} |",
         f"| 原始轨迹审计通过 | {s['trace_audit_ok']}/{s['total']} |",
         f"| 采集完整 | {s['capture_complete']}/{s['total']} |",
+        f"| 有自然语言最终答复 | {s['answers_present']}/{s['total']} |" if native else "| 输出协议 | 旧版最终 JSON |",
+        f"| 超出 MCP / SQL 观察阈值的题数 | {s['tool_observation_threshold_exceeded']} / {s['sql_observation_threshold_exceeded']} |",
         f"| MCP / SQL 次数 | {s['mcp_calls']} / {s['sql_calls']} |",
         f"| 子代理 MCP 次数 | {s['subagent_mcp_calls']} |",
         f"| 每题耗时 p50 / p95（秒） | {s['latency_p50_seconds']:.1f} / {s['latency_p95_seconds']:.1f} |",
@@ -153,17 +167,21 @@ def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> st
         "- 工具耗时是宿主观察的接收间隔；服务器事件可能成批到达，不能当作独立服务端调用延迟。",
         "- Ultra 原生子图证据与步骤摘要分开处理，摘要截断不补造调用 ID；证据缺失单列。工具原始返回与模型收到的截断/摘要存在差异时保留实际原文。",
         "- 题库/目标标签只在全部预测冻结后用于评分。没有用评分反馈指导本轮后续问题。",
-        "- 旧 Skill 含已删除的结构化工具名，提示词沿用按实际工具 schema 调用的规则；本轮未替换 Skill。",
+        "- 原生 Skill 从 skills/public/z-vfssql-retrieval 自动发现；快照只用于审计，不注入消息。SQL/参数来源标注为最后一次 sql_execute 请求；要求有最终答复和成功运行，执行空结果允许通过。"
+        if native
+        else "- 旧 Skill 含已删除的结构化工具名，提示词沿用按实际工具 schema 调用的规则；本轮未替换 Skill。",
+        "- SSE 传输异常与证据缺口分别记录；有确认终态和完整持久化消息导出时可恢复流缺口；工具请求/返回仍须逐一对应。单题失败继续，无法确认前题终态或连续环境故障时暂停。",
         "- 业务数据与 Gold 结果等价性不在本轮成功口径内。",
         "",
         "## 5、与上一轮的对照",
         "",
-        "上轮 Codex Desktop、GPT-6.1-sol/medium、共享上下文及部分查询结构复用：248/324（76.54%）。本轮更改模型、宿主、上下文方式，并按用户要求翻倍预算；分差反映整体方案差异，不能只归因于模型。",
+        "上轮 Codex Desktop、GPT-6.1-sol/medium、共享上下文及部分查询结构复用：248/324（76.54%）。本轮更改模型、宿主、上下文方式。"
+        "原生轮还取消 Skill/评估提示注入，并将调用次数从硬上限改为观察阈值；分差反映整体运行条件差异，不能只归因于模型。",
         "",
         "## 6、原因码",
         "",
         "```json",
-        json.dumps({"scoring": s["reason_counts"], "protocol": s["protocol_issue_counts"], "capture": s["capture_issue_counts"]}, ensure_ascii=False, indent=2),
+        json.dumps({"scoring": s["reason_counts"], "protocol": s["protocol_issue_counts"], "capture": s["capture_issue_counts"], "transport_warnings": s["capture_warning_counts"]}, ensure_ascii=False, indent=2),
         "```",
         "",
     ]
@@ -190,7 +208,18 @@ def score(run_dir: Path) -> dict:
         records.append(record)
         audit_hashes[case["case_id"]] = record["capture"]["files"]
     summary = summarize(scores, manifest["cases"])
-    summary.update(scorer_version="deerflow-1.0+vfssql-2.0", code_hashes=code_hashes(), purpose=config["purpose"], complete=True, scored_at_utc=utc_now(), tool_counts=dict(Counter(c["tool"] for r in records for c in r["tool_calls"])))
+    summary.update(
+        scorer_version="deerflow-2.0-native+vfssql-2.0",
+        code_hashes=code_hashes(),
+        purpose=config["purpose"],
+        evaluation_mode=config.get("evaluation_mode"),
+        concurrency=config.get("concurrency"),
+        complete=True,
+        scored_at_utc=utc_now(),
+        tool_counts=dict(Counter(c["tool"] for r in records for c in r["tool_calls"])),
+        run_status_counts=dict(Counter(r["run_status"] for r in records)),
+        stop_reason_counts=dict(Counter(r["stop_reason"] for r in records if r.get("stop_reason"))),
+    )
     stamp = datetime_stamp = summary["scored_at_utc"].replace(":", "").replace("-", "").split(".")[0] + "-" + uuid4().hex[:8]
     snapshot = run_dir / "scoring" / stamp
     snapshot.mkdir(exist_ok=False)

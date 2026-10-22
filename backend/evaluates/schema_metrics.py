@@ -194,7 +194,7 @@ def score_prediction(sample: dict, record: dict, name_map: dict, budgets: dict) 
         review_reasons.append("reference_structure_not_fully_covered")
     if collisions:
         review_reasons.append("ambiguous_schema_table_name")
-    if workspace is None:
+    if workspace is None and budgets.get("require_workspace", True):
         reasons.append("missing_workspace_evidence")
     elapsed = record.get("elapsed_seconds")
     if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed) or elapsed < 0:
@@ -202,7 +202,7 @@ def score_prediction(sample: dict, record: dict, name_map: dict, budgets: dict) 
         elapsed = None
     elif elapsed > budgets["timeout_seconds"]:
         reasons.append("case_timeout")
-    if len(calls) > budgets["max_tool_calls"]:
+    if budgets.get("enforce_tool_limits", True) and len(calls) > budgets["max_tool_calls"]:
         reasons.append("tool_call_budget_exceeded")
     if any(normalize_tool(call["tool"]) not in TOOLS for call in calls):
         reasons.append("unexpected_or_learning_tool")
@@ -210,7 +210,7 @@ def score_prediction(sample: dict, record: dict, name_map: dict, budgets: dict) 
     if capture is not None and (capture.get("source") != "deerflow_gateway" or not capture.get("complete") or capture.get("issues")):
         reasons.append("incomplete_or_invalid_event_capture")
     executions = [call for call in calls if normalize_tool(call["tool"]) == "sql_execute"]
-    if len(executions) > budgets["max_sql_executions"]:
+    if budgets.get("enforce_tool_limits", True) and len(executions) > budgets["max_sql_executions"]:
         reasons.append("sql_execution_budget_exceeded")
     execution_ok, first_execution_ok, first_final_execution_ok = False, False, None
     for index, call in enumerate(executions):

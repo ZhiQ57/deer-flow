@@ -71,7 +71,7 @@ def main() -> None:
     """后台启动命令入口。Args: 命令行参数。Returns: 无。"""
     stamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d-%H%M%S")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-dir", type=Path, default=ROOT / "runs" / f"{stamp}-qwen38-ultra-independent")
+    parser.add_argument("--run-dir", type=Path, default=ROOT / "runs" / f"{stamp}-qwen38-ultra-native")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     print(json.dumps(start(args.run_dir.resolve(), resume=args.resume), ensure_ascii=False))

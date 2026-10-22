@@ -22,6 +22,24 @@ class GatewayFailure(RuntimeError):
     """Gateway 鉴权、连接或协议问题；停止当前批次以便检查证据。"""
 
 
+TERMINAL_STATUSES = {"success", "error", "interrupted", "timeout"}
+
+
+def stop_for_budget(config: dict, elapsed: float, count: int, sql_count: int, learning: bool) -> str | None:
+    """只对硬性限制发出停止信号。Args: 配置及实际计数。Returns: 原因或空。"""
+    budgets = config["budgets"]
+    if learning:
+        return "learning_tool_called"
+    if elapsed >= budgets["timeout_seconds"]:
+        return "case_timeout"
+    if budgets.get("enforce_tool_limits", True):
+        if count > budgets["max_tool_calls"]:
+            return "tool_call_budget_exceeded"
+        if sql_count > budgets["max_sql_executions"]:
+            return "sql_execution_budget_exceeded"
+    return None
+
+
 class Recorder:
     """同步落盘原始字节和 monotonic 接收收据，不保存认证响应。"""
 
@@ -72,7 +90,8 @@ class Gateway:
 
     async def request(self, method: str, path: str, *, recorder: Recorder | None = None, json_body: dict | None = None, params: dict | None = None, headers: dict | None = None) -> httpx.Response:
         """请求 API 并登记原始正文。Args: 请求字段/recorder。Returns: HTTP 响应。"""
-        attempts = 3 if method == "GET" else 1
+        retry_safe = method == "GET" or bool(headers and headers.get("Idempotency-Key")) or path.endswith("/cancel")
+        attempts = 4 if retry_safe else 1
         for attempt in range(attempts):
             try:
                 response = await self.client.request(method, path, json=json_body, params=params, headers=headers)
@@ -81,13 +100,16 @@ class Gateway:
                     response = await self.client.request(method, path, json=json_body, params=params, headers=headers)
                 if recorder:
                     recorder.save(response.content, method=method, path=path, params=params or {}, status_code=response.status_code)
+                if response.status_code in {429, 502, 503, 504} and attempt + 1 < attempts:
+                    await asyncio.sleep(min(2**attempt, 8))
+                    continue
                 if response.status_code >= 400:
                     raise GatewayFailure(f"{method} {path} HTTP {response.status_code}")
                 return response
             except httpx.HTTPError as error:
                 if attempt + 1 == attempts:
                     raise GatewayFailure(type(error).__name__) from error
-                await asyncio.sleep(attempt + 1)
+                await asyncio.sleep(min(2**attempt, 8))
         raise GatewayFailure("请求未返回")
 
 
@@ -181,6 +203,38 @@ async def fetch_events(gateway: Gateway, prefix: str, recorder: Recorder, after_
         after_seq = cursor
 
 
+async def export_messages(gateway: Gateway, prefix: str, recorder: Recorder) -> None:
+    """导出全部持久化原生消息，流断开后仍可恢复。Args: API/recorder。Returns: 无。"""
+    before = None
+    while True:
+        params = {"limit": 200, **({"before_seq": before} if before is not None else {})}
+        page = (await gateway.request("GET", prefix + "/messages", recorder=recorder, params=params)).json()
+        if not page.get("has_more"):
+            return
+        cursor = min((row["seq"] for row in page["data"]), default=None)
+        if cursor is None or before is not None and cursor >= before:
+            raise GatewayFailure("消息分页游标未前进")
+        before = cursor
+
+
+async def cancel_and_settle(gateway: Gateway, prefix: str, recorder: Recorder) -> dict:
+    """取消后确认终态，避免未知运行与后题重叠。Args: API/recorder。Returns: 终态响应。"""
+    try:
+        await gateway.request("POST", prefix + "/cancel", recorder=recorder, params={"wait": "true", "action": "interrupt"})
+    except GatewayFailure:
+        terminal = (await gateway.request("GET", prefix, recorder=recorder)).json()
+        if terminal.get("status") in TERMINAL_STATUSES:
+            return terminal
+        raise
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        terminal = (await gateway.request("GET", prefix, recorder=recorder)).json()
+        if terminal.get("status") in TERMINAL_STATUSES:
+            return terminal
+        await asyncio.sleep(2)
+    raise GatewayFailure("取消后仍不能确认前题终态，停止以保持单会话并发")
+
+
 async def run_case(gateway: Gateway, run_dir: Path, question: dict, config: dict) -> dict:
     """执行或恢复一题，不重新提交已受理运行。Args: 当前题及配置。Returns: 冻结预测。"""
     case_id = question["case_id"]
@@ -204,7 +258,7 @@ async def run_case(gateway: Gateway, run_dir: Path, question: dict, config: dict
                 "POST",
                 "/api/threads",
                 recorder=recorder,
-                json_body={"thread_id": admission["thread_id"], "assistant_id": "lead_agent", "metadata": {"title": f"VFSSQL {config['purpose']} {case_id}", "vfssql_evaluation": run_dir.name, "case_id": case_id}},
+                json_body={"thread_id": admission["thread_id"], "assistant_id": "lead_agent", "metadata": {"title": question["question"][:100], "vfssql_evaluation": run_dir.name, "case_id": case_id}},
             )
         elif check.status_code != 200:
             raise GatewayFailure(f"读取评估 thread HTTP {check.status_code}")
@@ -234,6 +288,7 @@ async def run_case(gateway: Gateway, run_dir: Path, question: dict, config: dict
     stream = asyncio.create_task(save_stream(gateway, prefix + "/join", recorder, issues, live))
     events: dict[int, dict] = {}
     after_seq, stop_reason, last_progress, terminal = None, None, -30.0, {}
+    terminal_confirmed, terminal_elapsed = False, None
     try:
         while True:
             page = await fetch_events(gateway, prefix, recorder, after_seq)
@@ -245,30 +300,22 @@ async def run_case(gateway: Gateway, run_dir: Path, question: dict, config: dict
             http_count, http_sql_count, http_learning = observed_budget(list(events.values()))
             live_count, live_sql_count, live_learning = live.budget_counts()
             count, sql_count, learning = max(http_count, live_count), max(http_sql_count, live_sql_count), http_learning or live_learning
-            if recorder.elapsed() >= config["budgets"]["timeout_seconds"]:
-                stop_reason = "case_timeout"
-            elif count > config["budgets"]["max_tool_calls"]:
-                stop_reason = "tool_call_budget_exceeded"
-            elif sql_count > config["budgets"]["max_sql_executions"]:
-                stop_reason = "sql_execution_budget_exceeded"
-            elif learning:
-                stop_reason = "learning_tool_called"
-            if stop_reason:
-                try:
-                    await gateway.request("POST", prefix + "/cancel", recorder=recorder, params={"wait": "false", "action": "interrupt"})
-                except GatewayFailure:
-                    pass
             terminal = (await gateway.request("GET", prefix, recorder=recorder)).json()
             status = terminal.get("status")
             if recorder.elapsed() - last_progress >= 30:
                 print(json.dumps({"case_id": case_id, "status": status, "elapsed_seconds": round(recorder.elapsed(), 1), "mcp_observed": count, "sql_observed": sql_count}, ensure_ascii=False), flush=True)
                 last_progress = recorder.elapsed()
-            if status not in {"pending", "running"}:
+            if status in TERMINAL_STATUSES:
+                terminal_confirmed = True
+                terminal_elapsed = recorder.elapsed()
                 break
+            stop_reason = stop_for_budget(config, recorder.elapsed(), count, sql_count, learning)
             if stop_reason:
-                await asyncio.sleep(1)
-            else:
-                await asyncio.sleep(2)
+                terminal = await cancel_and_settle(gateway, prefix, recorder)
+                terminal_confirmed = True
+                terminal_elapsed = recorder.elapsed()
+                break
+            await asyncio.sleep(config.get("poll_interval_seconds", 5))
         # 终态后等待已有流收尾，再获取落库的最后一页；不再次调用模型。
         try:
             await asyncio.wait_for(asyncio.shield(stream), timeout=15)
@@ -277,27 +324,46 @@ async def run_case(gateway: Gateway, run_dir: Path, question: dict, config: dict
         page = await fetch_events(gateway, prefix, recorder, after_seq)
         for event in page:
             events[event["seq"]] = event
-        before = None
-        while True:
-            params = {"limit": 200, **({"before_seq": before} if before else {})}
-            messages = (await gateway.request("GET", prefix + "/messages", recorder=recorder, params=params)).json()
-            if not messages.get("has_more"):
-                break
-            before = min(row["seq"] for row in messages["data"])
+        await export_messages(gateway, prefix, recorder)
         await recover_tool_files(gateway, run_dir, case_id, recorder)
     except (GatewayFailure, OSError, ValueError) as error:
         issues.append("gateway_capture_" + type(error).__name__)
-        try:
-            await gateway.request("POST", prefix + "/cancel", recorder=recorder, params={"wait": "false"})
-        except (GatewayFailure, httpx.HTTPError):
-            pass
-        stop_reason = "gateway_capture_failure"
+        append_json(trace / "recovery.jsonl", {"at_utc": utc_now(), "error_type": type(error).__name__, "terminal_already_confirmed": terminal_confirmed})
+        if not terminal_confirmed:
+            try:
+                terminal = (await gateway.request("GET", prefix, recorder=recorder)).json()
+                if terminal.get("status") not in TERMINAL_STATUSES:
+                    terminal = await cancel_and_settle(gateway, prefix, recorder)
+                terminal_confirmed = terminal.get("status") in TERMINAL_STATUSES
+                terminal_elapsed = recorder.elapsed() if terminal_confirmed else None
+            except GatewayFailure:
+                issues.append("run_terminal_not_confirmed")
+        stop_reason = stop_reason or "gateway_capture_failure"
+        if terminal_confirmed:
+            try:
+                await fetch_events(gateway, prefix, recorder, after_seq)
+                await export_messages(gateway, prefix, recorder)
+                await recover_tool_files(gateway, run_dir, case_id, recorder)
+            except (GatewayFailure, OSError, ValueError):
+                issues.append("durable_export_recovery_failed")
     finally:
         if not stream.done():
             stream.cancel()
         await asyncio.gather(stream, return_exceptions=True)
-    elapsed = recorder.elapsed()
-    write_json(trace / "terminal.json", {"run_status": terminal.get("status", "unknown"), "elapsed_seconds": elapsed, "stop_reason": stop_reason, "capture_issues": issues, "finished_at_utc": utc_now()}, exclusive=True)
+    elapsed = terminal_elapsed if terminal_elapsed is not None else recorder.elapsed()
+    write_json(
+        trace / "terminal.json",
+        {
+            "run_status": terminal.get("status", "unknown"),
+            "terminal_confirmed": terminal_confirmed,
+            "elapsed_seconds": elapsed,
+            "capture_elapsed_seconds": recorder.elapsed(),
+            "stop_reason": stop_reason,
+            "capture_issues": issues,
+            "finished_at_utc": utc_now(),
+        },
+        exclusive=True,
+    )
     record = make_prediction(run_dir, case_id)
     write_json(run_dir / "predictions" / f"{case_id}.json", record, exclusive=True)
     append_json(
@@ -320,6 +386,8 @@ async def run_case(gateway: Gateway, run_dir: Path, question: dict, config: dict
 async def run(run_dir: Path, limit: int | None) -> None:
     """执行当前授权批次，环境或采集故障时暂停。Args: run_dir/limit。Returns: 无。"""
     config = check_frozen(run_dir)
+    if config.get("concurrency") != 1:
+        raise GatewayFailure("当前原生协议固定为单会话并发")
     email, password = os.environ.get("VFSSQL_EVAL_EMAIL"), os.environ.get("VFSSQL_EVAL_PASSWORD")
     if not email or not password:
         raise GatewayFailure("需设置 VFSSQL_EVAL_EMAIL 与 VFSSQL_EVAL_PASSWORD")
@@ -332,12 +400,25 @@ async def run(run_dir: Path, limit: int | None) -> None:
             raise GatewayFailure("指定模型或推理能力不可用")
         if not (run_dir / "model_preflight.json").exists():
             write_json(run_dir / "model_preflight.json", {"checked_at_utc": utc_now(), "model": model}, exclusive=True)
+        skills = (await gateway.request("GET", "/api/skills")).json()
+        rows = skills.get("skills", []) if isinstance(skills, dict) else skills
+        skill = next((s for s in rows if s.get("name") == config["native_skill"]["name"] and s.get("enabled")), None)
+        if not skill:
+            raise GatewayFailure("DeerFlow 未发现已启用的 vfssql-retrieval 原生 Skill")
+        if not (run_dir / "skill_preflight.json").exists():
+            write_json(run_dir / "skill_preflight.json", {"checked_at_utc": utc_now(), "skill": skill, "loading": "deerflow_autodiscovery"}, exclusive=True)
         questions = [json.loads(line) for line in (run_dir / "questions.jsonl").read_text(encoding="utf-8").splitlines()]
-        completed = 0
+        completed, consecutive_failures = 0, 0
         for question in questions:
             check_frozen(run_dir)
             prediction = run_dir / "predictions" / f"{question['case_id']}.json"
             if prediction.exists():
+                previous = read_json(prediction)
+                if previous.get("run_status") not in TERMINAL_STATUSES:
+                    raise GatewayFailure("已有预测的运行终态不明，不能开始下一题")
+                old_terminal = read_json(run_dir / "traces" / question["case_id"] / "terminal.json")
+                if not old_terminal.get("terminal_confirmed"):
+                    raise GatewayFailure("已有预测未确认终态，请先确认原会话已经停止")
                 continue
             record = await run_case(gateway, run_dir, question, config)
             completed += 1
@@ -356,16 +437,15 @@ async def run(run_dir: Path, limit: int | None) -> None:
                 ),
                 flush=True,
             )
-            expected_cancel_gap = record.get("stop_reason") in {"case_timeout", "tool_call_budget_exceeded", "sql_execution_budget_exceeded"} and set(record["capture"]["issues"]) <= {
-                "native_tool_result_missing",
-                "sse_terminal_frame_missing",
-            }
-            if not record["capture"]["complete"] and not expected_cancel_gap:
-                raise GatewayFailure("原始证据采集不完整，已保存本题并停止批次")
+            terminal = read_json(run_dir / "traces" / question["case_id"] / "terminal.json")
+            if record["run_status"] not in TERMINAL_STATUSES or not terminal.get("terminal_confirmed"):
+                raise GatewayFailure("无法确认前题终态，停止以保持单会话并发")
             if any(c["tool"] == "sql_learn" for c in record["tool_calls"]):
                 raise GatewayFailure("检测到知识学习调用，已停止批次")
-            if not record["tool_calls"] and record["run_status"] != "success" and record.get("stop_reason") != "case_timeout":
-                raise GatewayFailure("模型未进入 MCP 流程且运行失败，停止批次检查环境")
+            control_failed = not record["capture"]["complete"] or record["run_status"] == "error" and not record["tool_calls"]
+            consecutive_failures = consecutive_failures + 1 if control_failed else 0
+            if consecutive_failures >= config.get("consecutive_capture_failures_before_pause", 5):
+                raise GatewayFailure("连续 5 题采集或模型环境失败，已保留失败并暂停检查服务")
             if limit is not None and completed >= limit:
                 break
         if all((run_dir / "predictions" / f"{q['case_id']}.json").is_file() for q in questions):

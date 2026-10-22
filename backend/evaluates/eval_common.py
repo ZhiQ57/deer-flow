@@ -12,8 +12,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 MODEL = "Qwen3.8-27B-FP8-Local-cloud"
 DATASET_SHA256 = "e6d2778929830da9d76ca09f981789d3929692baeeaf63964f477d28734bcae4"
-SKILL_SHA256 = "b4436df429a8c2cac0bfa03205a711a98c45799659379db48dbb34f864f8143f"
 BUDGETS = {"timeout_seconds": 1200, "max_tool_calls": 24, "max_sql_executions": 4}
+NATIVE_MODE = "native_question_only"
+NATIVE_BUDGETS = {**BUDGETS, "enforce_tool_limits": False, "require_workspace": False}
 CONTEXT = {"model_name": MODEL, "mode": "ultra", "thinking_enabled": True, "is_plan_mode": True, "subagent_enabled": True, "reasoning_effort": "high"}
 
 
@@ -77,4 +78,14 @@ def check_frozen(run_dir: Path) -> dict:
         raise ValueError("题面哈希发生变化")
     if digest((run_dir / "_private/manifest.json").read_bytes()) != config["manifest_sha256"]:
         raise ValueError("私有题号映射发生变化")
+    native = config.get("native_skill")
+    if native and skill_hashes(Path(native["source_directory"])) != native["files"]:
+        raise ValueError("DeerFlow 原生 Skill 在本轮运行中变化，须新建轮次")
     return config
+
+
+def skill_hashes(directory: Path) -> dict[str, str]:
+    """冻结原生技能包文件。Args: directory 技能目录。Returns: 相对路径和摘要。"""
+    if not (directory / "SKILL.md").is_file():
+        raise ValueError("原生 Skill 目录缺少 SKILL.md")
+    return {p.relative_to(directory).as_posix(): digest(p.read_bytes()) for p in sorted(directory.rglob("*")) if p.is_file() and not {"__pycache__", ".git"} & set(p.relative_to(directory).parts)}

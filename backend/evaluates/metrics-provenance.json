@@ -7,7 +7,8 @@
   "adaptations": [
     "VFSSQL DeerFlow tool prefix normalization",
     "capture source codex_cli_json -> deerflow_gateway",
-    "Scope.set_operation_scopes/union_scopes equivalent traversal for installed SQLGlot"
+    "Scope.set_operation_scopes/union_scopes equivalent traversal for installed SQLGlot",
+    "Native question-only mode permits autonomous retrieval order and records tool counts as observation thresholds"
   ],
   "original_scorer_version": "2.0",
   "sqlglot_runtime_version": "30.12.0"

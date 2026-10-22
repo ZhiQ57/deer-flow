@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from eval_common import digest, read_json
+from eval_common import NATIVE_MODE, digest, read_json
 
 VFSSQL_TOOLS = {"tree_folder", "vfs_find_file", "vfs_grep_file", "vfs_cat_read", "vfs_sed", "vfs_bash_execute", "sql_execute"}
 ORCHESTRATION_TOOLS = {"tool_search", "write_todos", "task", "task_list", "task_wait", "ask_clarification"}
@@ -90,6 +90,9 @@ class TraceBuilder:
         self.issues: list[str] = []
         self.order = 0
         self.terminal_sse = False
+        self.durable_messages_complete = False
+        self.root_journal_messages: dict[int, dict] = {}
+        self.root_snapshot_messages: list[dict] = []
 
     def add_message(self, message: dict, scope: str, receipt: dict, *, priority: int = 1) -> None:
         """加入完整原生消息。Args: message/scope/receipt/priority。Returns: 无。"""
@@ -115,6 +118,8 @@ class TraceBuilder:
         if base == "end":
             self.terminal_sse = True
         if base == "values" and isinstance(data, dict):
+            if not scope:
+                self.root_snapshot_messages = data.get("messages", [])
             for msg in data.get("messages", []):
                 self.add_message(msg, scope, receipt)
         elif base == "updates" and isinstance(data, dict):
@@ -174,6 +179,8 @@ class TraceBuilder:
             caller = (event.get("metadata") or {}).get("caller", "lead_agent")
             scope = "" if caller == "lead_agent" else "journal:" + caller
             self.add_message(content, scope, receipt, priority=3)
+            if not scope and isinstance(event.get("seq"), int):
+                self.root_journal_messages[event["seq"]] = content
         elif kind == "subagent.step" and isinstance(content, dict):
             step = content.get("step", content)
             task = str(step.get("task_id") or (event.get("metadata") or {}).get("task_id") or "")
@@ -282,6 +289,27 @@ class TraceBuilder:
             return next(iter(candidates.values())), []
         return default, ["final_response_ambiguous_json" if candidates else "final_response_invalid_json"]
 
+    def native_final(self, calls: list[dict], run_status: str) -> tuple[dict, list[str]]:
+        """保留原生答复并从实际执行请求取 SQL。Args: calls/run_status。Returns: 预测及缺口。"""
+        roots = sorted((e for e in self.messages.values() if not e["scope"]), key=lambda e: e["order"])
+        last = roots[-1]["message"] if roots else {}
+        if self.root_journal_messages:
+            last = self.root_journal_messages[max(self.root_journal_messages)]
+            if self.root_snapshot_messages and last.get("id") and any(m.get("id") == last["id"] for m in self.root_snapshot_messages):
+                # 完整状态中的消息顺序可证明末条流消息比尚未落库的旧事件更新。
+                last = self.root_snapshot_messages[-1]
+        answer = content_text(last.get("content")) if last.get("type") == "ai" and not last.get("tool_calls") else ""
+        executions = sorted((c for c in calls if c["tool"] == "sql_execute"), key=lambda c: c["request_order"])
+        request = executions[-1]["arguments"] if executions else {}
+        return {
+            "status": "completed" if answer.strip() and run_status == "success" else "failed",
+            "answer_text": answer,
+            "sql": request.get("sql", "") if isinstance(request.get("sql", ""), str) else "",
+            "parameters": request.get("parameters", {}) if isinstance(request.get("parameters", {}), dict) else {},
+            "sql_source": "last_sql_execute_request" if executions else "no_sql_execute_request",
+            "notes": "自然语言答复按原文归档；SQL/参数来自最后一次实际执行请求。",
+        }, [] if answer.strip() else ["final_response_missing"]
+
 
 def recorded_chunks(trace: Path, stem: str) -> list[tuple[bytes, dict]]:
     """校验并重放原始字节收据。Args: trace/stem。Returns: 字节和收据列表。"""
@@ -307,17 +335,35 @@ def recorded_chunks(trace: Path, stem: str) -> list[tuple[bytes, dict]]:
 def replay_trace(trace: Path) -> TraceBuilder:
     """离线重放 SSE，再以持久化事件补充。Args: trace。Returns: 解析器。"""
     builder, decoder = TraceBuilder(), SseDecoder()
-    for chunk, receipt in recorded_chunks(trace, "stream"):
-        try:
-            for name, data in decoder.accept(chunk):
-                builder.accept_frame(name, data, receipt)
-        except (ValueError, TypeError, UnicodeError):
-            builder.issues.append("sse_decode_error")
-    seen = set()
-    for chunk, receipt in recorded_chunks(trace, "http"):
-        if receipt.get("status_code") != 200 or not receipt.get("path", "").endswith("/events"):
+    received = [(raw, receipt, True) for raw, receipt in recorded_chunks(trace, "stream")]
+    received += [(raw, receipt, False) for raw, receipt in recorded_chunks(trace, "http")]
+    seen, message_cursor, exporting = set(), None, False
+    for chunk, receipt, stream in sorted(received, key=lambda item: item[1]["elapsed_seconds"]):
+        if stream:
+            try:
+                for name, data in decoder.accept(chunk):
+                    builder.accept_frame(name, data, receipt)
+            except (ValueError, TypeError, UnicodeError):
+                builder.issues.append("sse_decode_error")
             continue
-        for event in json.loads(chunk):
+        path = receipt.get("path", "")
+        if receipt.get("status_code") != 200 or not path.endswith(("/events", "/messages")):
+            continue
+        payload = json.loads(chunk)
+        if path.endswith("/events"):
+            rows = payload
+        else:
+            rows = sorted(payload.get("data", []), key=lambda row: row["seq"])
+            before = receipt.get("params", {}).get("before_seq")
+            if before is None:
+                exporting, message_cursor = True, None
+            elif before != message_cursor:
+                exporting = False
+            if payload.get("has_more"):
+                message_cursor = min((row["seq"] for row in rows), default=None)
+            elif exporting:
+                builder.durable_messages_complete = True
+        for event in rows:
             if event["seq"] not in seen:
                 builder.accept_event(event, receipt)
                 seen.add(event["seq"])
@@ -351,19 +397,32 @@ def replay_trace(trace: Path) -> TraceBuilder:
 def make_prediction(run_dir: Path, case_id: str) -> dict:
     """由保存的原始数据生成预测。Args: run_dir/case_id。Returns: 冻结记录。"""
     trace = run_dir / "traces" / case_id
+    config = read_json(run_dir / "capture_config.json")
+    native = config.get("evaluation_mode") == NATIVE_MODE
     admission, terminal = read_json(trace / "admission.json"), read_json(trace / "terminal.json")
     builder = replay_trace(trace)
     mcp, all_calls, capture_issues = builder.calls()
-    final, protocol_issues = builder.final()
+    final, protocol_issues = builder.native_final(mcp, terminal["run_status"]) if native else builder.final()
+    warnings = []
     if not builder.terminal_sse:
         capture_issues.append("sse_terminal_frame_missing")
     capture_issues.extend(terminal.get("capture_issues", []))
+    if native and (builder.terminal_sse or builder.durable_messages_complete and terminal.get("terminal_confirmed")):
+        recoverable = {i for i in capture_issues if i.startswith(("sse_", "live_sse_"))}
+        warnings.extend(sorted(recoverable))
+        capture_issues = [i for i in capture_issues if i not in recoverable]
+    if native and not terminal.get("terminal_confirmed"):
+        capture_issues.append("run_terminal_not_confirmed")
     permitted_result_paths: set[str] = set()
     for entry in builder.messages.values():
         if entry["message"].get("type") == "tool":
             permitted_result_paths.update(tool_result_paths(content_text(entry["message"].get("content"))))
     for call in all_calls:
         tool = call["tool"]
+        if native:
+            if tool == "sql_learn":
+                protocol_issues.append("unauthorized_learning_tool:" + call["native_tool"])
+            continue
         if tool in VFSSQL_TOOLS or tool in ORCHESTRATION_TOOLS:
             continue
         path = call["arguments"].get("path", call["arguments"].get("file_path"))
@@ -386,6 +445,7 @@ def make_prediction(run_dir: Path, case_id: str) -> dict:
             "source": "deerflow_gateway",
             "complete": not capture_issues,
             "issues": sorted(set(capture_issues)),
+            **({"warnings": warnings, "durable_messages_complete": builder.durable_messages_complete} if native else {}),
             "files": files,
             "configuration_sha256": digest((run_dir / "capture_config.json").read_bytes()),
             "timing": "host monotonic receive intervals; not server invocation latency",

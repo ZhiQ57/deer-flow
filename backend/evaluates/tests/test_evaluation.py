@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -11,8 +12,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from deerflow_evidence import SseDecoder, TraceBuilder, audit_prediction, make_prediction, normalize_name, recorded_chunks, replay_trace
-from eval_common import BUDGETS, digest, write_json
-from run_deerflow import Recorder, observed_budget
+from eval_common import BUDGETS, NATIVE_BUDGETS, NATIVE_MODE, digest, write_json
+from prepare_dataset import build_prompt
+from run_deerflow import Recorder, observed_budget, stop_for_budget
 from schema_metrics import retrieval_metrics
 from score_results import retrieval_rounds, score_one
 
@@ -213,3 +215,158 @@ def test_finished_native_chunk_counts_toward_budget() -> None:
     builder.accept_frame("messages", [{"id": "ai", "type": "AIMessageChunk", "content": "", "tool_call_chunks": [{"index": 0, "id": "tool", "name": "vfssql_vfs_tree_folder", "args": "{}"}]}, {}], {"elapsed_seconds": 1})
     builder.accept_frame("messages", [{"id": "ai", "type": "AIMessageChunk", "content": "", "response_metadata": {"finish_reason": "tool_calls"}}, {}], {"elapsed_seconds": 2})
     assert builder.budget_counts() == (1, 0, False)
+
+
+def test_native_message_is_exact_question_only() -> None:
+    question = '  原题中的空格、引号"与换行\n必须保留。  '
+    assert build_prompt({"case_id": "synthetic-01", "question": question}, {"evaluation_mode": NATIVE_MODE, "budgets": NATIVE_BUDGETS}) == question
+    with pytest.raises(ValueError):
+        build_prompt({"case_id": "synthetic-01", "question": question, "gold_sql": "禁止泄漏"}, {"evaluation_mode": NATIVE_MODE})
+
+
+def test_observation_thresholds_do_not_cancel() -> None:
+    config = {"budgets": NATIVE_BUDGETS}
+    assert stop_for_budget(config, 100, 100, 20, False) is None
+    assert stop_for_budget(config, 1200, 1, 0, False) == "case_timeout"
+    assert stop_for_budget(config, 1, 1, 0, True) == "learning_tool_called"
+    assert stop_for_budget({"budgets": BUDGETS}, 100, 25, 1, False) == "tool_call_budget_exceeded"
+
+
+def test_native_score_has_no_tree_first_or_count_limit() -> None:
+    sample, record = synthetic()
+    record["tool_calls"] = record["tool_calls"][1:3] * 15 + [record["tool_calls"][-1]] * 5
+    assert score_one(sample, record, NATIVE_BUDGETS, audit_ok=True)["primary_success"]
+    assert not score_one(sample, record, BUDGETS, audit_ok=True)["primary_success"]
+
+
+def native_trace(tmp_path: Path, *, final: bool = True, learning: bool = False) -> dict:
+    """构造无 SSE 末帧的原生消息导出。Args: 目录及响应开关。Returns: 重放预测。"""
+    trace = tmp_path / "traces/synthetic-01"
+    trace.mkdir(parents=True)
+    recorder = Recorder(trace, "2026-10-22T00:00:00+00:00")
+    sql = "SELECT amount FROM alpha"
+    tool = "vfssql_sql_learn" if learning else "vfssql_sql_execute"
+    messages = [
+        {"type": "ai", "id": "skill-ai", "content": "", "tool_calls": [{"id": "skill", "name": "read_file", "args": {"path": "/mnt/skills/public/z-vfssql-retrieval/SKILL.md"}}]},
+        {"type": "tool", "id": "skill-result", "tool_call_id": "skill", "name": "read_file", "content": "合成技能内容"},
+        {"type": "ai", "id": "sql-ai", "content": "", "tool_calls": [{"id": "execute", "name": tool, "args": {"sql": sql, "parameters": {}}}]},
+        {"type": "tool", "id": "sql-result", "tool_call_id": "execute", "name": tool, "content": json.dumps({"ok": True, "executed": True, "status": "empty", "rows": []})},
+    ]
+    if final:
+        messages.append({"type": "ai", "id": "final", "content": "当前条件无匹配记录。无需特殊输出格式。"})
+    rows = [{"seq": i, "event_type": "llm.tool.result" if m["type"] == "tool" else "llm.ai.response", "content": m, "metadata": {"caller": "lead_agent"}} for i, m in enumerate(messages)]
+    recorder.save(json.dumps({"data": rows, "has_more": False}).encode(), method="GET", path="/api/threads/synthetic/runs/synthetic/messages", params={}, status_code=200)
+    write_json(trace / "admission.json", {"thread_id": "synthetic-thread", "run_id": "synthetic-run"})
+    write_json(trace / "terminal.json", {"run_status": "success", "terminal_confirmed": True, "elapsed_seconds": 10, "capture_issues": ["sse_did_not_close_after_terminal"]})
+    write_json(tmp_path / "capture_config.json", {"evaluation_mode": NATIVE_MODE})
+    return make_prediction(tmp_path, "synthetic-01")
+
+
+def test_native_durable_recovery_natural_answer_and_skill_allowed(tmp_path: Path) -> None:
+    record = native_trace(tmp_path)
+    assert record["status"] == "completed" and record["answer_text"].startswith("当前条件")
+    assert record["sql"] == "SELECT amount FROM alpha" and record["sql_source"] == "last_sql_execute_request"
+    assert record["capture"]["complete"] and record["capture"]["durable_messages_complete"]
+    assert "sse_did_not_close_after_terminal" in record["capture"]["warnings"]
+    assert not record["protocol_issues"] and len(record["all_tool_calls"]) == 2
+    assert audit_prediction(tmp_path, record)
+
+
+def test_native_sql_success_without_final_answer_fails(tmp_path: Path) -> None:
+    record = native_trace(tmp_path, final=False)
+    assert record["status"] == "failed" and "final_response_missing" in record["protocol_issues"]
+
+
+def test_lagging_journal_does_not_hide_final_sse_answer() -> None:
+    builder = TraceBuilder()
+    old = {"id": "old", "type": "tool", "tool_call_id": "old-call", "content": "旧工具返回"}
+    final = {"id": "final", "type": "ai", "content": "已经完成的自然语言答复"}
+    builder.accept_frame("values", {"messages": [old, final]}, {"elapsed_seconds": 1})
+    builder.accept_event({"seq": 5, "event_type": "llm.tool.result", "content": old}, {"elapsed_seconds": 2})
+    value, issues = builder.native_final([], "success")
+    assert value["answer_text"] == final["content"] and not issues
+
+
+def test_native_learning_is_flagged(tmp_path: Path) -> None:
+    assert native_trace(tmp_path, learning=True)["protocol_issues"] == ["unauthorized_learning_tool:vfssql_sql_learn"]
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_terminal_capture_gap_continues_but_unknown_terminal_stops(tmp_path: Path, monkeypatch, confirmed: bool) -> None:
+    from types import SimpleNamespace
+
+    import run_deerflow as runner
+
+    config = {"context": {"model_name": "synthetic-model"}, "concurrency": 1, "native_skill": {"name": "vfssql-retrieval"}, "base_url": "synthetic", "budgets": NATIVE_BUDGETS}
+    monkeypatch.setattr(runner, "check_frozen", lambda _: config)
+    monkeypatch.setenv("VFSSQL_EVAL_EMAIL", "synthetic")
+    monkeypatch.setenv("VFSSQL_EVAL_PASSWORD", "synthetic")
+    (tmp_path / "questions.jsonl").write_text(' {"case_id":"synthetic-01","question":"a"}\n{"case_id":"synthetic-02","question":"b"}\n', encoding="utf-8")
+    handled = []
+
+    class SyntheticGateway:
+        """仅提供合成预检数据，不访问网络。"""
+
+        def __init__(self, *args):
+            self.client = self
+
+        async def login(self):
+            pass
+
+        async def aclose(self):
+            pass
+
+        async def request(self, method, path):
+            value = {"models": [{"name": "synthetic-model", "supports_thinking": True, "supports_reasoning_effort": True}]} if path.endswith("models") else {"skills": [{"name": "vfssql-retrieval", "enabled": True}]}
+            return SimpleNamespace(json=lambda: value)
+
+    async def synthetic_run_case(gateway, run_dir, question, config):
+        handled.append(question["case_id"])
+        _, record = synthetic()
+        record["case_id"] = question["case_id"]
+        if len(handled) == 1:
+            record["capture"].update(complete=False, issues=["native_tool_result_missing"])
+        write_json(run_dir / "predictions" / (record["case_id"] + ".json"), record)
+        write_json(run_dir / "traces" / record["case_id"] / "terminal.json", {"terminal_confirmed": confirmed})
+        return record
+
+    monkeypatch.setattr(runner, "Gateway", SyntheticGateway)
+    monkeypatch.setattr(runner, "run_case", synthetic_run_case)
+    if confirmed:
+        asyncio.run(runner.run(tmp_path, None))
+        assert handled == ["synthetic-01", "synthetic-02"]
+        assert (tmp_path / "predictions_frozen.json").exists()
+    else:
+        with pytest.raises(runner.GatewayFailure, match="前题终态"):
+            asyncio.run(runner.run(tmp_path, None))
+        assert handled == ["synthetic-01"]
+
+
+def test_transient_retry_reuses_run_idempotency_key(monkeypatch) -> None:
+    import httpx
+    import run_deerflow as runner
+
+    requests = []
+
+    def synthetic_http(request):
+        requests.append(request)
+        return httpx.Response(502 if len(requests) == 1 else 200, json={"run_id": "same-synthetic-run"})
+
+    async def no_delay(seconds):
+        pass
+
+    async def invoke():
+        gateway = runner.Gateway("http://synthetic", "synthetic", "synthetic")
+        await gateway.client.aclose()
+        gateway.client = httpx.AsyncClient(base_url="http://synthetic", transport=httpx.MockTransport(synthetic_http))
+        try:
+            response = await gateway.request("POST", "/api/threads/synthetic/runs", json_body={"input": "synthetic"}, headers={"Idempotency-Key": "same-synthetic-key"})
+            assert response.json()["run_id"] == "same-synthetic-run"
+        finally:
+            await gateway.client.aclose()
+
+    monkeypatch.setattr(runner.asyncio, "sleep", no_delay)
+    asyncio.run(invoke())
+    assert len(requests) == 2
+    assert all(r.headers["Idempotency-Key"] == "same-synthetic-key" for r in requests)
+    assert requests[0].content == requests[1].content

@@ -1,4 +1,4 @@
-"""迁移样本和 Skill，准备独立对话的冻结运行输入。"""
+"""迁移样本，冻结原生 Skill 审计快照；答题消息仅为问题原文。"""
 
 from __future__ import annotations
 
@@ -8,15 +8,16 @@ import random
 import shutil
 from pathlib import Path
 
-from eval_common import BUDGETS, CONTEXT, DATASET_SHA256, ROOT, SKILL_SHA256, code_hashes, digest, git_revision, read_json, utc_now, write_json
+from eval_common import CONTEXT, DATASET_SHA256, NATIVE_BUDGETS, NATIVE_MODE, ROOT, code_hashes, digest, git_revision, read_json, skill_hashes, utc_now, write_json
+
+PUBLIC_SKILL = ROOT.parents[1] / "skills/public/z-vfssql-retrieval"
 
 
-def migrate(dataset: Path, skill: Path) -> None:
-    """核对并复制上轮输入。Args: dataset/skill 源文件。Returns: 无。"""
-    if digest(dataset.read_bytes()) != DATASET_SHA256 or digest(skill.read_bytes()) != SKILL_SHA256:
-        raise ValueError("样本或 Skill 与上轮冻结版本不符")
+def migrate(dataset: Path) -> None:
+    """核对并复制既定题库。Args: dataset 源文件。Returns: 无。"""
+    if digest(dataset.read_bytes()) != DATASET_SHA256:
+        raise ValueError("样本与既定冻结版本不符")
     destinations = [(dataset, ROOT / "datasets/vfssql-evaluation-dataset.v1.json")]
-    destinations += [(p, ROOT / "skills/vfssql-retrieval" / p.relative_to(skill.parent)) for p in [skill, *sorted((skill.parent / "references").glob("*.md"))]]
     for source, target in destinations:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
@@ -26,14 +27,23 @@ def migrate(dataset: Path, skill: Path) -> None:
             shutil.copyfile(source, target)
 
 
-def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0.0.1:8001") -> dict:
-    """准备不可覆盖的一轮输入。Args: run_dir/pilot/base_url。Returns: 无标签摘要。"""
+def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0.0.1:8001", native_skill: Path = PUBLIC_SKILL) -> dict:
+    """准备不可覆盖的一轮输入。Args: run_dir/pilot/base_url/native_skill。Returns: 无标签摘要。"""
     dataset = ROOT / "datasets/vfssql-evaluation-dataset.v1.json"
     samples = read_json(dataset)
-    if digest((ROOT / "skills/vfssql-retrieval/SKILL.md").read_bytes()) != SKILL_SHA256:
-        raise ValueError("Skill 快照与上轮冻结版本不符")
     if digest(dataset.read_bytes()) != DATASET_SHA256 or len(samples) != 324 or len({s["id"] for s in samples}) != 324:
         raise ValueError("样本版本或唯一性不符")
+    native_skill = native_skill.resolve()
+    hashes = skill_hashes(native_skill)
+    bundle_sha = digest(json.dumps(hashes, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    snapshot_root = ROOT / "skills" / ("native-" + bundle_sha)
+    for relative, expected in hashes.items():
+        target = snapshot_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and digest(target.read_bytes()) != expected:
+            raise ValueError("原生 Skill 审计快照内容变化")
+        if not target.exists():
+            shutil.copyfile(native_skill / relative, target)
     indices = list(range(len(samples)))
     random.Random(20261015).shuffle(indices)
     if pilot:
@@ -55,21 +65,27 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
     raw = "".join(json.dumps(q, ensure_ascii=False) + "\n" for q in questions).encode("utf-8")
     (run_dir / "questions.jsonl").write_bytes(raw)
     write_json(run_dir / "_private/manifest.json", {"version": 3, "seed": 20261015, "dataset_sha256": DATASET_SHA256, "cases": cases}, exclusive=True)
-    inputs = [dataset, ROOT / "evaluation-prompt.md", *sorted((ROOT / "skills/vfssql-retrieval").rglob("*.md"))]
+    inputs = [dataset, *[snapshot_root / relative for relative in hashes]]
     config = {
-        "version": 1,
+        "version": 2,
+        "evaluation_mode": NATIVE_MODE,
         "capture_source": "deerflow_gateway",
         "created_at_utc": utc_now(),
         "purpose": "pilot" if pilot else "formal",
         "base_url": base_url.rstrip("/"),
         "context": CONTEXT,
-        "budgets": BUDGETS,
+        "budgets": NATIVE_BUDGETS,
+        "concurrency": 1,
+        "poll_interval_seconds": 5,
+        "transport_retry_attempts": 4,
+        "consecutive_capture_failures_before_pause": 5,
         "recursion_limit": 1000,
         "stream_mode": ["values", "messages-tuple", "custom", "updates"],
         "stream_subgraphs": True,
         "dataset_sha256": DATASET_SHA256,
-        "skill_sha256": SKILL_SHA256,
-        "skill_loading": "explicit_text_injection",
+        "skill_sha256": hashes["SKILL.md"],
+        "skill_loading": "deerflow_autodiscovery",
+        "native_skill": {"name": "vfssql-retrieval", "source_directory": str(native_skill), "files": hashes, "bundle_sha256": bundle_sha},
         "questions_sha256": digest(raw),
         "manifest_sha256": digest((run_dir / "_private/manifest.json").read_bytes()),
         "input_hashes": {p.relative_to(ROOT).as_posix(): digest(p.read_bytes()) for p in inputs},
@@ -80,7 +96,11 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
         "index_snapshot": None,
     }
     write_json(run_dir / "capture_config.json", config, exclusive=True)
-    write_json(run_dir / "run_metadata.json", {k: config[k] for k in ["created_at_utc", "purpose", "context", "budgets", "repository_revision", "planned_cases", "server_revision", "index_snapshot", "skill_loading"]}, exclusive=True)
+    write_json(
+        run_dir / "run_metadata.json",
+        {k: config[k] for k in ["created_at_utc", "purpose", "evaluation_mode", "concurrency", "context", "budgets", "repository_revision", "planned_cases", "server_revision", "index_snapshot", "skill_loading", "native_skill"]},
+        exclusive=True,
+    )
     # 同时保存可独立运行的代码和输入，后续修订不覆盖既有运行协议。
     frozen_root = run_dir / "_private/frozen_evaluator"
     files = sorted(set(config["code_hashes"]) | set(config["input_hashes"]) | {"metrics-provenance.json"})
@@ -93,34 +113,25 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
 
 
 def build_prompt(question: dict, config: dict) -> str:
-    """仅将当前题面和固定 Skill 注入。Args: question/config。Returns: 完整提示词。"""
-    if set(question) != {"case_id", "question"}:
+    """仅返回原问题；题号及配置不进入消息。Args: question/config。Returns: 未改写题面。"""
+    if set(question) != {"case_id", "question"} or not isinstance(question["question"], str):
         raise ValueError("题面投影越界")
-    skill_root = ROOT / "skills/vfssql-retrieval"
-    files = [skill_root / "SKILL.md", *sorted((skill_root / "references").glob("*.md"))]
-    sections = [f"\n## Skill 文件：{p.relative_to(skill_root).as_posix()}\n{p.read_text(encoding='utf-8-sig')}" for p in files]
-    return (
-        (ROOT / "evaluation-prompt.md").read_text(encoding="utf-8")
-        + "\n\n## 本题预算\n"
-        + json.dumps(config["budgets"], ensure_ascii=False)
-        + "\n\n## 当前题\n"
-        + json.dumps(question, ensure_ascii=False)
-        + "\n\n## 本轮唯一指定 Skill（含引用原文）\n"
-        + "\n".join(sections)
-    )
+    if config.get("evaluation_mode") != NATIVE_MODE:
+        raise ValueError("旧协议只能使用该轮归档采集器恢复")
+    return question["question"]
 
 
 def main() -> None:
     """准备命令入口。Args: 命令行参数。Returns: 无。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
-    parser.add_argument("--skill", type=Path, required=True)
+    parser.add_argument("--native-skill", type=Path, default=PUBLIC_SKILL)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--base-url", default="http://127.0.0.1:8001")
     args = parser.parse_args()
-    migrate(args.dataset, args.skill)
-    print(json.dumps(prepare(args.run_dir.resolve(), pilot=args.pilot, base_url=args.base_url), ensure_ascii=False))
+    migrate(args.dataset)
+    print(json.dumps(prepare(args.run_dir.resolve(), pilot=args.pilot, base_url=args.base_url, native_skill=args.native_skill), ensure_ascii=False))
 
 
 if __name__ == "__main__":
