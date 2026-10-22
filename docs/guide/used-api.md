@@ -61,11 +61,17 @@ await client.close()
 
 | 原始工具 | 默认模型可见名 | 业务参数 |
 | --- | --- | --- |
-| `capabilities` | `vfssql_capabilities` | 无 |
-| `search_sql_schema` | `vfssql_search_sql_schema` | query、top_k 等，以服务发现的 schema 为准 |
-| `sql_bash` | `vfssql_sql_bash` | command；服务虚拟目录的只读操作 |
-| `grep_sql_schema` | `vfssql_grep_sql_schema` | pattern、path、limit 等，以服务发现的 schema 为准 |
+| `vfs_tree_folder` | `vfssql_vfs_tree_folder` | path（可空）、show_summary |
+| `vfs_find_file` | `vfssql_vfs_find_file` | folder_path、patterns、type 等 |
+| `vfs_grep_file` | `vfssql_vfs_grep_file` | querys（必填数组）、paths、show_line、is_recursive、top_k |
+| `vfs_cat_read` | `vfssql_vfs_cat_read` | file_path、show_line |
+| `vfs_sed` | `vfssql_vfs_sed` | file_path、operation、行范围或替换预览参数 |
+| `vfs_bash_execute` | `vfssql_vfs_bash_execute` | command；受限虚拟目录操作 |
+| `sql_execute` | `vfssql_sql_execute` | sql、parameters、max_rows；服务控制是否允许执行 |
+| `sql_learn` | `vfssql_sql_learn` | request；经授权提交待审核候选，服务控制是否启用 |
 
-调用身份来自 Keycloak 后台 Client 的 Access Token，不从模型业务参数读取。MCP 服务校验 issuer/audience/scope，当前服务尚未实施表字段权限隔离，也不提供 SQL 执行。完整地址必须包含 `/mcp`；默认虚拟根为 `/home/vfssql`，其路径不属于 DeerFlow Sandbox。
+调用身份来自 Keycloak 后台 Client 的 Access Token，不从模型业务参数读取。MCP 服务校验 issuer/audience/scope，执行、学习与数据权限以服务当前配置和响应为准。完整地址必须包含 `/mcp`；默认挂载根为 `/home/vfssql`，单 Schema 时目录工具默认可展示其 Schema 根，其路径不属于 DeerFlow Sandbox。当前八工具契约以 2026-10-22 的真实发现为准，旧四工具不再调用。
 
-安装和验收见 [接入指南](vfssql-http-mcp.md)、[计划](../plans/2026-10-12-vfssql-http-mcp.md) 与 [评审](../reviews/2026-10-12-vfssql-http-mcp.md)。本集成未改变 Harness 的公共 Python API。
+服务当前 issuer 为 `http://127.0.0.1:8333/realms/mcp`，取令牌的 token endpoint 必须与该精确 issuer 对齐；向 localhost 请求时当前 Keycloak 会签发不同的 iss，MCP 将拒绝该令牌。
+
+安装和验收见 [接入指南](vfssql-http-mcp.md)、[当前修复计划](../plans/2026-10-22-vfssql-discovery.md) 与 [当前评审](../reviews/2026-10-22-vfssql-discovery.md)。本集成未改变 Harness 的公共 Python API。

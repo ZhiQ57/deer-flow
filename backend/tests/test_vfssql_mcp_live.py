@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shlex
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -54,13 +53,13 @@ def _result(message) -> dict:
         if isinstance(content, list):
             content = next(item["text"] for item in content if item.get("type") == "text")
         payload = json.loads(content)
-    assert isinstance(payload, dict) and payload.get("ok") is not False, "MCP 返回错误结果"
+    assert isinstance(payload, dict) and payload.get("status") == "success", "MCP 返回业务失败结果"
     return payload
 
 
 @pytest.mark.asyncio
 async def test_vfssql_oauth_toolnode_retrieval_and_reacquisition():
-    """通过宿主实际配置验证自动取令牌、四个工具及过期后重新获取。
+    """通过宿主实际配置验证自动取令牌、八工具发现及过期后重新获取。
 
     Args:
         无；启动进程必须已加载实际凭据环境变量和扩展配置路径。
@@ -81,7 +80,7 @@ async def test_vfssql_oauth_toolnode_retrieval_and_reacquisition():
         await manager.get_authorization_header("vfssql")
         assert manager._fetch_token.await_count == 1
         tools = [tool for tool in await get_mcp_tools() if tool.name.startswith("vfssql_")]
-        assert {tool.name for tool in tools} == {"vfssql_" + name for name in ("capabilities", "sql_bash", "search_sql_schema", "grep_sql_schema")}
+        assert {tool.name for tool in tools} == {"vfssql_" + name for name in ("vfs_tree_folder", "vfs_bash_execute", "vfs_grep_file", "vfs_cat_read", "vfs_find_file", "vfs_sed", "sql_execute", "sql_learn")}
         builder = StateGraph(MessagesState, context_schema=dict)
         builder.add_node("tools", ToolNode(tools, handle_tool_errors=True))
         builder.add_edge(START, "tools")
@@ -103,18 +102,20 @@ async def test_vfssql_oauth_toolnode_retrieval_and_reacquisition():
             )
             return _result(result["messages"][-1])
 
-        capabilities = await call("capabilities", {})
-        assert capabilities["sql_execution"] is False
-        listing = await call("sql_bash", {"command": "tree -L 2 " + shlex.quote(capabilities["root"])})
-        assert bool(listing.get("content")), "真实虚拟目录为空"
-        search = await call("search_sql_schema", {"query": _query(), "top_k": 3})
-        assert search.get("tables"), "实际索引未命中验收表"
-        path = search["tables"][0]["path"]
-        read = await call("sql_bash", {"command": "cat " + shlex.quote(path)})
-        assert bool(read.get("content")), "未实际读取命中表的 desc.md"
-        needle = next(line.strip() for line in read["content"].splitlines() if line.strip())
-        grep = await call("grep_sql_schema", {"pattern": needle, "path": path, "limit": 3})
-        assert bool(grep.get("content")), "grep 未命中刚读取的内容"
+        listing = await call("vfs_tree_folder", {"show_summary": False})
+        assert bool(listing.get("workspace_content")), "真实虚拟目录为空"
+        root = listing["workspace_content"].splitlines()[0].strip().rstrip("/")
+        search = await call("vfs_find_file", {"folder_path": root, "type": "folder", "patterns": [_query()], "max_results": 3})
+        folders = [line.split("\t", 1)[1] for line in search["result_content"].splitlines() if line.startswith("folder\t")]
+        assert folders, "实际索引未命中验收表目录"
+        path = folders[0].rstrip("/") + "/desc.md"
+        read = await call("vfs_cat_read", {"file_path": path})
+        assert bool(read.get("result_content")), "未实际读取命中表的 desc.md"
+        needle = next(line.strip() for line in read["result_content"].splitlines() if line.strip())
+        grep = await call("vfs_grep_file", {"querys": [needle], "paths": [path], "top_k": 3})
+        assert bool(grep.get("matches")), "grep 未命中刚读取的内容"
+        excerpt = await call("vfs_sed", {"file_path": path, "operation": "print_range", "start_line": 1, "end_line": 3})
+        assert bool(excerpt.get("result_content")), "sed 未读取原文范围"
         # 强制客户端缓存过期；仍向真实 Keycloak 请求，避免等待整个令牌 TTL。
         manager._tokens["vfssql"].expires_at = datetime(2000, 1, 1, tzinfo=UTC)
         assert (await manager.get_authorization_header("vfssql")).startswith("Bearer ")
@@ -145,7 +146,11 @@ def test_vfssql_gateway_conversation():
         created = client.post("/api/threads", json={"metadata": {"title": "VFSSQL live 检索验收"}})
         assert created.status_code == 200, "验收线程创建失败"
         thread = created.json()["thread_id"]
-        prompt = f"请用 VFSSQL capabilities 确认能力，search_sql_schema 检索 {query}，用 sql_bash 的 cat 读取命中 desc.md，再用 grep_sql_schema 核对。根据文档说明字段与类型并引用完整虚拟路径；未记载的关系不能推断，不执行 SQL。"
+        prompt = (
+            f"请用 VFSSQL MCP 先调用 vfssql_vfs_tree_folder 查看目录，再调用 vfssql_vfs_find_file 找到名称为 {query} 的表目录，"
+            "用 vfssql_vfs_cat_read 读取命中目录的 desc.md，并用 vfssql_vfs_grep_file 核对正文。"
+            "根据文档说明字段与类型并引用完整虚拟路径；未记载的关系不能推断，不执行 SQL，不提交知识候选。"
+        )
         response = client.post(
             f"/api/threads/{thread}/runs/wait",
             json={
@@ -159,6 +164,7 @@ def test_vfssql_gateway_conversation():
                     ]
                 },
                 "context": {"model_name": model, "thinking_enabled": False, "subagent_enabled": False},
+                "config": {"recursion_limit": 256},
             },
         )
         assert response.status_code == 200, "真实 Gateway 对话请求失败"
@@ -167,12 +173,17 @@ def test_vfssql_gateway_conversation():
         assert runs.status_code == 200 and runs.json()[0]["status"] == "success", "真实 Agent 运行未成功完成"
         messages = response.json()["messages"]
         results = {message.get("name"): message for message in messages if message.get("type") == "tool" and message.get("name", "").startswith("vfssql_")}
-        assert {"vfssql_capabilities", "vfssql_search_sql_schema", "vfssql_sql_bash", "vfssql_grep_sql_schema"}.issubset(results), "模型未完成检索和读取闭环"
+        assert {"vfssql_vfs_tree_folder", "vfssql_vfs_find_file", "vfssql_vfs_cat_read", "vfssql_vfs_grep_file"}.issubset(results), "模型未完成检索和读取闭环"
         assert all(message.get("status") == "success" for message in results.values()), "模型调用 MCP 工具失败"
-        search_content = results["vfssql_search_sql_schema"]["content"]
-        if isinstance(search_content, list):
-            search_content = next(item["text"] for item in search_content if item.get("type") == "text")
-        search_result = json.loads(search_content)
-        assert search_result.get("tables"), "对话检索未命中真实索引"
+        assert not {"vfssql_sql_execute", "vfssql_sql_learn"}.intersection(results), "只读检索验收意外调用执行或学习工具"
+        for message in results.values():
+            content = message["content"]
+            if isinstance(content, list):
+                content = next(item["text"] for item in content if item.get("type") == "text")
+            assert json.loads(content).get("status") == "success", "模型工具调用返回业务失败"
+        # 按工具调用 ID 核对真实读取路径，避免把模型自行生成的路径当作读取证据。
+        read_id = results["vfssql_vfs_cat_read"]["tool_call_id"]
+        read_call = next(call for message in messages for call in message.get("tool_calls", []) if call["id"] == read_id)
+        path = read_call["args"]["file_path"]
         answer = next(message for message in reversed(messages) if message.get("type") == "ai" and not message.get("tool_calls"))
-        assert any(table["path"] in str(answer.get("content")) for table in search_result["tables"]), "最终回答没有引用真实命中路径"
+        assert path.endswith("/desc.md") and path in str(answer.get("content")), "最终回答没有引用真实读取路径"
