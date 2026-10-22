@@ -43,6 +43,8 @@ def status(run_dir: Path) -> dict:
     config = read_json(run_dir / "capture_config.json")
     state_path = run_dir / "pipeline_status.json"
     state = read_json(state_path) if state_path.exists() else {"status": "starting"}
+    supervisor_path = run_dir / "supervisor_status.json"
+    supervisor = read_json(supervisor_path) if supervisor_path.exists() else None
     if "pid" not in state and (run_dir / "launcher.json").exists():
         state["pid"] = read_json(run_dir / "launcher.json")["pid"]
     current = None
@@ -68,6 +70,7 @@ def status(run_dir: Path) -> dict:
         "predictions_frozen": len(list((run_dir / "predictions").glob("*.json"))),
         "current": current,
         "report_exists": (run_dir / "report.md").exists(),
+        "supervisor": {**supervisor, "process_alive": process_alive(supervisor.get("pid"))} if supervisor else None,
     }
 
 

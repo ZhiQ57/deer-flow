@@ -14,6 +14,8 @@
 - 只计实际返回的表字段；子代理摘要不补造原生工具 ID。自然语言答复保存 answer_text；评分 SQL 来源明确为最后一次实际 sql_execute 请求，不强迫模型交付 JSON。
 - 改采集代码、Skill、提示词或参数后新建运行目录，禁止改写既有预测。
 - start_evaluation.py 启动隐藏后台进程；工作进程使用该轮 _private/frozen_evaluator 归档代码，完成后自动评分，状态保存在 pipeline_status.json。
+- supervise_evaluation.py 单独归档到 _private/supervisors；保持既有冻结代码及预测不变，仅对审计确认的学习参数验证拒绝自动调用原流水线续跑下一题。未知失败或实际写入不自动重试，禁止重做失败题择优计分。
+- 监督器每 30 秒输出心跳；supervisor_status.json 记录进程状态，supervisor_incidents.jsonl 保存续跑依据和原预测摘要。不要将历史 error.log 堆栈当作当前进程状态。
 - SSE 缺口可用完整分页 messages 恢复，warning 与实际证据缺口分开。活动运行的接口故障持续重连等待；前题必须自然终态确认后才能开始下一题。不得调用取消接口或因超时/次数主动中断。
 - 每题记录服务 created_at→updated_at 的运行时间、宿主观察时间和时间来源。接管时沿用原 thread/run 及题面，不重发问题；源证据哈希保存在 _private/adoption.json。
 - 新协议使用 native-unlimited 独立目录。含取消逻辑的旧轮不能用当前启动器直接恢复；原题/模型/Skill 相同的原生对话可用 --adopt-from 接管。不能接管或混合旧注入轮的 16 题。

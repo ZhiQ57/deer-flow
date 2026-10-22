@@ -65,6 +65,8 @@ def start(run_dir: Path, *, resume: bool = False, adopt_from: Path | None = None
                 raise ValueError("本轮已经全部完成")
             if process_alive(old.get("pid")):
                 raise ValueError("本轮后台进程仍在运行")
+        if (run_dir / "supervisor_status.json").is_file() and process_alive(read_json(run_dir / "supervisor_status.json").get("pid")):
+            raise ValueError("本轮后台监督进程仍在运行")
     else:
         prepare(run_dir)
         if adopt_from:
@@ -77,7 +79,17 @@ def start(run_dir: Path, *, resume: bool = False, adopt_from: Path | None = None
     for relative, expected in config["code_hashes"].items():
         if digest((frozen_root / relative).read_bytes()) != expected:
             raise ValueError("归档采集代码哈希不一致")
-    command = [sys.executable, "-X", "utf8", "-u", "-B", str(frozen_root / "run_pipeline.py"), "--run-dir", str(run_dir)]
+    # 监督器单独留快照，既有采集/评分代码及预测均保持原来的冻结版本。
+    supervisor_bytes = (ROOT / "supervise_evaluation.py").read_bytes()
+    supervisor_sha = digest(supervisor_bytes)
+    supervisor_path = run_dir / "_private/supervisors" / (supervisor_sha + ".py")
+    supervisor_path.parent.mkdir(parents=True, exist_ok=True)
+    if not supervisor_path.exists():
+        with supervisor_path.open("xb") as target:
+            target.write(supervisor_bytes)
+    if digest(supervisor_path.read_bytes()) != supervisor_sha:
+        raise ValueError("监督器快照哈希不一致")
+    command = [sys.executable, "-X", "utf8", "-u", "-B", str(supervisor_path), "--run-dir", str(run_dir)]
     flags = 0
     if os.name == "nt":
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -101,6 +113,8 @@ def start(run_dir: Path, *, resume: bool = False, adopt_from: Path | None = None
             "stderr": "error.log",
             "status_file": "pipeline_status.json",
             "report": "report.md",
+            "supervisor_sha256": supervisor_sha,
+            "supervisor_snapshot": str(supervisor_path),
         }
         write_json(run_dir / "launcher.json", result)
     return result

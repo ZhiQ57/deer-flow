@@ -399,3 +399,38 @@ def test_adoption_preserves_conversation_and_source_bytes(tmp_path: Path) -> Non
     assert json.loads((target / "traces/synthetic-01/admission.json").read_text(encoding="utf-8")) == admission
     assert (trace / "stream.sse").read_bytes() == before
     assert json.loads((target / "_private/adoption.json").read_text(encoding="utf-8"))["same_conversations_no_resubmission"]
+
+
+def test_supervisor_only_accepts_learning_schema_rejection() -> None:
+    from supervise_evaluation import learning_was_rejected
+
+    rejected = {"tool": "sql_learn", "is_error": True, "result": {"isError": True, "content": "Error: Tool 'vfssql_sql_learn' failed with McpError: invalid tool arguments; use the advertised input schema. Continue with available context."}}
+    assert learning_was_rejected({"tool_calls": [rejected]})
+    assert not learning_was_rejected({"tool_calls": []})
+    for payload in [{"ok": True, "applied": False, "status": "pending"}, {"ok": True, "applied": True}, {"ok": False, "error": "unknown_server_failure"}]:
+        uncertain = {"tool": "sql_learn", "is_error": True, "result": {"structuredContent": payload}}
+        assert not learning_was_rejected({"tool_calls": [uncertain]})
+        assert not learning_was_rejected({"tool_calls": [rejected, uncertain]})
+
+
+def test_supervisor_preserves_failed_prediction_and_prevents_repeat(tmp_path: Path, monkeypatch) -> None:
+    import deerflow_evidence
+    from supervise_evaluation import record_safe_continuation
+
+    monkeypatch.setattr(deerflow_evidence, "audit_prediction", lambda *_: True)
+    write_json(tmp_path / "pipeline_status.json", {"error_type": "GatewayFailure", "error": "检测到知识学习调用，已停止批次"})
+    (tmp_path / "progress.jsonl").write_text('{"case_id":"case-0029"}\n', encoding="utf-8")
+    record = {
+        "status": "failed",
+        "run_status": "success",
+        "capture": {"complete": True},
+        "tool_calls": [{"tool": "sql_learn", "is_error": True, "result": {"isError": True, "content": "McpError: invalid tool arguments; use the advertised input schema"}}],
+    }
+    prediction = tmp_path / "predictions/case-0029.json"
+    write_json(prediction, record)
+    write_json(tmp_path / "traces/case-0029/terminal.json", {"terminal_confirmed": True})
+    before, handled = prediction.read_bytes(), set()
+    assert record_safe_continuation(tmp_path, handled) == "case-0029"
+    assert prediction.read_bytes() == before and handled == {"case-0029"}
+    with pytest.raises(RuntimeError, match="同题重复停批"):
+        record_safe_continuation(tmp_path, handled)
