@@ -1,5 +1,11 @@
 # 评估自动化交付记录（2026-10-22）
 
+## 第 36 题停批与执行前拒绝分类
+
+2026-10-22 15:54:30（北京时间），第 36 题自然 success，耗时 84.211772 秒，有 177 字符最终答复，capture_complete=true 且原始证据审计通过。sql_learn 返回“is deferred and has not been promoted yet”，is_error=true。核对 DeferredToolFilterMiddleware：命中未 promoted 工具时直接返回错误 ToolMessage，没有调用 handler，故 MCP 学习未执行。
+
+前版监督器仅识别参数验证拒绝，遗漏 deferred guard，因而第 36 题后停止。修订为按调用是否在执行前被拒绝分类，记录具体拒绝类型；覆盖参数验证、未启用的延迟工具、明确 ok=false/applied=false 的服务关闭/权限拒绝。存在执行成功、写入 ID、pending 或未知错误时仍不自动放行。原冻结采集/评分协议及全部原预测继续保留，续跑从第 37 题开始。
+
 ## 第 29 题停批与监督续跑
 
 用户报告日志停止更新。核对到 worker PID 57308 已退出，2026-10-22 15:11:50（北京时间）pipeline_status=needs_attention，错误为“检测到知识学习调用，已停止批次”。已归档 29/324 题。第 29 题 Gateway 自然 success，实际运行 167.707676 秒，评估 status=failed、最终答复为空；本次没有取消请求。
