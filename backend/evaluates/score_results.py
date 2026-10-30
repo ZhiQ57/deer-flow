@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from deerflow_evidence import audit_prediction
-from eval_common import NATIVE_MODE, ROOT, check_frozen, code_hashes, digest, read_json, utc_now, write_json
+from eval_common import EXPLICIT_MODE, NATIVE_MODES, RETRIEVAL_TOOLS, ROOT, check_frozen, code_hashes, digest, read_json, utc_now, write_json
 from schema_metrics import retrieval_metrics, score_prediction
 
 SEARCH_TOOLS = {"vfs_find_file", "vfs_grep_file", "vfs_grep", "search_sql_schema"}
@@ -43,6 +43,8 @@ def score_one(sample: dict, record: dict, budgets: dict, *, audit_ok: bool, name
     result.update(
         primary_success=primary,
         strict_sql_success=strict,
+        retrieval_used=any(call["tool"] in RETRIEVAL_TOOLS for call in record["tool_calls"]),
+        skill_activation_verified=bool(record.get("skill_activation", {}).get("verified")),
         trace_audit_ok=audit_ok,
         protocol_compliant=protocol,
         capture_complete=capture_ok,
@@ -81,6 +83,8 @@ def summarize(scores: list[dict], cases: list[dict]) -> dict:
         "strict_sql_success_rate": sum(s["strict_sql_success"] for s in scores) / total,
         "execution_success": sum(s["execution_ok"] for s in scores),
         "execution_success_rate": sum(s["execution_ok"] for s in scores) / total,
+        "retrieval_used_cases": sum(s.get("retrieval_used", False) for s in scores),
+        "skill_activation_verified_cases": sum(s.get("skill_activation_verified", False) for s in scores),
         "structure_complete": sum(s["structure_complete"] for s in scores),
         "family_macro_primary_success_rate": statistics.mean(statistics.mean(values) for values in families.values()),
         "first_complete_search_round_distribution": dict(sorted(Counter(str(s["first_complete_search_round"]) for s in complete).items())),
@@ -114,7 +118,9 @@ def summarize(scores: list[dict], cases: list[dict]) -> dict:
 def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> str:
     """生成人类可读报告。Args: config/summary/scores/snapshot。Returns: Markdown。"""
     s = summary
-    native = config.get("evaluation_mode") == NATIVE_MODE
+    native = config.get("evaluation_mode") in NATIVE_MODES
+    explicit = config.get("evaluation_mode") == EXPLICIT_MODE
+    input_description = "每题一个新 thread；并发固定 1；输入为 /vfssql-retrieval、必须使用 vfssql-retrieval skill。及样本原问题；宿主原生注入 Skill 正文。" if explicit else "每题一个新 thread；并发固定 1；仅发送原始问题，由 DeerFlow 自主发现原生 Skill；最终答复按自然语言原文归档。"
     budget_description = (
         "等待模型自然结束，不设执行时间上限，记录每题耗时；" if native else f"每题 {config['budgets']['timeout_seconds']} 秒超时；"
     ) + f"{config['budgets']['max_tool_calls']} 次 VFSSQL MCP / {config['budgets']['max_sql_executions']} 次 SQL"
@@ -127,7 +133,7 @@ def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> st
         "## 1、运行条件",
         "",
         f"- 模型：**{config['context']['model_name']}**；Ultra，推理深度 high。",
-        "- 每题一个新 thread；并发固定 1；仅发送原始问题，由 DeerFlow 自主发现原生 Skill；最终答复按自然语言原文归档。" if native else "- 每题一个新 thread；专用账号；Skill 文本显式注入；没有跨题查询计划复用。",
+        "- " + input_description if native else "- 每题一个新 thread；专用账号；Skill 文本显式注入；没有跨题查询计划复用。",
         f"- 预算：{budget_description}",
         f"- 数据集 SHA-256：`{config['dataset_sha256']}`。",
         f"- Skill SHA-256：`{config['skill_sha256']}`。",
@@ -143,6 +149,8 @@ def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> st
         f"| 最终 SQL 也完整引用目标表字段 | {s['strict_sql_success']}/{s['total']}，{s['strict_sql_success_rate']:.2%} |",
         f"| 最终 SQL 实际执行成功 | {s['execution_success']}/{s['total']}，{s['execution_success_rate']:.2%} |",
         f"| 检索结构完整 | {s['structure_complete']}/{s['total']} |",
+        f"| 实际使用定位或内容读取工具 | {s['retrieval_used_cases']}/{s['total']} |",
+        f"| 原生 Skill 正文激活已核验 | {s['skill_activation_verified_cases']}/{s['total']} |",
         f"| Family 宏平均主成功率 | {s['family_macro_primary_success_rate']:.2%} |",
         f"| 原始轨迹审计通过 | {s['trace_audit_ok']}/{s['total']} |",
         f"| 采集完整 | {s['capture_complete']}/{s['total']} |",
@@ -171,6 +179,8 @@ def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> st
         "- 每题耗时优先采用 Gateway run.created_at 至 updated_at 的终态运行时长，另记宿主观察时长；服务时间缺失时才回退至宿主 monotonic。工具耗时是宿主观察的接收间隔，不能当作独立服务端调用延迟。",
         "- Ultra 原生子图证据与步骤摘要分开处理，摘要截断不补造调用 ID；证据缺失单列。工具原始返回与模型收到的截断/摘要存在差异时保留实际原文。",
         "- 题库/目标标签只在全部预测冻结后用于评分。没有用评分反馈指导本轮后续问题。",
+        "- /vfssql-retrieval 使用 DeerFlow 原生激活机制注入 Skill 正文，并通过 middleware:skill_activation 的名称及内容哈希核验。没有定位或内容读取的题不计 MCP 检索成功；只列目录属于初始化。"
+        if explicit else
         "- 原生 Skill 从 skills/public/z-vfssql-retrieval 自动发现；快照只用于审计，不注入消息。SQL/参数来源标注为最后一次 sql_execute 请求；要求有最终答复和成功运行，执行空结果允许通过。"
         if native
         else "- 旧 Skill 含已删除的结构化工具名，提示词沿用按实际工具 schema 调用的规则；本轮未替换 Skill。",
@@ -180,7 +190,7 @@ def report(config: dict, summary: dict, scores: list[dict], snapshot: str) -> st
         "## 5、与上一轮的对照",
         "",
         "上轮 Codex Desktop、GPT-6.1-sol/medium、共享上下文及部分查询结构复用：248/324（76.54%）。本轮更改模型、宿主、上下文方式。"
-        "原生轮还取消 Skill/评估提示注入，并将调用次数从硬上限改为观察阈值；分差反映整体运行条件差异，不能只归因于模型。",
+        "本轮显式 Skill 复测选择先前未使用定位或内容读取工具的子集，不能与全量统一提示实验等同；原轮与复测分组汇总。" if explicit else "原生轮还取消 Skill/评估提示注入，并将调用次数从硬上限改为观察阈值；分差反映整体运行条件差异，不能只归因于模型。",
         "",
         "## 6、原因码",
         "",
@@ -224,6 +234,8 @@ def score(run_dir: Path) -> dict:
         run_status_counts=dict(Counter(r["run_status"] for r in records)),
         stop_reason_counts=dict(Counter(r["stop_reason"] for r in records if r.get("stop_reason"))),
     )
+    if config.get("provider_recovery"):
+        summary.update(infrastructure_errors_excluded=True, infrastructure_error_attempts=len(list((run_dir / "infra_attempts").glob("*/*/metadata.json"))), pending_runtime_recovery_cases=0)
     stamp = datetime_stamp = summary["scored_at_utc"].replace(":", "").replace("-", "").split(".")[0] + "-" + uuid4().hex[:8]
     snapshot = run_dir / "scoring" / stamp
     snapshot.mkdir(exist_ok=False)

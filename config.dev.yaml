@@ -391,12 +391,12 @@ scheduler:
   min_once_delay_seconds: 60
   multi_instance: false
   queue_timeout_seconds: 3600
-  recursion_limit: 1000
+  recursion_limit: 10000
 stream_bridge:
   type: redis
   redis_url: redis://localhost:6379/0
   queue_maxsize: 256
-recursion_limit: 100
+recursion_limit: 10000
 subagent_runtime:
   max_running: 3
   max_queued: 64
@@ -442,3 +442,11 @@ run_ownership:
   heartbeat_enabled: false
 authorization:
   enabled: false
+
+plugins:
+- name: demo
+  package: deerflow-extension-demo
+  use: demo_extension:install
+  enabled: true
+  required: false
+  config: {}

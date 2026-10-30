@@ -43,8 +43,14 @@ def status(run_dir: Path) -> dict:
     config = read_json(run_dir / "capture_config.json")
     state_path = run_dir / "pipeline_status.json"
     state = read_json(state_path) if state_path.exists() else {"status": "starting"}
+    suite_path = run_dir / "suite_status.json"
+    suite = read_json(suite_path) if suite_path.exists() else None
+    if suite and not state_path.exists():
+        state = {"status": suite["status"], "pid": suite.get("pid"), "phase": "three_case_workflow_validation"}
     supervisor_path = run_dir / "supervisor_status.json"
     supervisor = read_json(supervisor_path) if supervisor_path.exists() else None
+    recovery_path = run_dir / "recovery_status.json"
+    recovery = read_json(recovery_path) if recovery_path.exists() else None
     if "pid" not in state and (run_dir / "launcher.json").exists():
         state["pid"] = read_json(run_dir / "launcher.json")["pid"]
     current = None
@@ -71,6 +77,9 @@ def status(run_dir: Path) -> dict:
         "current": current,
         "report_exists": (run_dir / "report.md").exists(),
         "supervisor": {**supervisor, "process_alive": process_alive(supervisor.get("pid"))} if supervisor else None,
+        "suite": {**suite, "process_alive": process_alive(suite.get("pid"))} if suite else None,
+        "pilot_predictions": len(list((Path(suite["pilot_run"]) / "predictions").glob("*.json"))) if suite else None,
+        "provider_recovery": recovery,
     }
 
 

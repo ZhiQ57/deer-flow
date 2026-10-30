@@ -8,7 +8,7 @@ import random
 import shutil
 from pathlib import Path
 
-from eval_common import CONTEXT, DATASET_SHA256, NATIVE_BUDGETS, NATIVE_MODE, ROOT, code_hashes, digest, git_revision, read_json, skill_hashes, utc_now, write_json
+from eval_common import CONTEXT, DATASET_SHA256, EXPLICIT_MODE, EXPLICIT_SKILL_PREFIX, NATIVE_BUDGETS, NATIVE_MODE, RETRIEVAL_TOOLS, ROOT, code_hashes, digest, git_revision, read_json, skill_hashes, utc_now, write_json
 
 PUBLIC_SKILL = ROOT.parents[1] / "skills/public/z-vfssql-retrieval"
 
@@ -27,7 +27,7 @@ def migrate(dataset: Path) -> None:
             shutil.copyfile(source, target)
 
 
-def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0.0.1:8001", native_skill: Path = PUBLIC_SKILL) -> dict:
+def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0.0.1:8001", native_skill: Path = PUBLIC_SKILL, retry_source: Path | None = None, retry_kind: str = "no_retrieval") -> dict:
     """准备不可覆盖的一轮输入。Args: run_dir/pilot/base_url/native_skill。Returns: 无标签摘要。"""
     dataset = ROOT / "datasets/vfssql-evaluation-dataset.v1.json"
     samples = read_json(dataset)
@@ -46,6 +46,41 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
             shutil.copyfile(native_skill / relative, target)
     indices = list(range(len(samples)))
     random.Random(20261015).shuffle(indices)
+    source_cases, selected_cases, retained_cases = None, None, None
+    extra_runtime_cases = []
+    if retry_source is not None:
+        retry_source = retry_source.resolve()
+        old_config = read_json(retry_source / "capture_config.json")
+        source_cases = read_json(retry_source / "_private/manifest.json")["cases"]
+        frozen = read_json(retry_source / "predictions_frozen.json")["prediction_hashes"]
+        if old_config["dataset_sha256"] != DATASET_SHA256 or old_config["context"] != CONTEXT or old_config["native_skill"]["files"] != hashes:
+            raise ValueError("复测源的数据集、模型参数或 Skill 与当前配置不同")
+        selected_cases, retained_cases = [], []
+        for case in source_cases:
+            path = retry_source / "predictions" / f"{case['case_id']}.json"
+            if digest(path.read_bytes()) != frozen[case["case_id"]]:
+                raise ValueError("复测源预测与冻结哈希不一致")
+            record = read_json(path)
+            if retry_kind not in {"no_retrieval", "runtime_error"}:
+                raise ValueError("未知复测筛选条件")
+            selected = record["run_status"] == "error" if retry_kind == "runtime_error" else not any(call["tool"] in RETRIEVAL_TOOLS for call in record["tool_calls"])
+            (selected_cases if selected else retained_cases).append(case)
+        if retry_kind == "runtime_error":
+            # 原81题保留组的未完成运行也不能当作业务失败，按同一恢复原则补入。
+            prior_selection = read_json(retry_source / "_private/retry_selection.json")
+            prior_run = Path(prior_selection["source_run"])
+            prior_frozen = read_json(prior_run / "predictions_frozen.json")["prediction_hashes"]
+            for case in prior_selection["retained_cases"]:
+                path = prior_run / "predictions" / f"{case['case_id']}.json"
+                if digest(path.read_bytes()) != prior_frozen[case["case_id"]]:
+                    raise ValueError("原保留组冻结预测哈希不一致")
+                if read_json(path)["run_status"] == "error":
+                    selected_cases.append(case)
+                    source_cases.append(case)
+                    extra_runtime_cases.append({**case, "source_run": str(prior_run)})
+        if not selected_cases:
+            raise ValueError("复测源没有缺检索样本")
+        indices = [case["dataset_index"] for case in selected_cases]
     if pilot:
         # 标签仅用于宿主选择不同复杂度的联调题，不进入答题请求。
         single = next(i for i in indices if len(samples[i]["target_tables"]) == 1)
@@ -56,7 +91,7 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
     preview_families = {s["family_id"] for s in samples if s["id"] == "vfssql-s0059-01"}
     for order, index in enumerate(indices, start=1):
         sample = samples[index]
-        case_id = f"case-{order:04d}"
+        case_id = next(case["case_id"] for case in source_cases if case["dataset_index"] == index) if source_cases else f"case-{order:04d}"
         questions.append({"case_id": case_id, "question": sample["question"]})
         cases.append({"case_id": case_id, "dataset_index": index, "sample_id": sample["id"], "family_id": sample["family_id"], "preview_family": sample["family_id"] in preview_families})
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -68,7 +103,7 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
     inputs = [dataset, *[snapshot_root / relative for relative in hashes]]
     config = {
         "version": 3,
-        "evaluation_mode": NATIVE_MODE,
+        "evaluation_mode": EXPLICIT_MODE if retry_source else NATIVE_MODE,
         "capture_source": "deerflow_gateway",
         "created_at_utc": utc_now(),
         "purpose": "pilot" if pilot else "formal",
@@ -84,7 +119,8 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
         "stream_subgraphs": True,
         "dataset_sha256": DATASET_SHA256,
         "skill_sha256": hashes["SKILL.md"],
-        "skill_loading": "deerflow_autodiscovery",
+        "skill_text_sha256": digest((native_skill / "SKILL.md").read_text(encoding="utf-8").encode("utf-8")),
+        "skill_loading": "deerflow_slash_activation" if retry_source else "deerflow_autodiscovery",
         "native_skill": {"name": "vfssql-retrieval", "source_directory": str(native_skill), "files": hashes, "bundle_sha256": bundle_sha},
         "questions_sha256": digest(raw),
         "manifest_sha256": digest((run_dir / "_private/manifest.json").read_bytes()),
@@ -95,6 +131,11 @@ def prepare(run_dir: Path, *, pilot: bool = False, base_url: str = "http://127.0
         "server_revision": None,
         "index_snapshot": None,
     }
+    if retry_source:
+        config.update(prompt_prefix=EXPLICIT_SKILL_PREFIX, retry_source=str(retry_source), selected_cases=len(selected_cases), retained_cases=len(retained_cases), retry_selection="runtime_error_pending_recovery" if retry_kind == "runtime_error" else "no_find_grep_or_content_read; tree_folder_is_initialization")
+        if retry_kind == "runtime_error":
+            config.update(provider_recovery=True, defer_prediction_freeze=True, provider_backoff_seconds=[60, 120, 300, 600], recovery_authorized_at="2026-10-26", retry_valid_business_failures=False)
+        write_json(run_dir / "_private/retry_selection.json", {"source_run": str(retry_source), "source_predictions_frozen_sha256": digest((retry_source / "predictions_frozen.json").read_bytes()), "selected_cases": selected_cases, "retained_cases": retained_cases, "extra_original_runtime_cases": extra_runtime_cases, "actual_run_cases": [case["case_id"] for case in cases]}, exclusive=True)
     write_json(run_dir / "capture_config.json", config, exclusive=True)
     write_json(
         run_dir / "run_metadata.json",
@@ -119,6 +160,10 @@ def build_prompt(question: dict, config: dict) -> str:
     """仅返回原问题；题号及配置不进入消息。Args: question/config。Returns: 未改写题面。"""
     if set(question) != {"case_id", "question"} or not isinstance(question["question"], str):
         raise ValueError("题面投影越界")
+    if config.get("evaluation_mode") == EXPLICIT_MODE:
+        if config.get("prompt_prefix") != EXPLICIT_SKILL_PREFIX:
+            raise ValueError("显式 Skill 提示与冻结协议不同")
+        return EXPLICIT_SKILL_PREFIX + question["question"]
     if config.get("evaluation_mode") != NATIVE_MODE:
         raise ValueError("旧协议只能使用该轮归档采集器恢复")
     return question["question"]

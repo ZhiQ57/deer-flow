@@ -11,7 +11,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from eval_common import NATIVE_MODE, ROOT, digest, read_json, utc_now, write_json
+from eval_common import NATIVE_MODES, ROOT, digest, read_json, utc_now, write_json
+from prepare_dataset import build_prompt
 from prepare_dataset import prepare
 from status_evaluation import process_alive
 
@@ -19,8 +20,8 @@ from status_evaluation import process_alive
 def adopt_capture(run_dir: Path, source: Path) -> None:
     """沿用既有原题对话及原始证据，不重新答题。Args: 新旧运行目录。Returns: 无。"""
     old, new = read_json(source / "capture_config.json"), read_json(run_dir / "capture_config.json")
-    if old.get("evaluation_mode") != NATIVE_MODE or old.get("skill_loading") != "deerflow_autodiscovery":
-        raise ValueError("只能接管原题＋原生 Skill 对话，不能混入旧注入轮次")
+    if old.get("evaluation_mode") not in NATIVE_MODES or old.get("evaluation_mode") != new.get("evaluation_mode") or old.get("skill_loading") != new.get("skill_loading"):
+        raise ValueError("只能接管题面与原生 Skill 激活协议一致的对话")
     for key in ["questions_sha256", "dataset_sha256", "context", "native_skill"]:
         if old[key] != new[key]:
             raise ValueError("接管对话的题面、模型或 Skill 版本不同")
@@ -33,8 +34,9 @@ def adopt_capture(run_dir: Path, source: Path) -> None:
         trace = admission_path.parent
         request = read_json(trace / "request.json")
         messages = request.get("input", {}).get("messages", [])
-        if len(messages) != 1 or messages[0].get("type") != "human" or messages[0].get("content") != questions[trace.name]:
-            raise ValueError("既有会话输入不是样本原问题")
+        expected_prompt = build_prompt({"case_id": trace.name, "question": questions[trace.name]}, new)
+        if len(messages) != 1 or messages[0].get("type") != "human" or messages[0].get("content") != expected_prompt:
+            raise ValueError("既有会话输入与该轮冻结提示不一致")
         admission = read_json(admission_path)
         if not admission.get("run_id"):
             raise ValueError("既有对话尚未确认受理，不能自动接管")

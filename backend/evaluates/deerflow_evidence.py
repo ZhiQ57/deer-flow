@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from eval_common import NATIVE_MODE, digest, read_json
+from eval_common import EXPLICIT_MODE, NATIVE_MODES, digest, read_json
 
 VFSSQL_TOOLS = {"tree_folder", "vfs_find_file", "vfs_grep_file", "vfs_cat_read", "vfs_sed", "vfs_bash_execute", "sql_execute"}
 ORCHESTRATION_TOOLS = {"tool_search", "write_todos", "task", "task_list", "task_wait", "ask_clarification"}
@@ -394,15 +394,37 @@ def replay_trace(trace: Path) -> TraceBuilder:
     return builder
 
 
+def skill_activation_evidence(trace: Path, config: dict) -> dict:
+    """核对宿主记录的原生 Skill 正文激活事件。Args: trace/config。Returns: 激活证据。"""
+    matches = {}
+    for raw, receipt in recorded_chunks(trace, "http"):
+        if receipt.get("status_code") != 200 or not receipt.get("path", "").endswith("/events"):
+            continue
+        for event in json.loads(raw):
+            if event.get("event_type") != "middleware:skill_activation":
+                continue
+            payload = event.get("content", {})
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            changes = payload.get("changes", {})
+            # DeerFlow read_text 使用通用换行，正文哈希与 Windows 原始 CRLF 文件哈希分列。
+            if payload.get("action") == "activate" and changes.get("skill_name") == config["native_skill"]["name"] and changes.get("content_hash") == config.get("skill_text_sha256", config["skill_sha256"]):
+                matches[event["seq"]] = {"event_seq": event["seq"], **changes}
+    return {"verified": bool(matches), "events": list(matches.values()), "source": "native_middleware_skill_activation_event"}
+
+
 def make_prediction(run_dir: Path, case_id: str) -> dict:
     """由保存的原始数据生成预测。Args: run_dir/case_id。Returns: 冻结记录。"""
     trace = run_dir / "traces" / case_id
     config = read_json(run_dir / "capture_config.json")
-    native = config.get("evaluation_mode") == NATIVE_MODE
+    native = config.get("evaluation_mode") in NATIVE_MODES
     admission, terminal = read_json(trace / "admission.json"), read_json(trace / "terminal.json")
     builder = replay_trace(trace)
     mcp, all_calls, capture_issues = builder.calls()
     final, protocol_issues = builder.native_final(mcp, terminal["run_status"]) if native else builder.final()
+    activation = skill_activation_evidence(trace, config) if config.get("evaluation_mode") == EXPLICIT_MODE else None
+    if activation is not None and not activation["verified"]:
+        protocol_issues.append("explicit_skill_activation_not_verified")
     warnings = []
     if not builder.terminal_sse:
         capture_issues.append("sse_terminal_frame_missing")
@@ -432,6 +454,7 @@ def make_prediction(run_dir: Path, case_id: str) -> dict:
     files = {p.relative_to(run_dir).as_posix(): digest(p.read_bytes()) for p in sorted(trace.rglob("*")) if p.is_file()}
     return {
         "case_id": case_id,
+        **({"skill_activation": activation} if activation is not None else {}),
         **final,
         "thread_id": admission["thread_id"],
         "run_id": admission["run_id"],

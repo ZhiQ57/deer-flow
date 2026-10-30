@@ -391,7 +391,7 @@ async def run(run_dir: Path, limit: int | None) -> None:
         if not skill:
             raise GatewayFailure("DeerFlow 未发现已启用的 vfssql-retrieval 原生 Skill")
         if not (run_dir / "skill_preflight.json").exists():
-            write_json(run_dir / "skill_preflight.json", {"checked_at_utc": utc_now(), "skill": skill, "loading": "deerflow_autodiscovery"}, exclusive=True)
+            write_json(run_dir / "skill_preflight.json", {"checked_at_utc": utc_now(), "skill": skill, "loading": config["skill_loading"]}, exclusive=True)
         questions = [json.loads(line) for line in (run_dir / "questions.jsonl").read_text(encoding="utf-8").splitlines()]
         completed = 0
         for question in questions:
@@ -429,7 +429,7 @@ async def run(run_dir: Path, limit: int | None) -> None:
                 raise GatewayFailure("检测到知识学习调用，已停止批次")
             if limit is not None and completed >= limit:
                 break
-        if all((run_dir / "predictions" / f"{q['case_id']}.json").is_file() for q in questions):
+        if not config.get("defer_prediction_freeze") and all((run_dir / "predictions" / f"{q['case_id']}.json").is_file() for q in questions):
             hashes = {q["case_id"]: digest((run_dir / "predictions" / f"{q['case_id']}.json").read_bytes()) for q in questions}
             target = run_dir / "predictions_frozen.json"
             if target.exists() and read_json(target)["prediction_hashes"] != hashes:

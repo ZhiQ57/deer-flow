@@ -2,6 +2,58 @@
 
 本目录评估真实 DeerFlow Gateway、指定模型和已接入 VFSSQL 的组合效果。一题一个新 thread，固定并发 1，324 题只发送原始问题；结果统一保存在本目录 runs/。执行计划见 evaluation-plan.md。
 
+## 最新：缺检索样本显式 Skill 复测（2026-10-23）
+
+### 2026-10-26：模型服务异常恢复
+
+#### 同三题接管与324题四组对照
+
+三题已自然完成：case-0048、case-0044、case-0047，全部有最终答复、原生Skill激活、完整采集和证据重放；合计16次SQL成功、7次成功检索调用。旧workflow_validation.json要求每题都检索，因此因两题没有检索而未通过。服务恢复使用独立的provider_workflow_validation.json验收同三题；检索行为仍按原业务标准计分，不再增加模型联调题。
+
+`recovery_suite.py --run-dir runs/20261026-infra-retry`归档新控制器并接续已准备的170题，使用原_private/frozen_evaluator，保持采集、题面、模型和预测不变。需从临时进程环境提供原有凭据；已运行的控制器会拒绝重复启动。控制器30秒心跳，完成后自动调用独立comparison_metrics.py。
+
+用户指定的四组表保存在`runs/20261026-infra-retry/comparison_metrics/report.md`，精确数值见metrics.json，逐题指标及检索轮数见case_metrics.json/csv，来源及哈希见input_manifest.json。全部有效预测冻结前，DeerFlow全量指标为null；可查看154题原有效结果及补测进度，不能将模型服务错误计作业务失败。
+
+- 首次候选：首个成功非空响应内部去重顺序的R@1/3/5/10；累计候选Recall/Precision、逐题Macro-F1、候选完整率。
+- 结构：表Recall/Precision、逐题Macro-F1、目标字段Recall和逐题0/1完整率。
+- SQL：首条/末条真实执行无错率，检索完整且最终执行成功率，进一步要求最终SQL使用全部目标表字段的联合率；分母均324。
+- 效率：全题平均保存耗时、P50、P95、平均MCP，以及主成功题平均耗时和MCP；另存宿主观察/完整采集耗时和基础设施故障尝试成本。
+
+Codex基线取自原324题冻结结果并核对sample_id和哈希。“保存耗时”指已保存的elapsed_seconds，Codex为共享会话宿主Date.now观察，DeerFlow为Gateway整次独立对话运行时间，报告明确计时范围差异。当前组合最终是79题自主发现Skill与245题显式Skill，分组来源单列，不能描述成统一提示的一次全新324题运行。只用记忆而无合格检索的题不计MCP主成功。
+
+用户要求不能将运行异常直接判作业务失败。已核验上轮168个错误样本全部在调用MCP前收到模型HTTP502，共504条模型错误事件；原81题保留组另有case-0072、case-0113两道未完成运行，一并恢复，共170题。原正常完成的154题保留，原报告及错误轨迹保持不变，原目录新增status_correction.md指向修正结果。
+
+```powershell
+& backend/.venv/Scripts/python.exe -X utf8 -B backend/evaluates/retry_retrieval.py `
+  --recover-infrastructure `
+  --source-run backend/evaluates/runs/20261023-skill-retry-v2 `
+  --pilot-dir backend/evaluates/runs/20261026-infra-pilot `
+  --run-dir backend/evaluates/runs/20261026-infra-retry
+```
+
+先由DeerFlow运行三题验证，再自动后台恢复正式170题。`provider_recovery.py`只重试模型服务异常，原问题与显式Skill提示不变；每次重试建立独立新会话，旧错误尝试按原生ID、原始字节和哈希保留在infra_attempts。服务错误自然终止后暂停当前队列，按60、120、300、600秒退避，持续每30秒心跳；当前题未恢复前不开始下一题。没有模型取消调用，也没有业务失败择优重试。
+
+运行时查看recovery_status.json的等待原因及next_retry_at_utc；comparison_report.md和comparison_summary.json明确154题旧有效结果、新有效但待统一评分记录、待恢复题数。只有170题全部产生有效预测、统一冻结并评分后才更新全量324题最终业务指标。正常完成但未检索或SQL不合格的题仍按业务失败评估。模型错误尝试及其耗时另外保留，不混入业务失败分母。
+
+用户要求 MCP 能力评估排除只用记忆完成任务的情况。新协议选择原轮没有定位或内容读取工具的 243 题（240 题无 VFS，3 题只有目录初始化），使用 DeerFlow 原生 `/vfssql-retrieval` 激活并增加固定一句“必须使用 vfssql-retrieval skill。”，其后为原问题。该激活会由宿主注入 Skill 正文，采集器按原生激活事件的名称和哈希核验；不会复制答案、目标表列或额外评估提示。
+
+`retry_retrieval.py` 先归档完整旧轮，再建立三题联调和 243 题正式复测两个新目录。三题覆盖单表、多表和长结构场景，由 DeerFlow/Qwen 实际执行；验证全部请求、Skill 注入、成功检索、自然终态、最终答复、证据重放及评分文件，并确认至少一次 SQL 实际执行成功。通过后自动启动正式后台，无需保持 Codex 本轮会话。流程成败与三题业务评分分别记录。
+
+```powershell
+& backend/.venv/Scripts/python.exe -X utf8 -B backend/evaluates/retry_retrieval.py `
+  --source-run backend/evaluates/runs/20261022-qwen38-ultra-native-unlimited-01 `
+  --pilot-dir backend/evaluates/runs/20261023-skill-pilot `
+  --run-dir backend/evaluates/runs/20261023-skill-retry
+```
+
+凭据仍只来自 VFSSQL_EVAL_EMAIL / VFSSQL_EVAL_PASSWORD。此命令创建隐藏独立编排进程：`suite_status.json` / `suite.log` 记录三题验收及自动转批；各轮 `console.log`、`pipeline_status.json`、`supervisor_status.json` 记录单题进度和 30 秒心跳。`status_evaluation.py --run-dir <正式目录>` 同时展示套件阶段和三题进度。原轮完整归档到短路径 `runs/_archive/20261022-native/`；目录被 Windows 打开句柄占用时使用冻结文件硬链接快照，再只清除原路径 243 题的轨迹和预测，81 题保留。原路径的 active_data_cleanup.json 指向完整历史归档，原324题报告应从归档读取。
+
+模型、账号、Ultra/high、并发 1 和无限等待保持既定设置。MCP 主成功仍要求真实检索完整覆盖目标表列、最终 SQL 成功并有自然语言最终答复；只列目录或记忆直接生成 SQL 单独标记。正式 report.md 只统计新 243 题；完成后另生成 comparison_report.md，将保留的原 81 题与新 243 题分组汇总，注明提示条件不同。未使用工具的题仍保留为失败，不循环重做择优。
+
+以下章节保留上一轮仅原问题协议和离线复评的说明。
+
+本次最终活动目录为 `runs/20261023-skill-retry-v2`；验收目录为 `runs/20261023-skill-pilot-v2`。首次联调发现宿主按归一化换行后的正文取哈希、文件快照按原始 CRLF 字节取哈希，评估侧现将 skill_text_sha256 与 skill_sha256 分开保存。通过 `--source-archived --adopt-pilot <原三题目录>` 等待原三题自然结束并重放同一 thread/run 的原始证据；原错误校验快照保留，不重新发送三道测试问题。2026-10-23 09:59:55 三题全部验收通过，09:59:56 正式243题自动启动。
+
 ## 1、固定协议
 
 - 模型 Qwen3.8-27B-FP8-Local-cloud；Ultra（思考/计划/子代理均开启）；reasoning_effort=high。
@@ -87,6 +139,16 @@ traces/case-XXXX/ 保存请求、thread/run 受理信息、原始 stream.sse、�
 ```
 
 schema_metrics.py 复用原纯离线匹配及 SQL 诊断；来源和本地适配见 metrics-provenance.json。主指标与严格 SQL 指标分开。每次评分写独立 scoring/ 快照，并更新根 summary.json/report.md。报告记录首次完成检索轮数、全部定位轮数和读取调用次数，也记录超出观察阈值的题数。审计会重放原始响应并核对冻结预测。
+
+### 2026-10-23：允许记忆直接生成 SQL 的离线复评
+
+用户取消“必须存在检索轨迹”的前置条件。当前轮 `runs/20261022-qwen38-ultra-native-unlimited-01/sql-reassessment/rescore_sql.py` 只读取冻结预测、原始 SSE 和数据集 DDL，不调用模型、MCP 或数据库；每次指定新的 `--output-dir`，原报告及预测保持不变。
+
+- 最终 SQL 本身命中：最后一次 SQL 成功执行，且该 SQL 独立覆盖全部目标表和按表绑定的列。
+- 扩展原任务口径：最后一次 SQL 成功执行，且检索或该 SQL 任一完整命中。这样保留原来合格的检索题，再补入直接生成 SQL 的合格题。
+- 任意一条成功 SQL 命中仅作辅助统计，不能把多条探查 SQL 的字段拼成一条命中。
+- 字段名称精确命中与既有 COUNT(*)/id 等价规则分列；最终文字答复完整性、记忆注入和定位轮数另列。
+- 复评输出 `summary.json`、`scores.json`、`successful_sql.json`、`report.md`、`case_details.md`；全量冻结哈希复核与 SQL 解析诊断均随结果保存。
 
 ## 7、旧轮停批诊断
 

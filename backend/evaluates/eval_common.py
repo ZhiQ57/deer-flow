@@ -14,6 +14,10 @@ MODEL = "Qwen3.8-27B-FP8-Local-cloud"
 DATASET_SHA256 = "e6d2778929830da9d76ca09f981789d3929692baeeaf63964f477d28734bcae4"
 BUDGETS = {"timeout_seconds": 1200, "max_tool_calls": 24, "max_sql_executions": 4}
 NATIVE_MODE = "native_question_only"
+EXPLICIT_MODE = "native_explicit_skill"
+NATIVE_MODES = {NATIVE_MODE, EXPLICIT_MODE}
+RETRIEVAL_TOOLS = {"vfs_find_file", "vfs_grep_file", "vfs_grep", "vfs_cat_read", "vfs_sed", "vfs_bash_execute", "search_sql_schema", "inspect_sql_schema"}
+EXPLICIT_SKILL_PREFIX = "/vfssql-retrieval\n\n必须使用 vfssql-retrieval skill。\n\n"
 NATIVE_BUDGETS = {**BUDGETS, "timeout_seconds": None, "enforce_tool_limits": False, "require_workspace": False}
 CONTEXT = {"model_name": MODEL, "mode": "ultra", "thinking_enabled": True, "is_plan_mode": True, "subagent_enabled": True, "reasoning_effort": "high"}
 

@@ -19,7 +19,12 @@ def pipeline(run_dir: Path) -> None:
     state = {"pid": os.getpid(), "started_at_utc": utc_now(), "planned_cases": config["planned_cases"], "purpose": config["purpose"], "status": "running"}
     write_json(run_dir / "pipeline_status.json", state)
     try:
-        asyncio.run(run(run_dir, None))
+        if config.get("provider_recovery"):
+            from provider_recovery import recover
+
+            asyncio.run(recover(run_dir))
+        else:
+            asyncio.run(run(run_dir, None))
         state.update(status="scoring", updated_at_utc=utc_now())
         write_json(run_dir / "pipeline_status.json", state)
         summary = score(run_dir)

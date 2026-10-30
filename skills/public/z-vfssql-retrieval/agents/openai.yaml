@@ -1,0 +1,6 @@
+interface:
+  display_name: "VFSSQL 检索与 SQL 查询"
+  short_description: "通过文件工具核验数据库结构、原始值与关联，生成有依据的 SQL 并按需查询"
+  default_prompt: "使用 $vfssql-retrieval，通过 VFSSQL 文件工具核验我的业务问题，生成有依据的 SQL；需要数据时执行只读查询。"
+policy:
+  allow_implicit_invocation: true
