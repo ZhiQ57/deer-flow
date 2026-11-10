@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deer-flow.local/evals/harness.schema.json",
+  "title": "evals harness adapter config",
+  "type": "object",
+  "required": ["name", "display_name", "status", "type", "capabilities"],
+  "properties": {
+    "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "display_name": {"type": "string"},
+    "status": {"enum": ["verified", "draft"]},
+    "type": {"enum": ["cli", "http", "python"]},
+    "enabled": {"type": "boolean"},
+    "version_command": {"type": "array", "items": {"type": "string"}},
+    "capabilities": {
+      "type": "object",
+      "required": ["mcp", "skills", "subagents", "json_events", "native_trace", "resume", "non_interactive"],
+      "properties": {
+        "mcp": {"type": "boolean"},
+        "skills": {"type": "boolean"},
+        "subagents": {"type": "boolean"},
+        "json_events": {"type": "boolean"},
+        "native_trace": {"type": "boolean"},
+        "resume": {"type": "boolean"},
+        "non_interactive": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "required": ["executable", "args", "prompt_transport", "timeout_seconds"],
+      "properties": {
+        "executable": {"type": "string"},
+        "args": {"type": "array", "items": {"type": "string"}},
+        "prompt_transport": {"enum": ["stdin", "argv", "file"]},
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "required": ["format"],
+      "properties": {
+        "format": {"enum": ["text", "json", "jsonl", "stream-json", "sse"]},
+        "final_message_path": {"type": "string"},
+        "event_parser": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "trace": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["native", "bridged", "output_only"]},
+        "note": {"type": "string"},
+        "native_trace_env": {"type": "array", "items": {"type": "string"}},
+        "context_env": {
+          "type": "object",
+          "properties": {
+            "trace_id": {"type": "string"},
+            "parent_observation_id": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        "trace_id_source": {"type": "string"},
+        "event_to_span": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "mcp": {
+      "type": "object",
+      "required": ["supported"],
+      "properties": {
+        "supported": {"type": "boolean"},
+        "canonical": {"type": "string"},
+        "render": {"type": "string"},
+        "config_path": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "fairness": {
+      "type": "object",
+      "properties": {
+        "model_flag": {"type": ["string", "null"]},
+        "system_prompt": {"type": ["string", "null"]},
+        "max_turns_flag": {"type": ["string", "null"]},
+        "temperature_flag": {"type": ["string", "null"]},
+        "permission_mode": {"type": ["string", "null"]},
+        "workspace_mode": {"enum": ["copy", "mount", "repo"]}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

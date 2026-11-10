@@ -1,0 +1,63 @@
+# DeerFlow Harness 适配配置
+# 用 headless CLI（deerflow --json）驱动，输出 NDJSON StreamEvents。
+name: deerflow
+display_name: DeerFlow
+status: verified
+type: cli
+enabled: true
+
+version_command:
+  - "{python}"
+  - "-c"
+  - "import importlib.metadata; print(importlib.metadata.version('deerflow-harness'))"
+
+capabilities:
+  mcp: true
+  skills: true
+  subagents: true
+  json_events: true
+  native_trace: true
+  resume: true
+  non_interactive: true
+
+command:
+  executable: "{python}"
+  args:
+    - "-m"
+    - "deerflow.tui.cli"
+    - "--json"
+    - "--recursion-limit"
+    - "{recursion_limit}"
+  # CLI 无 prompt 参数时从 stdin 读取
+  prompt_transport: stdin
+  timeout_seconds: 1800
+  env:
+    DEER_FLOW_ENV: eval
+
+output:
+  format: jsonl
+  event_parser: deerflow_stream_json
+
+trace:
+  # CLI 子进程的原生 Langfuse Trace 与 experiment trace 分离；
+  # 适配器在 experiment item 内建根 span，并按事件写子 span。
+  # 若改用进程内 DeerFlowClient，可切换为 native。
+  mode: bridged
+  native_trace_env:
+    - LANGFUSE_TRACING
+    - LANGFUSE_PUBLIC_KEY
+    - LANGFUSE_SECRET_KEY
+    - LANGFUSE_BASE_URL
+
+mcp:
+  supported: true
+  canonical: ../mcp_extensions.json
+  render: deerflow
+  config_path: "{workspace}/extensions_config.json"
+
+fairness:
+  model_flag: null
+  system_prompt: null
+  max_turns_flag: "--recursion-limit"
+  temperature_flag: null
+  workspace_mode: copy

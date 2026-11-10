@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deer-flow.local/evals/experiment.schema.json",
+  "title": "evals global config",
+  "type": "object",
+  "required": ["version", "harnesses", "experiments"],
+  "properties": {
+    "version": {"type": "integer", "minimum": 1},
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "dataset_version": {"type": ["string", "null"]},
+        "concurrency": {"type": "integer", "minimum": 1},
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+        "repeats": {"type": "integer", "minimum": 1},
+        "workspace_root": {"type": "string"},
+        "output_root": {"type": "string"},
+        "missing_capability": {"enum": ["skip", "fail"]}
+      },
+      "additionalProperties": false
+    },
+    "harnesses": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "experiments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "dataset", "dataset_version", "harnesses", "evaluators"],
+        "properties": {
+          "name": {"type": "string"},
+          "dataset": {
+            "oneOf": [
+              {"type": "string"},
+              {"type": "array", "items": {"type": "string"}, "minItems": 1}
+            ]
+          },
+          "dataset_version": {"type": "string"},
+          "harnesses": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+          "evaluators": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+          "repeats": {"type": "integer", "minimum": 1},
+          "metadata": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "properties": {
+        "same_dataset": {"type": "boolean"},
+        "same_prompt": {"type": "boolean"},
+        "same_model_when_supported": {"type": "boolean"},
+        "same_timeout": {"type": "boolean"},
+        "same_concurrency": {"type": "boolean"},
+        "report_by_harness": {"type": "boolean"},
+        "forbid_single_ranking": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

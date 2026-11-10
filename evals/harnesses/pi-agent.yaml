@@ -1,0 +1,48 @@
+# Pi Agent Harness 适配配置（草稿）
+# 本机未安装 pi；以下参数是待核对模板，落地前必须用
+# `pi --help` 核对，不要直接用于正式对照实验。
+name: pi-agent
+display_name: Pi Agent
+status: draft
+type: cli
+enabled: false
+
+version_command:
+  - pi
+  - "--version"
+
+capabilities:
+  mcp: false
+  skills: false
+  subagents: false
+  json_events: false
+  native_trace: false
+  resume: false
+  non_interactive: true
+
+command:
+  executable: pi
+  args:
+    - "-p"
+    - "{prompt}"
+  prompt_transport: argv
+  timeout_seconds: 1800
+  env: {}
+
+output:
+  format: text
+  event_parser: null
+
+trace:
+  mode: output_only
+  note: "若 Pi Agent 支持 JSON 事件或 OTel，改为 bridged/native；否则只做输出级评分。"
+
+mcp:
+  supported: false
+
+fairness:
+  model_flag: null
+  system_prompt: null
+  max_turns_flag: null
+  temperature_flag: null
+  workspace_mode: copy

@@ -1,0 +1,73 @@
+# evals 全局配置
+# 说明：这里只放“怎么跑”和“跑什么”，不放 Gold、评分规则或凭据。
+# 数据集版本、模型、Prompt、Skill、工具定义必须由实验显式固定。
+
+version: 1
+
+defaults:
+  # 数据集版本由实验显式固定；不要在不同实验之间复用“最新版”。
+  dataset_version: null
+  concurrency: 1
+  timeout_seconds: 1800
+  repeats: 1
+  workspace_root: .tmp/workspaces
+  output_root: reports
+  # 缺少能力时：skip（记为跳过，不计 0 分）或 fail（实验失败）。
+  missing_capability: skip
+
+# Harness 注册表：name -> 配置文件。
+# 每个 harness 的 CLI 参数、输出解析、Trace 方式、能力声明都在对应 YAML 中。
+harnesses:
+  deerflow: harnesses/deerflow.yaml
+  codex: harnesses/codex.yaml
+  claude-code: harnesses/claude-code.yaml
+  opencode: harnesses/opencode.yaml
+  pi-agent: harnesses/pi-agent.yaml
+
+# 实验定义：一个实验 = 一个数据集版本 × 一组 harness × 一组 evaluator。
+# 同一个数据集必须用同一版本跑所有 harness，否则不能横向比较。
+experiments:
+  - name: sql-end-to-end-baseline
+    dataset:
+      - task/end-to-end/SQL/datasets/simple-evals-data/simple-evals-business.json
+    dataset_version: v01
+    harnesses:
+      - deerflow
+      - codex
+      - claude-code
+    evaluators:
+      - sql_result_correctness
+    repeats: 1
+    metadata:
+      purpose: baseline
+      notes: 首轮只跑 simple，确认三套 harness 的输入、输出和 Trace 关联一致。
+
+  - name: sql-end-to-end-compare
+    dataset:
+      - task/end-to-end/SQL/datasets/simple-evals-data/simple-evals-business.json
+      - task/end-to-end/SQL/datasets/medium-evals-data/medium-evals-business.json
+      - task/end-to-end/SQL/datasets/high-evals-data/high-evals-business.json
+    dataset_version: v01
+    harnesses:
+      - deerflow
+      - codex
+      - claude-code
+      - opencode
+      - pi-agent
+    evaluators:
+      - sql_result_correctness
+    repeats: 3
+    metadata:
+      purpose: harness-comparison
+      notes: 缺少 MCP/技能能力的 harness 由 capability 判定跳过，不记 0 分。
+
+# 对照实验公平性约束（实现时读取，不靠人工记忆）。
+comparison:
+  same_dataset: true
+  same_prompt: true
+  same_model_when_supported: true
+  same_timeout: true
+  same_concurrency: true
+  report_by_harness: true
+  # 禁止把多个 harness 的分数合成一个总排名；按指标、按 harness 分别报告。
+  forbid_single_ranking: true

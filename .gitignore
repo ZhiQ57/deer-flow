@@ -96,3 +96,12 @@ config.yaml.bak
 
 # Monocle agent-observability trace output (local file exporter)
 .monocle/
+
+# evals local artifacts (datasets and aggregate reports stay tracked)
+/evals/.env
+/evals/**/.env
+/evals/**/.tmp/
+/evals/**/reports/**/raw/
+/evals/**/cache/
+/evals/**/.pytest_cache/
+/evals/**/*.log

@@ -1,0 +1,62 @@
+# Codex CLI Harness 适配配置
+# 参数以 codex-cli 0.144.1 的 `codex exec --help` 为准。
+name: codex
+display_name: Codex CLI
+status: verified
+type: cli
+enabled: true
+
+version_command:
+  - codex
+  - "--version"
+
+capabilities:
+  mcp: true
+  skills: false
+  subagents: true
+  json_events: true
+  native_trace: false
+  resume: true
+  non_interactive: true
+
+command:
+  executable: codex
+  args:
+    - exec
+    - "--json"
+    - "--skip-git-repo-check"
+    - "--ephemeral"
+    - "-C"
+    - "{workspace}"
+    - "--model"
+    - "{model}"
+    - "-o"
+    - "{workspace}/.eval/last-message.txt"
+    - "-"
+  # "-" 表示从 stdin 读取 prompt
+  prompt_transport: stdin
+  timeout_seconds: 1800
+  env:
+    CODEX_HOME: "{harness_home}"
+
+output:
+  format: jsonl
+  final_message_path: "{workspace}/.eval/last-message.txt"
+  event_parser: codex_jsonl
+
+trace:
+  # Codex 的 JSONL 事件由适配器解析成 Langfuse 子 span。
+  mode: bridged
+
+mcp:
+  supported: true
+  canonical: ../mcp_extensions.json
+  render: codex
+  config_path: "{harness_home}/config.toml"
+
+fairness:
+  model_flag: "--model"
+  system_prompt: "AGENTS.md"
+  max_turns_flag: null
+  temperature_flag: null
+  workspace_mode: copy

@@ -1,0 +1,65 @@
+# Claude Code Harness 适配配置
+# 参数以 claude 2.1.309 的 `claude --help` 为准。
+name: claude-code
+display_name: Claude Code
+status: verified
+type: cli
+enabled: true
+
+version_command:
+  - claude
+  - "--version"
+
+capabilities:
+  mcp: true
+  skills: true
+  subagents: true
+  json_events: true
+  native_trace: false
+  resume: true
+  non_interactive: true
+
+command:
+  executable: claude
+  args:
+    - "-p"
+    - "--output-format"
+    - "stream-json"
+    - "--verbose"
+    - "--include-partial-messages"
+    - "--model"
+    - "{model}"
+    - "--mcp-config"
+    - "{mcp_config}"
+    - "--append-system-prompt"
+    - "{system_prompt}"
+    - "--permission-mode"
+    - "{permission_mode}"
+  prompt_transport: stdin
+  timeout_seconds: 1800
+  env:
+    # 关闭 Claude Code 自带 OTel，避免产生与 experiment 无关的第二条 Trace；
+    # 由适配器把 stream-json 事件写成子 span。
+    CLAUDE_CODE_ENABLE_TELEMETRY: "0"
+
+output:
+  format: stream-json
+  event_parser: claude_stream_json
+
+trace:
+  mode: bridged
+
+mcp:
+  supported: true
+  canonical: ../mcp_extensions.json
+  render: claude-code
+  config_path: "{harness_home}/.mcp.json"
+
+fairness:
+  model_flag: "--model"
+  system_prompt: "--append-system-prompt"
+  max_turns_flag: null
+  temperature_flag: null
+  # permission_mode 默认 bypassPermissions，仅在隔离 workspace/容器中使用
+  permission_mode: bypassPermissions
+  workspace_mode: copy

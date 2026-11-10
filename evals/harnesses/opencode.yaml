@@ -1,0 +1,53 @@
+# OpenCode Harness 适配配置（草稿）
+# 本机未安装 opencode；以下参数是待核对模板，落地前必须用
+# `opencode run --help` 核对，不要直接用于正式对照实验。
+name: opencode
+display_name: OpenCode
+status: draft
+type: cli
+enabled: false
+
+version_command:
+  - opencode
+  - "--version"
+
+capabilities:
+  mcp: true
+  skills: false
+  subagents: false
+  json_events: false
+  native_trace: false
+  resume: true
+  non_interactive: true
+
+command:
+  executable: opencode
+  args:
+    - run
+    - "--model"
+    - "{model}"
+    - "{prompt}"
+  prompt_transport: argv
+  timeout_seconds: 1800
+  env: {}
+
+output:
+  format: text
+  event_parser: null
+
+trace:
+  mode: bridged
+  note: "若 OpenCode 支持 JSON 事件流，改为 jsonl 并实现 event_parser；否则只做输出级评分。"
+
+mcp:
+  supported: true
+  canonical: ../mcp_extensions.json
+  render: opencode
+  config_path: "{workspace}/opencode.json"
+
+fairness:
+  model_flag: "--model"
+  system_prompt: null
+  max_turns_flag: null
+  temperature_flag: null
+  workspace_mode: copy
