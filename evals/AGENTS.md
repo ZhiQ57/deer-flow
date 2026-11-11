@@ -105,7 +105,7 @@ evals/
 | 端到端 SQL | `task/end-to-end/SQL/` | `01`（占位） | 81 题 JSON（已入库） | 待建 | 待建 |
 | SQL Schema Recall | `task/process/schema_recall_evals/` | `03-...SQL Schema Recall 评测.md` | 待建 | 待建 | 待建 |
 | 意图识别 | `task/process/intent_evals/` | `03-...意图识别评测.md` | 待建 | 待建 | 待建 |
-| 歧义澄清 | 待建 `clarify_evals/` | `03-...歧义澄清评测.md` | 规划 | 规划 | 规划 |
+| 歧义澄清 | 待建 `clarify_evals/` | `03-...歧义澄清评测（意图前）.md` | 规划 | 规划 | 规划 |
 | 业务检索（意图前） | 待建 `retrieval_pre_intent_evals/` | `03-...业务检索能力评测-意图前.md` | 规划 | 规划 | 规划 |
 | 业务检索（意图后） | 待建 `retrieval_post_intent_evals/` | `03-...业务检索能力评测-意图后.md` | 规划 | 规划 | 规划 |
 | SQL 生成 | 待建 `sql_generation_evals/` | `03-...SQL 生成评测.md` | 规划 | 规划 | 规划 |
@@ -125,7 +125,7 @@ Harness 适配状态单独维护：DeerFlow、Codex、Claude Code 已按本机 C
 
 ```text
 用户问题
-  → [意图前检索] → 意图识别 → 歧义澄清
+  → [意图前检索] → 歧义判断与必要澄清 → 意图识别并发布本轮标签
   → [意图后检索] → SQL 生成 → SQL 执行 → 结果解释
   → 端到端（只看最终业务结果）
 ```
@@ -135,14 +135,14 @@ Harness 适配状态单独维护：DeerFlow、Codex、Claude Code 已按本机 C
 | 评测 | 评什么 | 不评什么 |
 | --- | --- | --- |
 | SQL Schema Recall | `fast_search` 单工具的召回、排序、值映射、稳定性；隔离 Agent | Agent 如何使用工具、SQL 生成 |
-| 意图识别 | 槽位完整性/准确性、`publish_intent_label` 调用与参数 | 是否该追问、检索、SQL |
-| 歧义澄清 | `ask_clarification` 的触发、问题质量、多轮收敛 | 槽位提取、检索、SQL |
+| 歧义澄清（本轮标签发布前） | `ask_clarification` 的触发、问题质量、多轮收敛、是否提前发布标签 | 槽位提取、检索、SQL |
+| 意图识别（澄清后） | 槽位完整性/准确性、`publish_intent_label` 调用与参数 | 是否该追问、检索、SQL |
 | 业务检索（意图前） | 意图发布前的知识检索、来源判断、交接 | Schema 映射、SQL |
 | 业务检索（意图后） | 已发布意图后的 Schema/值/关联检索与交接 | 意图识别、SQL 生成 |
 | SQL 生成 | 生成决策、语法/方言、Schema/参数、业务约束、执行结果、反馈纠错 | 意图、检索、最终答案解释 |
 | 端到端 | 最终业务结果与任务完成 | 内部环节归因 |
 
-关键依赖：意图识别、歧义澄清、业务检索共享同一批业务任务和冻结轨迹；SQL 生成使用固定的已确认意图与检索依据；Schema Recall 与 Agent 解耦，单独调用 MCP。
+关键依赖：意图识别、歧义澄清、业务检索共享原始业务任务，但按各自评测起点冻结可见上下文；本轮 `publish_intent_label` 只能在阻断性歧义解决后调用，历史轮次标签不等于本轮标签；SQL 生成使用固定的已确认意图与检索依据；Schema Recall 与 Agent 解耦，单独调用 MCP。
 
 后续按链路继续补充：工具调用评测、Skill 评测、服务稳定性评测等。新增模块先写 `docs/03-...` 方案，再建目录和数据，不先写脚本。
 
