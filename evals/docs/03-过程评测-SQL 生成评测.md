@@ -212,7 +212,7 @@ L4 Expert,验证复杂结构、长尾边界及对抗,10%
 
 ```csv
 分层维度,取值,用途
-生成决策,must_generate / must_not_generate,同时评价正确生成与合理终止
+生成决策,mode=must / mode=must_not,同时评价正确生成与合理终止
 评测模式,generate_only / feedback,区分首版生成与反馈修正
 上游依据,充分 / 故意不足 / 阻断歧义 / 范围不允许,隔离正常生成与负向决策
 查询结构,单表 / 多表 / 子查询 / CTE / 窗口 / 多项组合,定位具体 SQL 构造错误
@@ -221,48 +221,54 @@ L4 Expert,验证复杂结构、长尾边界及对抗,10%
 
 ### 3-2 评测样本集要求
 
-数据集以 Langfuse `DatasetItem` 为最小单位。业务字段嵌套在 `input`、`expected_output`、`metadata` 内，沿用其他 Agent 过程评测方案的 SDK 接口约定。
+数据集以 Langfuse `DatasetItem` 为最小单位，与意图识别、歧义澄清方案统一采用 `input`、`expected_output.value[]`、`metadata` 三层结构。业务字段不得平铺到顶层。
 
 **Langfuse 顶层字段**
 
 ```csv
 字段,类型,必填,说明
-id,String,是（项目要求）,DatasetItem ID，项目内唯一，不能跨数据集复用
-input,Object,是,用户问题、固定意图、检索依据及任务可见执行约束
-expected_output,Object,是,生成决策、参考 SQL 与参数、结果契约及允许终态
-metadata,Object,是（项目要求）,任务分类、目标轮次、隐藏实例引用与评分规则
-source_trace_id,String,否,从真实轨迹构造时填写来源 Trace
+id,String,是（项目要求）,DatasetItem ID；项目内唯一且不能跨数据集复用
+input,Object,是,用户问题、固定意图、检索依据及可见执行约束
+expected_output,Object,是,标准动作数组 value；生成决策及 SQL 结果 Gold 仅供评测端使用
+metadata,Object,是（项目要求）,任务分类、原始标注、隐藏实例引用及结构化规则
+source_trace_id,String,否,从真实轨迹构造时记录来源 Trace
 source_observation_id,String,否,来源 Observation ID
-status,String,否,ACTIVE / ARCHIVED，默认 ACTIVE
+status,String,否,ACTIVE / ARCHIVED；默认 ACTIVE
 ```
 
-> 说明：必填是项目数据规范，不表示 Langfuse 创建接口要求这些字段全部必填。`expected_output` 对应 API 中的 `expectedOutput`；Python SDK 使用 `expected_output`。
+> 说明：Langfuse 原生对 `id`、`expected_output`、`metadata` 均为可选；本项目要求四个主字段必填。`expected_output` 对应 API 中的 `expectedOutput`；Python SDK 使用 `expected_output`。JSONL 由加载脚本逐行调用 `create_dataset_item` 写入，UI CSV 上传只支持 `input`、`expected_output`、`metadata` 三列。
 
 **项目扩展字段**
 
 ```csv
 字段,所属层级,类型,说明
 query,input,String,当前目标轮次的用户问题
-intent,input,Object,已确认的对象、指标、维度、过滤、时间及输出要求
+intent,input,Object,歧义已解决后固定的对象、指标、维度、过滤、时间及输出要求
 retrieval_context,input,Object,模型实际可见的必要 Schema、业务规则、值映射、关联及来源
 conversation_history,input,Array,当前任务开始前的历史对话
-trace,input,Array,评测起点之前的可见轨迹，不预填本次待生成的 SQL
-access_context,input,Object,任务可见的数据库与对象范围说明，不包含凭据
+trace,input,Array,评测起点前的可见轨迹；不预填本次待生成的 SQL
+user_replies,input,Array,脚本化用户回复；本例无交互则为空数组
+access_context,input,Object,任务可见的数据库与对象范围说明；不包含凭据
 execution_context,input,Object,目标方言、时区、固定当前时间及真实工具使用约束
-generation_decision,expected_output,String,must_generate / must_not_generate
-reference_queries,expected_output,Array,一组或多组人工复核的参考 SQL 与参数，不要求预测文本一致
-result_contract,expected_output,Object,结果列、重复行、排序、数值、NULL、时间及并列规则
-allowed_final_statuses,expected_output,Array,允许的最终处理状态
-task_type,metadata,String,主任务类型，如 S04 多表关联与粒度
+kind,expected_output.value[],String,module_result；逻辑生成结果，不是实际 SQL 工具调用
+target,expected_output.value[],String,sql_generation；评测动作名
+turn,expected_output.value[],Integer,当前目标轮次，1-based
+mode,expected_output.value[],String,must / must_not；分别对应应生成 SQL / 不应生成 SQL
+criteria,expected_output.value[],Object,reference_queries / result_contract / allowed_final_statuses；不应生成时 reference_queries 可为空
+test_types,metadata,Array,包含 sql_generation；共享任务可另标 intent / clarification
+task,metadata,String,主任务类型，如 S04 多表关联与粒度
 difficulty,metadata,String,easy / medium / hard / expert
 eval_dimensions,metadata,Array,评测维度及子维度
 scenario_tags,metadata,Array,去重、时间边界、空集、反馈纠错等标签
-start_mode,metadata,String,generation / repair_from_prefix，固定实验起点类型
+eval_rules,metadata,Object,结构化等价规则、执行上限及判定要求
+task_raw_value,metadata,Array,原始业务和生成约束标注；每项含 target、turn、tool_schema_version、value
+start_mode,metadata,String,generation / repair_from_prefix；固定实验起点类型
 fixture_suite,metadata,Object,仅评测端使用的数据实例、种子、快照和版本引用
-evaluation_rules,metadata,Object,业务约束、允许等价规则、执行上限及判定要求
 source_case_id,metadata,String,与其他评测共享的原始业务任务编号
-target_turn,metadata,Integer,本次评测的原始会话轮次，单轮为 1
+target_turn,metadata,Integer,本次评测的原始会话轮次；单轮为 1
 ```
+
+`mode` 是唯一的 SQL 生成决策来源，不另设 `generation_decision`。`module_result.criteria` 是评测 Gold，不是 SQL 生成工具的调用参数；本模块没有统一工具 Schema，`task_raw_value[*].tool_schema_version` 为 `null`。`task_raw_value` 存原始业务约束与预期行为，隐藏参考 SQL 和实例仍只留在评测端。
 
 Agent 只接收 `input` 中按真实任务允许公开的字段，以及固定的 System Prompt、Skill 和工具定义。标准 SQL、参考结果、隐藏数据、故障脚本、Judge 规则及实例清单留在评测端；不能将整个 DatasetItem 或 `metadata` 拼入 Messages。
 
@@ -272,11 +278,11 @@ Agent 只接收 `input` 中按真实任务允许公开的字段，以及固定�
 
 ```csv
 标签,含义,预期行为
-must_generate,意图明确、依据充分且任务在允许范围内,交付完整 SQL 与适用参数
-must_not_generate,存在阻断性缺口或任务不允许执行,说明不足、交接澄清或拒绝，不提交猜测 SQL
+mode=must,意图明确、依据充分且任务在允许范围内,交付完整 SQL 与适用参数
+mode=must_not,存在阻断性缺口或任务不允许执行,说明不足、交接澄清或拒绝，不提交猜测 SQL
 ```
 
-预期空结果仍可能属于 `must_generate`。不能因为参考结果为空，就标注成不应该生成。
+预期空结果仍可能属于 `mode=must`。不能因为参考结果为空，就标注成不应该生成。
 
 **ID 与共享任务**
 
@@ -352,6 +358,7 @@ Ground Truth:人工复核的业务约束 + 参考查询 + 多实例结果比较�
     },
     "conversation_history": [],
     "trace": [],
+    "user_replies": [],
     "access_context": {
       "database_id": 1,
       "allowed_tables": ["clinical.treatment_cycle"],
@@ -365,26 +372,36 @@ Ground Truth:人工复核的业务约束 + 参考查询 + 多实例结果比较�
     }
   },
   "expected_output": {
-    "generation_decision": "must_generate",
-    "reference_queries": [
+    "value": [
       {
-        "sql": "SELECT COUNT(DISTINCT tc.patient_id) AS patient_count FROM clinical.treatment_cycle AS tc WHERE tc.start_date >= DATE '2025-01-01' AND tc.start_date < DATE '2025-07-01' AND tc.treatment_type = :treatment_type AND tc.status = :status",
-        "parameters": {"treatment_type": "IVF", "status": "COMPLETED"}
+        "kind": "module_result",
+        "target": "sql_generation",
+        "turn": 1,
+        "mode": "must",
+        "criteria": {
+          "reference_queries": [
+            {
+              "sql": "SELECT COUNT(DISTINCT tc.patient_id) AS patient_count FROM clinical.treatment_cycle AS tc WHERE tc.start_date >= DATE '2025-01-01' AND tc.start_date < DATE '2025-07-01' AND tc.treatment_type = :treatment_type AND tc.status = :status",
+              "parameters": {"treatment_type": "IVF", "status": "COMPLETED"}
+            }
+          ],
+          "result_contract": {
+            "columns": [
+              {"semantic_key": "patient_count", "type": "integer"}
+            ],
+            "row_comparison": "bag",
+            "ordered_by": [],
+            "null_policy": "strict",
+            "numeric_tolerance": {"absolute": 0, "relative": 0}
+          },
+          "allowed_final_statuses": ["sql_ready"]
+        }
       }
-    ],
-    "result_contract": {
-      "columns": [
-        {"semantic_key": "patient_count", "type": "integer"}
-      ],
-      "row_comparison": "bag",
-      "ordered_by": [],
-      "null_policy": "strict",
-      "numeric_tolerance": {"absolute": 0, "relative": 0}
-    },
-    "allowed_final_statuses": ["sql_ready"]
+    ]
   },
   "metadata": {
-    "task_type": "S03 聚合与统计单位",
+    "test_types": ["sql_generation"],
+    "task": "S03 聚合与统计单位",
     "difficulty": "medium",
     "start_mode": "generation",
     "eval_dimensions": ["FC/result_correctness", "FC/parameter_binding"],
@@ -395,16 +412,27 @@ Ground Truth:人工复核的业务约束 + 参考查询 + 多实例结果比较�
       "agent_execution_instance": "base",
       "test_instances": ["base", "duplicate_patient", "boundary_and_null", "empty_match"]
     },
-    "evaluation_rules": {
-      "required_semantics": [
-        "按患者ID去重计数且排除NULL患者ID",
-        "时间字段为周期开始日期，使用已确认的起止范围",
-        "治疗类型为IVF，周期状态为COMPLETED"
-      ],
+    "eval_rules": {
       "max_sql_attempts": 3,
       "max_retries": 1,
       "single_readonly_statement": true
     },
+    "task_raw_value": [
+      {
+        "target": "sql_generation",
+        "turn": 1,
+        "tool_schema_version": null,
+        "value": {
+          "sql_required": true,
+          "business_constraints": [
+            "按患者ID去重计数且排除NULL患者ID",
+            "时间字段为周期开始日期，使用已确认的起止范围",
+            "治疗类型为IVF，周期状态为COMPLETED"
+          ],
+          "result_semantic_key": "patient_count"
+        }
+      }
+    ],
     "source_case_id": "clinical-retrieval-001",
     "target_turn": 1
   }
@@ -440,7 +468,7 @@ Context：当前授权对象范围不包含目标对象。
 Gold Output：refused，不以更换表名或其他接口绕过范围。
 ```
 
-`must_not_generate` 样本不强行提供参考 SQL，也不计算 SQL 执行和结果等价指标；生成行为及终态仍必须评价。
+这两类对照样本的 `expected_output.value[0]` 均使用 `kind=module_result`、`target=sql_generation`、`mode=must_not`，并将 `criteria.reference_queries` 设为空数组；未解歧义的 `criteria.allowed_final_statuses` 为 `needs_clarification`，越权请求为 `refused`。`task_raw_value[*].value.sql_required` 标为 `false`。不计算 SQL 执行和结果等价指标；生成行为及终态仍必须评价。
 
 ### 3-4 数据实例与结果比较要求
 
@@ -581,14 +609,14 @@ Schema 与参数,字段不存在、别名作用域错、缺参或绑定值错误
 
 ### 4-3 评估指标
 
-统一计分单位为一个来源任务的目标轮次。设 `N` 为主生成实验的预定样本数，`G` 为其中标注 `must_generate` 的样本集合，`B` 为 `must_not_generate` 集合。首版与最终版指标分别计算；没有 SQL、执行失败或达到预算仍未交付的样本保留在适用分母中。
+统一计分单位为一个来源任务的目标轮次。设 `N` 为主生成实验的预定样本数，`G` 为其中标注 `mode=must` 的样本集合，`B` 为 `mode=must_not` 集合。首版与最终版指标分别计算；没有 SQL、执行失败或达到预算仍未交付的样本保留在适用分母中。
 
 固定错误起点的纠错专项使用独立集合 `R`、独立实验。通过 `metadata.start_mode` 区分 `generation` 与 `repair_from_prefix`，不把预置错误或修正后的 SQL 计入首版生成主成绩。以下首版、最终版成对比较默认均指同一 `G`，专项另报。
 
 0. SQL 生成决策（门槛指标）
 
 ```csv
-,实际应生成 must_generate,实际不应生成 must_not_generate
+,实际应生成 mode=must,实际不应生成 mode=must_not
 提交或交付 SQL,TP,FP
 未提交或交付 SQL,FN,TN
 ```
@@ -805,7 +833,7 @@ Pass^k,同一目标任务独立运行 k 次全部通过的任务比例,不要求
 **统一分母与失败处理**
 
 - 适用分母为 0 时记 N/A，报告分子、分母、有效数、失败数和不可评估数。
-- `must_generate` 没有 SQL、候选错误、模型失败、预算中止不能用 N/A 隐藏。
+- `mode=must` 没有 SQL、候选错误、模型失败、预算中止不能用 N/A 隐藏。
 - 实际工具或连接失败保留在真实链路结果中并标注归因；预设异常按对应 Gold 评价。
 - 夹具错误、参考 SQL 无效、日志缺失或比较器失败使实验验证不完整，不给默认 0 或 1，且不能发布实验通过结论。
 - 结果截断先判断来源：候选违反预设资源预算属于候选失败，参考结果不可完整读取属于评测设计或基础设施问题。
@@ -887,11 +915,16 @@ def task(*, item, **kwargs):
     Returns:
         首版、最终版、参数、反馈、调用账本及终态组成的评测输出。
     """
+    rules = item.metadata["eval_rules"]
     with build_sql_generation_harness(
         item_id=item.id,
         run_config=RUN_CONFIG,
         fixture_suite=item.metadata["fixture_suite"],
-        evaluation_rules=item.metadata["evaluation_rules"],
+        runtime_limits={
+            "max_sql_attempts": rules["max_sql_attempts"],
+            "max_retries": rules["max_retries"],
+            "single_readonly_statement": rules["single_readonly_statement"],
+        },
     ) as harness:
         result = harness.run_agent(
             agent_entrypoint=run_sql_generation_agent,
@@ -919,11 +952,17 @@ def sql_evaluator(*, input, output, expected_output, metadata, **kwargs):
     Returns:
         首版、最终版及过程指标的评分列表。
     """
+    expectation = next(
+        entry for entry in expected_output["value"]
+        if entry["target"] == "sql_generation"
+    )
     scores = evaluate_sql_generation(
         input=input,
         output=output,
-        expected_output=expected_output,
-        metadata=metadata,
+        expectation=expectation,
+        raw_annotations=metadata["task_raw_value"],
+        eval_rules=metadata["eval_rules"],
+        fixture_suite=metadata["fixture_suite"],
     )
     evaluations = []
     for score in scores:

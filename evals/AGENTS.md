@@ -340,12 +340,13 @@ Trace 覆盖模式：
 
 ### 4.3 过程评测数据集
 
-字段以各方案 `3-2 评测样本集要求` 为准，不在本文件重复。共同要求：
+字段以各方案 `3-2 评测样本集要求` 为准，不在本文件重复。以下共同要求适用于意图识别、歧义澄清、业务检索及 SQL 生成；Schema Recall 的现有题库按 4.2 节的转换规则处理：
 
-- `input` 只放评测起点前 Agent 可见的内容；`expected_output` 放决策、Gold、允许终态。
-- `metadata` 至少包含 `task_type`、`difficulty`、`eval_dimensions`、`scenario_tags`、`evaluation_rules`；跨模块共享的样本再加 `source_case_id`、`target_turn`。
+- `input` 只放评测起点前 Agent 可见的内容；脚本化 `input.user_replies` 由驱动器按事件注入，不能提前发给 Agent。
+- `expected_output.value[]` 是标准动作数组：工具动作使用 `kind=tool_call` 和真实 Schema 的 `arguments`；没有固定工具契约的检索或 SQL 生成使用 `kind=module_result`、逻辑 `target`、`mode` 及业务 `criteria`，不得伪造工具参数。检索和生成决策以 `mode=must/may/must_not`（SQL 生成无 `may`）为唯一来源。
+- `metadata` 至少包含 `test_types`、`task`、`difficulty`、`eval_dimensions`、`scenario_tags`、`eval_rules`、`task_raw_value`；跨模块共享的样本再加 `source_case_id`，按原始轮次评分时加 `target_turn`。原始标注不可冒充模型可见输入；模块级 Gold 无统一工具 Schema 时 `tool_schema_version=null`。
 - 多轮样本把历史冻结进 `input.conversation_history` / `trace`，当前轮作为评分对象。
-- 负样本必须显式标注空 Gold 或“不应调用/不应生成”，不能用缺标注代替。
+- 采用标准动作数组的负样本必须用 `mode=must_not` 显式标注不应发生的动作；模块结果可留空参考 SQL 或证据，不能用缺标注代替。
 
 ### 4.4 质量门槛
 
@@ -354,7 +355,7 @@ Trace 覆盖模式：
 - 标注：≥2 人独立标注，Cohen's κ > 0.8 才采纳（Schema Recall 明确要求）。
 - 分布：难度与任务类型分别分层报告，单类任务 ≥10 条。
 - 规模：Schema Recall ≥100 条；歧义澄清、业务检索、SQL 生成首期 ≥200 条；意图识别按 T01–T09 分布建设，具体以方案为准。
-- 负样本：Schema Recall 占 10%–15%；检索类 `must_search` / `must_not_search` 各 ≥20 条，`may_search` 单列。
+- 负样本：Schema Recall 占 10%–15%；检索类 `expected_output.value[].mode=must` / `must_not` 各 ≥20 条，`may` 单列。
 - 覆盖：Schema Recall 要求每个物理表 ≥2 个样本、每个字段 ≥1 个、每对关联路径 ≥1 个；歧义澄清要求每个歧义类型 ≥10 条、多歧义组合 ≥5 条、无歧义对照 ≥30 条、多轮 ≥30 条。
 - 验收：字段齐全、ID 唯一、Gold 可执行/可核对、无越权对象；只做格式校验不算通过质量门槛。
 
