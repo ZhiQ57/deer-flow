@@ -370,6 +370,8 @@ If you prefer running services locally:
 Prerequisite: complete the "Configuration" steps above first (`make setup`). `make dev` requires a valid `config.yaml` in the project root. Set `DEER_FLOW_PROJECT_ROOT` to define that root explicitly, or `DEER_FLOW_CONFIG_PATH` to point at a specific config file. Runtime state defaults to `.deer-flow` under the project root and can be moved with `DEER_FLOW_HOME`; skills default to `skills/` under the project root and can be moved with `DEER_FLOW_SKILLS_PATH`. Run `make doctor` to verify your setup before starting.
 On Windows, run the local development flow from Git Bash. Native `cmd.exe` and PowerShell shells are not supported for the bash-based service scripts, and WSL is not guaranteed because some scripts rely on Git for Windows utilities such as `cygpath`.
 
+For Windows Docker Desktop with Gateway and Next.js running on the host, see the [Windows local startup guide](docs/guide/windows-local-start.md). Its separate `deerflow-dev` Compose project starts only PostgreSQL (`7432`), Redis (`7379`), and Nginx (`2026`); VS Code or PowerShell starts the host Gateway (`7001`) and frontend (`7000`). The guide includes migration of existing PostgreSQL data from an anonymous data volume. These ports apply to that Windows workflow, not to `make dev` or the full Docker stack below.
+
 The documented root `make` commands invoke repository `.sh` files through Bash
 explicitly. They therefore continue to work from source archives or filesystems
 that do not preserve POSIX executable bits. When calling a script directly from

@@ -14,7 +14,7 @@
         "--host",
         "0.0.0.0",
         "--port",
-        "8001",
+        "7001",
         "--loop",
         "asyncio:SelectorEventLoop"
       ],
@@ -28,6 +28,29 @@
       "console": "integratedTerminal",
       "justMyCode": false,
       "subProcess": true
+    },
+    {
+      "name": "DeerFlow: Windows本地调试 Frontend",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/frontend/scripts/dev.mjs",
+      "args": ["--hostname", "0.0.0.0", "--port", "7000"],
+      "cwd": "${workspaceFolder}/frontend",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "DEER_FLOW_INTERNAL_GATEWAY_BASE_URL": "http://127.0.0.1:7001"
+      },
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true
+    }
+  ],
+  "compounds": [
+    {
+      "name": "DeerFlow: Windows本地 Gateway + Frontend",
+      "configurations": [
+        "DeerFlow: Windows本地调试 Gateway",
+        "DeerFlow: Windows本地调试 Frontend"
+      ]
     }
   ]
 }

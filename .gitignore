@@ -64,6 +64,8 @@ coverage/
 
 .claude/
 skills/custom/*
+# Windows 本地启动产生的临时进程日志
+/logs/windows-*.log
 # logs/
 log/
 debug.log

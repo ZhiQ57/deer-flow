@@ -394,7 +394,7 @@ scheduler:
   recursion_limit: 1000
 stream_bridge:
   type: redis
-  redis_url: redis://localhost:6379/0
+  redis_url: redis://127.0.0.1:7379/0
   queue_maxsize: 256
 recursion_limit: 100
 subagent_runtime:
