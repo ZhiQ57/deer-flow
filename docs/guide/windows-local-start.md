@@ -1,360 +1,139 @@
-﻿# DeerFlow 本地手动启动手册（Docker 仅部署中间件）
+﻿# Windows 本地启动：Docker Desktop 管理中间件
 
-本文记录当前推荐的 Windows 本地启动方式：**前端和后端在宿主机运行，Docker 只运行中间件**。
+Gateway 和 Next.js 在 Windows 宿主机运行；Docker Desktop 的 Compose 项目 `deerflow-dev` 仅包含 PostgreSQL、Redis、Nginx 三个容器。项目名使用小写是 Docker Compose 的命名要求。本指南中的 PowerShell 命令均从仓库根目录执行。
 
-本文约定先在 DeerFlow 仓库根目录执行命令；启动参数统一从根目录 `.env` 和
-`frontend/.env` 读取，不在 PowerShell 中逐项设置 `$env:` 临时变量。
-Windows 的 `.env` 路径请填写绝对路径并使用正斜杠（例如
-`D:/A-PythonWork/AOpenGithub/deer-flow/config.dev.yaml`）。不要写
-`$DEER_FLOW_PROJECT_ROOT\config.dev.yaml`，VS Code 的 `envFile` 不会可靠展开这种
-变量拼接。
-切换测试或生产配置时，同时修改 `.env` 中的
-`DEER_FLOW_CONFIG_PATH`（对应绝对路径）和 `DEER_FLOW_CONFIG_FILE`，并确保只保留
-一组未注释的阶段配置。
+| 服务 | 运行位置 | 宿主机地址 |
+| --- | --- | --- |
+| PostgreSQL 15 | Docker | `127.0.0.1:7432` |
+| Redis 7 | Docker | `127.0.0.1:7379` |
+| Nginx | Docker | `http://127.0.0.1:2026` |
+| Gateway | Windows | `http://127.0.0.1:7001` |
+| Next.js | Windows | `http://127.0.0.1:7000` |
 
-- 宿主机后端：Gateway API，端口 `8001`
-- 宿主机前端：Next.js，端口 `3000`
-- Docker 中间件：Redis，端口 `6379`
-- Docker 中间件：Nginx，统一入口端口 `2026`
-- 浏览器入口：`http://localhost:2026`
+浏览器统一从 `http://localhost:2026` 进入。Nginx 容器通过 Docker Desktop 的 `host.docker.internal` 访问宿主机上的 Gateway 和前端；因此两者需监听 `0.0.0.0`。Compose 仅将容器端口绑定到宿主机回环地址，不向局域网开放数据库、Redis 或 Nginx。此启动方式不使用 `make dev`、`make docker-start` 或 Linux 的 host network Compose：它们会另行启动 Nginx，或将前后端也放入容器。
 
-> 注意：不要使用 `make docker-start` 启动本项目，否则会把 frontend/gateway 也放进 Docker 容器。本文方式只用 Docker 跑 Redis 和 Nginx。
+## 1. 准备配置并检查端口
 
-## 1. 前置条件
+启动 Docker Desktop，在根目录 `.env` 设置 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`，并指向本地配置文件 `DEER_FLOW_CONFIG_PATH`（Windows 下使用绝对路径和正斜杠）。`config.dev.yaml` 的数据库配置应使用 `$DATABASE_URL`。需要同时检查以下本地文件。根目录 `.env` 与 `config.dev.yaml` 在当前仓库是已跟踪文件，可能包含真实凭据；请勿将凭据或改动后的敏感连接串提交、推送到远端：
 
-查看系统是否残留服务没有关闭：
+- 根目录 `.env`：`DATABASE_URL` 指向 `127.0.0.1:7432`，`DEER_FLOW_STREAM_BRIDGE_REDIS_URL` 指向 `redis://127.0.0.1:7379/0`，`DEER_FLOW_INTERNAL_GATEWAY_BASE_URL` 指向 `http://127.0.0.1:7001`。
+- `config.dev.yaml`：若 `stream_bridge.redis_url` 写了固定地址，将端口改为 `7379`；显式 YAML 地址优先于环境变量。
+- `frontend/.env`：`DEER_FLOW_INTERNAL_GATEWAY_BASE_URL` 指向 `http://localhost:7001`。浏览器仍通过 Nginx 同源 `/api` 访问 Gateway；需要直接从 `7000` 访问前端时，将 `http://localhost:7000` 加入可信来源和 Gateway CORS 来源。
 
-# 先查看服务
-```powershell
-Get-NetTCPConnection -LocalPort 8001,3000,2026 -State Listen -ErrorAction SilentlyContinue |
-  Select-Object LocalAddress,LocalPort,State,OwningProcess
-```
-
-# 停后端 8001、前端 3000、Nginx 2026
-```powershell
-Get-NetTCPConnection -LocalPort 8001,3000,2026 -State Listen -ErrorAction SilentlyContinue |
-  Select-Object -ExpandProperty OwningProcess -Unique |
-  ForEach-Object { Stop-Process -Id $_ -Force }
-```
-需要已准备：
-
-1. Docker Desktop 已启动。
-2. `config.dev.yaml` 已配置模型（Windows 本地开发阶段配置）。
-3. `extensions_config.json` 存在。
-4. 后端依赖已安装：
+检查五个端口是否被系统应用占用或排除：
 
 ```powershell
 Set-Location (git rev-parse --show-toplevel)
-Set-Location .\backend
-uv sync --all-packages
-uv sync --all-packages --extra postgres
+Get-NetTCPConnection -LocalPort 7432,7379,2026,7001,7000 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object LocalAddress,LocalPort,OwningProcess
+netsh interface ipv4 show excludedportrange protocol=tcp
+netsh interface ipv6 show excludedportrange protocol=tcp
 ```
 
-5. 前端依赖已安装：
+旧版独立 Nginx 容器可能占用 `2026`；先按下文迁移，再启动新项目。不要按端口盲目终止其他应用。首次准备依赖：在 `backend/` 执行 `uv sync --all-packages --extra postgres --extra redis`，在 `frontend/` 执行 `pnpm install`。
+
+## 2. 首次迁移现有 PostgreSQL 数据
+
+**已经迁移过的用户跳过本节**，直接进入第 3 节。旧 `deerflow-postgres` 同时挂载了两个卷：父目录 `/var/lib/postgresql` 的 `postgres_data`，以及数据目录 `/var/lib/postgresql/data` 的匿名卷。真正的数据库文件在后者。只复用 `postgres_data` 会启动空数据库。
+
+先停止正在向旧数据库写入的 Gateway 和其他客户端，并记录旧集群的数据库/表数量。以下命令会正常停掉旧 PostgreSQL，然后将匿名数据卷冷复制到 `deerflow-dev-postgres-data`，保留旧卷供回退。复制 1 GB 以上数据需要一定时间；中途失败不要启动新 PostgreSQL：
 
 ```powershell
 Set-Location (git rev-parse --show-toplevel)
-Set-Location .\frontend
-pnpm install
-```
-
-如果 `pnpm install` 提示 ignored builds，可执行：
-
-```powershell
-pnpm approve-builds --all
-pnpm install
-```
-
-## 2. 启动 Redis 中间件（Docker）
-
-```powershell
-Set-Location (git rev-parse --show-toplevel)
-if (docker ps -a --filter "name=^/deer-flow-redis$" --format "{{.Names}}" |
-    Select-String -Quiet "^deer-flow-redis$") {
-  docker start deer-flow-redis
-} else {
-  docker run -d `
-    --name deer-flow-redis `
-    -p 6379:6379 `
-    -v deer-flow-redis-data:/data `
-    --restart unless-stopped `
-    redis:7-alpine redis-server --appendonly yes
+$oldPg = (docker inspect deerflow-postgres | ConvertFrom-Json)[0]
+$sourceVolume = ($oldPg.Mounts | Where-Object Destination -eq '/var/lib/postgresql/data').Name
+if (-not $sourceVolume) { throw '未找到旧数据库的数据卷，停止迁移' }
+if (@(docker volume ls --format '{{.Name}}') -contains 'deerflow-dev-postgres-data') {
+  throw '目标数据卷已存在；先确认其内容，不要覆盖原有数据'
 }
 
+docker stop deerflow-postgres
+if ($LASTEXITCODE -ne 0) { throw '停止旧数据库失败' }
+docker volume create deerflow-dev-postgres-data
+if ($LASTEXITCODE -ne 0) { throw '创建目标卷失败' }
+docker run --rm --network none `
+  -v "${sourceVolume}:/source:ro" `
+  -v deerflow-dev-postgres-data:/target `
+  nginx:latest cp -a /source/. /target/
+if ($LASTEXITCODE -ne 0) { throw '数据库文件复制失败；旧数据卷仍保留' }
+
+$sourceHash = (docker run --rm --network none -v "${sourceVolume}:/source:ro" `
+  nginx:latest sh -c 'tar --sort=name -C /source -cf - . | sha256sum').Split(' ')[0]
+$targetHash = (docker run --rm --network none -v deerflow-dev-postgres-data:/source:ro `
+  nginx:latest sh -c 'tar --sort=name -C /source -cf - . | sha256sum').Split(' ')[0]
+if ($sourceHash -ne $targetHash) { throw '数据卷校验失败；不要启动新数据库' }
+```
+
+检查通过后再移除旧容器以释放名称和旧端口；**不要**添加 `-v`，以保留原始匿名数据卷和 `postgres_data`：
+
+```powershell
+docker rm deerflow-postgres
+docker stop deer-flow-redis deer-flow-nginx-host
+docker rm deer-flow-redis deer-flow-nginx-host
+```
+
+Redis 使用原有命名卷 `deer-flow-redis-data`。如需全新安装且没有旧 PostgreSQL，可以直接 `docker volume create deerflow-dev-postgres-data`，再创建或确认 `deer-flow-redis-data`；首次初始化 PostgreSQL 时需要 `.env` 中的三个 `POSTGRES_*` 值。不要对旧卷执行 `docker volume rm` 或 `docker volume prune`。
+
+## 3. 启动三个 Docker 容器
+
+```powershell
+Set-Location (git rev-parse --show-toplevel)
+docker compose --env-file .env -f docker/docker-compose-windows-local.yaml up -d --wait
+docker compose --env-file .env -f docker/docker-compose-windows-local.yaml ps
+```
+
+Docker Desktop 中应出现名为 `deerflow-dev` 的项目，下属 `deerflow-postgres`、`deer-flow-redis`、`deer-flow-nginx-host` 三个容器。检查服务和旧数据：
+
+```powershell
 docker exec deer-flow-redis redis-cli ping
+docker exec deerflow-postgres pg_isready
+$pgUser = (docker exec deerflow-postgres printenv POSTGRES_USER).Trim()
+docker exec deerflow-postgres psql -U $pgUser -d postgres -Atc 'SELECT system_identifier FROM pg_control_system()'
+Test-NetConnection 127.0.0.1 -Port 7432 -InformationLevel Quiet
+Test-NetConnection 127.0.0.1 -Port 7379 -InformationLevel Quiet
+Test-NetConnection 127.0.0.1 -Port 2026 -InformationLevel Quiet
 ```
 
-期望输出：
+`pg_control_system()` 的标识应与迁移前的旧数据库一致；还应核对业务数据库与表数量。`docker port` 只显示 Docker 记录的映射；如 Windows TCP 检查失败，应先看 `docker compose ... ps`、容器日志及 Docker Desktop 状态。
 
-```text
-PONG
-```
+## 4. 在 Windows 启动 Gateway 和前端
 
-## 3. 启动后端 Gateway（宿主机控制台）
-
-新开一个 PowerShell 窗口，执行：
+在两个独立 PowerShell 窗口运行以下命令：
 
 ```powershell
 Set-Location (git rev-parse --show-toplevel)
 Set-Location .\backend
-uv run --env-file ../.env uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop asyncio:SelectorEventLoop
+uv run --no-sync --env-file ../.env uvicorn app.gateway.app:app --host 0.0.0.0 --port 7001 --loop asyncio:SelectorEventLoop
 ```
-
-`uv run --env-file ../.env` 会把 `.env` 中选定的 `config.dev.yaml`、数据库、Redis、
-TableRAG 和 CORS 配置传给 Gateway。
-
-验证：
-
-```powershell
-curl.exe http://localhost:8001/health
-```
-
-期望返回：
-
-```json
-{"status":"healthy","service":"deer-flow-gateway"}
-```
-
-MySQL数据库容器: 
-```text
-Host: 127.0.0.1
-Port: 3308
-User: root
-Password: root@123456
-数据库名：text2sql
-```
-
-DeerFlow Postgresql数据库容器:
-```powershell
-Set-Location (git rev-parse --show-toplevel)
-docker run -d --name deerflow-postgres --env-file .env `
-  -p 127.0.0.1:55432:5432 `
-  -v postgres_data:/var/lib/postgresql/data `
-  --restart unless-stopped `
-  postgres:15
-```
-
-`POSTGRES_USER`、`POSTGRES_PASSWORD` 和 `POSTGRES_DB` 请写在根目录 `.env`；
-不要在 `docker run` 命令中重复写数据库凭据。
-
-> 修改 `config.dev.yaml` 的模型配置后，需要重启后端 Gateway。
-
-### 3.1 使用 VS Code 调试 Gateway
-
-仓库提供 `.vscode/launch.json`，其工作目录、环境变量和 Uvicorn 参数与上面的
-PowerShell 手动启动方式一致。该配置只启动宿主机 Gateway，不会启动前端或
-任何 Docker 服务。
-
-使用前确认：
-
-1. 使用 VS Code 打开 DeerFlow 仓库根目录，而不是只打开 `backend` 目录。
-2. 已安装 VS Code Python 调试扩展。
-3. 已执行 `uv sync --all-packages --extra redis`，并存在
-   `backend\.venv\Scripts\python.exe`。
-4. Redis、前端和 Nginx 是否启动由开发者自行决定；Gateway 调试配置不会管理它们。
-
-启动调试：
-
-1. 在需要调试的 DeerFlow Python 源码中设置断点。
-2. 打开 VS Code“运行和调试”面板。
-3. 选择 `DeerFlow: Windows本地调试 Gateway`。
-4. 按 `F5` 启动。
-
-调试器等价执行：
-
-```powershell
-Set-Location (git rev-parse --show-toplevel)
-Set-Location .\backend
-uv run --env-file ../.env uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --loop asyncio:SelectorEventLoop
-```
-
-其中 VS Code 会直接使用 `uv` 创建的
-`backend\.venv\Scripts\python.exe` 启动 `uvicorn` 模块，以便断点进入
-DeerFlow 内部代码。配置没有启用 `--reload`，避免热重载子进程影响断点稳定性；
-修改代码后可停止调试并再次按 `F5`。
-
-如果调试终端的第一段命令仍显示系统解释器，例如：
-
-```text
-C:\Users\<用户名>\AppData\Local\Programs\Python\Python311\python.exe
-```
-
-说明 VS Code Python 扩展仍在使用之前缓存的全局解释器。仓库配置已经同时固定
-目标进程、Debug Adapter 和 Debug Launcher 使用
-`backend\.venv\Scripts\python.exe`。停止当前调试后，执行一次：
-
-1. `Ctrl+Shift+P` 打开命令面板。
-2. 执行 `Developer: Reload Window`。
-3. 重新选择 `DeerFlow: Windows本地调试 Gateway` 并按 `F5`。
-
-正常情况下，调试终端命令开头应为：
-
-```text
-D:\A-PythonWork\AOpenGithub\deer-flow\backend\.venv\Scripts\python.exe
-```
-
-## 4. 启动前端 Frontend（宿主机控制台）
-
-再新开一个 PowerShell 窗口，执行：
 
 ```powershell
 Set-Location (git rev-parse --show-toplevel)
 Set-Location .\frontend
-uv run --env-file ../.env python ../scripts/pnpm.py dev
+uv run --no-sync --env-file ../.env python ../scripts/pnpm.py dev -- --hostname 0.0.0.0 --port 7000
 ```
 
-前端启动参数由 `frontend/.env` 和根目录 `.env` 提供；需要调整入口、可信来源或
-开发域名时，修改对应 `.env` 后重启前端。
+也可在 VS Code 的“运行和调试”中选择 `DeerFlow: Windows本地 Gateway + Frontend` 并按 `F5`。该复合配置仅启动宿主机进程；先按第 3 节启动容器。如果 Python 调试器仍选择全局 Python，重载 VS Code 窗口后重试；后端配置固定使用 `backend/.venv/Scripts/python.exe`。
 
-验证：
+检查用户可访问的入口：
 
 ```powershell
-curl.exe http://localhost:3000
+curl.exe -fsS http://127.0.0.1:7001/health/ready
+curl.exe -fsS http://127.0.0.1:2026/health/ready
+curl.exe -I http://127.0.0.1:7000/
+curl.exe -I http://127.0.0.1:2026/
 ```
 
-返回 HTML 即代表前端启动成功。
+前端入口 `http://localhost:2026`；首次配置管理员时打开 `/setup`，已有用户打开 `/login`。启动时若入口暂时返回 502，先确认宿主机 Gateway 和前端已分别监听 7001、7000，再检查 Nginx 容器到 `host.docker.internal` 的连接。
 
-## 5. 启动 Nginx 中间件（Docker）
+## 5. 停止与故障排查
 
-Nginx 运行在 Docker 中，但代理到宿主机的前端和后端。
+Gateway 和前端在各自终端按 `Ctrl+C` 停止；调试进程在 VS Code 停止调试。仅停止三个容器：
 
 ```powershell
 Set-Location (git rev-parse --show-toplevel)
-New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
-((Get-Content ".\docker\nginx\nginx.local.conf" -Raw -Encoding UTF8).
-  Replace("error_log logs/nginx-error.log warn;", "error_log /dev/stderr warn;").
-  Replace("pid logs/nginx.pid;", "pid /tmp/nginx.pid;").
-  Replace("access_log logs/nginx-access.log;", "access_log /dev/stdout;").
-  Replace("error_log logs/nginx-error.log;", "error_log /dev/stderr;").
-  Replace("server 127.0.0.1:8001;", "server host.docker.internal:8001;").
-  Replace("server 127.0.0.1:3000;", "server host.docker.internal:3000;")) |
-  Set-Content -Path ".\logs\nginx-host.conf" -Encoding UTF8
-
-docker rm -f deer-flow-nginx-host 2>$null
-
-docker run -d `
-  --name deer-flow-nginx-host `
-  -p 2026:2026 `
-  --add-host=host.docker.internal:host-gateway `
-  -v "${PWD}\logs\nginx-host.conf:/etc/nginx/nginx.conf:ro" `
-  --restart unless-stopped `
-  nginx:latest
+docker compose --env-file .env -f docker/docker-compose-windows-local.yaml stop
 ```
 
-验证统一入口：
+再次启动用第 3 节的 `up -d --wait`。**不要使用 `down -v`**，这会删除非外部数据卷；本配置将 PostgreSQL 和 Redis 指向明确的外部命名卷以防误删。
 
-```powershell
-curl.exe http://localhost:2026/health
-curl.exe http://localhost:2026
-```
-
-浏览器打开：
-
-```text
-http://localhost:2026
-```
-
-首次部署或无管理员账号时，进入：
-
-```text
-http://localhost:2026/setup
-```
-
-已有账号时，进入：
-
-```text
-http://localhost:2026/login
-```
-
-本地测试账号和密码统一写为：
-
-```text
-账号：test123@user.com
-密码：test123@user.com
-```
-
-如果是首次初始化管理员账号，在 `/setup` 页面也使用上面的账号和密码创建测试账号。
-
-## 6. 查看当前运行状态
-
-```powershell
-# 查看宿主机端口进程
-foreach ($port in 8001,3000,2026,6379) {
-  $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-  if ($conns) {
-    foreach ($c in $conns) {
-      $p = Get-CimInstance Win32_Process -Filter "ProcessId = $($c.OwningProcess)" -ErrorAction SilentlyContinue
-      "PORT $port PID=$($c.OwningProcess) NAME=$($p.Name) CMD=$($p.CommandLine)"
-    }
-  } else {
-    "PORT $port no Windows listener"
-  }
-}
-
-# 查看 DeerFlow 中间件容器
-docker ps --filter "name=deer-flow" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
-```
-
-正常情况下：
-
-- `8001`：宿主机 `python.exe` / `uvicorn`
-- `3000`：宿主机 `node.exe` / Next.js
-- `2026`：Docker Nginx 映射端口
-- `6379`：Docker Redis 映射端口
-
-## 7. 停止服务
-
-如果后端和前端是控制台启动，优先在对应窗口按 `Ctrl+C`。
-
-停止 Docker 中间件：
-
-```powershell
-docker stop deer-flow-nginx-host deer-flow-redis
-```
-
-如需强制停止宿主机前后端，先确认端口进程属于本项目，再执行：
-
-```powershell
-foreach ($port in 8001,3000) {
-  $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-  foreach ($c in $conns) {
-    $p = Get-CimInstance Win32_Process -Filter "ProcessId = $($c.OwningProcess)" -ErrorAction SilentlyContinue
-    if ($p.CommandLine -like "*D:\A-PythonWork\AOpenGithub\deer-flow*") {
-      Stop-Process -Id $c.OwningProcess -Force
-    }
-  }
-}
-```
-
-## 8. 常见问题
-
-### 8.1 为什么有两个 Docker 容器？
-
-因为本方案只把中间件放进 Docker：
-
-- `deer-flow-redis`：Redis stream bridge 中间件。
-- `deer-flow-nginx-host`：统一入口反向代理中间件。
-
-前后端不在 Docker 内运行。
-
-### 8.2 为什么不要让前端直连 `localhost:8001`？
-
-标准入口是 `http://localhost:2026`。前端通过当前域名访问 `/api`，由 Nginx 转发到 Gateway，避免浏览器跨域和 CSRF 配置混乱。
-
-### 8.3 修改模型配置后要重启什么？
-
-只需要重启后端 Gateway。Redis、Nginx、前端通常不需要重启。
-
-### 8.4 `config.dev.yaml` 没有模型会怎样？
-
-Gateway 可以启动，但聊天无法正常调用模型。日志会提示：
-
-```text
-No models are configured in config.dev.yaml
-```
-
-需要在 `config.dev.yaml` 的 `models:` 下配置至少一个模型。
-
-### 8.5 不要绕过终端安全软件
-
-如果安全软件隔离了某个源码文件，不要关闭安全软件或强行加白名单。应先人工审查代码来源与内容，再决定是否恢复。
+此编排仅用于 Windows Docker Desktop，本仓库常规 `make dev`、全栈 Docker Compose 和 Linux 本地部署仍使用各自的端口与启动方式。

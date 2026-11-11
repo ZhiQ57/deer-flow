@@ -97,6 +97,20 @@ port is the entire external surface. Any new published port needs an explicit bi
 address; `backend/tests/test_compose_default_bind_host.py` pins this for every service in
 both compose files.
 
+Windows Docker Desktop has an independent, opt-in local workflow in
+`docker/docker-compose-windows-local.yaml`: the `deerflow-dev` project contains only
+PostgreSQL, Redis, and Nginx, published on loopback ports `7432`, `7379`, and
+`2026`. Host-run Gateway (`7001`) and Next.js (`7000`) are reached from the Nginx
+container through `host.docker.internal`. It loads the existing
+`docker/nginx/nginx.local.conf` proxy rules with container-safe paths and host
+upstream ports. PostgreSQL and Redis use explicit external named volumes; PGDATA
+must be mounted at `/var/lib/postgresql/data`, never only at its parent. Legacy
+standalone PostgreSQL may have an anonymous child volume even if it also mounts
+`postgres_data` at the parent. Migrate that child volume while PostgreSQL is
+stopped, and verify the cold copy before starting the new project; see
+`docs/guide/windows-local-start.md` and `backend/tests/test_windows_local_compose.py`.
+This workflow does not alter the `make dev` ports or the full-stack Compose files.
+
 ## Repository Map
 
 ```
