@@ -319,3 +319,4 @@
 - 删除 `subagents/tool_provider.py`、`sql_execution/tool_provider.py`、`test_gateway_sql_tool_provider.py`、`test_mcp_agent_allowlist.py` 及 `filter_mcp_tools`。
 - 后端定向回归 942 passed / 22 skipped（使用 `config.test.yaml`）；ruff check/format 通过；前端 `pnpm check` 与 68 个相关单测通过。
 - 依赖已通过 `uv sync --locked --extra postgres` 和 `pnpm install --frozen-lockfile` 同步。
+- 合并提交为 `69448cb6b`，已快进本地 `dev`，未推送远端。
