@@ -63,9 +63,6 @@ evals/
 │   └── process/                  # 过程评测
 │       ├── intent_evals/         # 意图识别
 │       └── schema_recall_evals/  # SQL Schema Recall
-├── extensions/                   # 被测 MCP Server 的评测副本/快照（当前为空）
-│   ├── vfssql-mcp-server/
-│   └── example-mcp-server/
 └── ...
 ```
 
@@ -104,7 +101,7 @@ evals/
 | --- | --- | --- | --- | --- | --- |
 | 端到端 SQL | `task/end-to-end/SQL/` | `01`（占位） | 81 题 JSON（已入库） | 待建 | 待建 |
 | SQL Schema Recall | `task/process/schema_recall_evals/` | `03-...SQL Schema Recall 评测.md` | 待建 | 待建 | 待建 |
-| 意图识别 | `task/process/intent_evals/` | `03-...意图识别评测.md` | 待建 | 待建 | 待建 |
+| 意图识别 | `task/process/intent_evals/` | `03-...意图识别评测.md` | v01 已建（94 条） | 导入脚本已建 | 待建 |
 | 歧义澄清 | 待建 `clarify_evals/` | `03-...歧义澄清评测（意图前）.md` | 规划 | 规划 | 规划 |
 | 业务检索（意图前） | 待建 `retrieval_pre_intent_evals/` | `03-...业务检索能力评测-意图前.md` | 规划 | 规划 | 规划 |
 | 业务检索（意图后） | 待建 `retrieval_post_intent_evals/` | `03-...业务检索能力评测-意图后.md` | 规划 | 规划 | 规划 |
@@ -347,6 +344,18 @@ Trace 覆盖模式：
 - `metadata` 至少包含 `test_types`、`task`、`difficulty`、`eval_dimensions`、`scenario_tags`、`eval_rules`、`task_raw_value`；跨模块共享的样本再加 `source_case_id`，按原始轮次评分时加 `target_turn`。原始标注不可冒充模型可见输入；模块级 Gold 无统一工具 Schema 时 `tool_schema_version=null`。
 - 多轮样本把历史冻结进 `input.conversation_history` / `trace`，当前轮作为评分对象。
 - 采用标准动作数组的负样本必须用 `mode=must_not` 显式标注不应发生的动作；模块结果可留空参考 SQL 或证据，不能用缺标注代替。
+
+### 4.3.1 意图标签必须使用用户业务语言（硬性规则）
+
+**`publish_intent_label` 呈现的是对用户需求的理解。所有意图标签必须站在用户视角表达业务对象、指标、分组、筛选、时间与呈现要求；严禁把标签改写为数据库 Schema 或 SQL 执行参数。** 此规则同时适用于数据集制作、清洗、去重、版本迁移、参数投影、导入 Langfuse、评测器与示例文档。不得以“规范化”“英文投影”“匹配方便”为由改变原始业务标注的层级。
+
+- **业务名称**：本项目中文题库使用“治疗周期”“患者”“主治医生”“临床妊娠率”等用户能理解的名称。禁止在标签值中使用 `treatment_cycle`、`medical_id`、`cycle_type`、物理表名、列名、关联键或表关联路径；只把物理名翻译成中文表结构说明同样不合格。
+- **业务取值**：分类条件使用“新鲜周期”“已移植”“供精人工授精”等业务含义。禁止将“ICSI”写成数据库编码 `2`、将“已移植”写成 `4`，或根据未检索的数据库内容补出内部枚举。用户明确给出的年龄、孕周、数量、日期、病历号等数值/编号正常保留；IVF、ICSI、PGT、3PN 等领域通用术语可以保留。
+- **指标口径**：用“统计患者人数，每位患者只计一次”“临床妊娠周期数占移植周期数的百分比”等业务描述。禁止把 `COUNT(DISTINCT patient_id)`、`SUM(CASE WHEN ...)` 等 SQL 或数据库字段表达式放进意图标签，即使列名改成中文也不允许。
+- **结构与内容分开**：JSON 键名、`kind`、`target`、`mode`、排序/分组控制枚举及工具协议结构遵守实际工具 Schema；这些结构字段保持英文不等于允许业务内容使用数据库标识。不得为中文展示擅自改名 JSON 键或真实工具。
+- **标注一致性**：`expected_output.value[].arguments` 与对应 `metadata.task_raw_value[].value` 必须保持同一份业务语义；任何投影都不得额外引入物理实体、字段、取值编码或 SQL。清洗时优先保留原始业务表达；原样本已有实现细节时，结合 query 与可见历史修正，并记录修订依据，不能仅复制旧 SQL。
+- **阶段边界**：意图标签阶段只确认需求，不访问数据库取结果或预填最终答案；Schema/值映射、关联与 SQL 属于意图后检索/SQL 生成阶段，真实数据内容在最终业务回答阶段呈现。已冻结的工具错误反馈可以保留在 `input.trace` 中，不能转成标签内容。
+- **验收拦截**：导入前必须检查专项集、master、原始标注及历史中的已发布标签；发现物理名称、内部编码或 SQL 标签必须校验失败。Langfuse 更新后逐条回读比对内容，不能只核对条数。后续 Agent 修改本类数据时必须先检查本条规则和原始业务标注。
 
 ### 4.4 质量门槛
 

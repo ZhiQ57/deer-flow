@@ -1,0 +1,78 @@
+# 意图识别评测 v01：效率与成本（EC）维度配置
+# EC 维度不依赖逐条业务样本，直接从 Langfuse Trace/Observation 的用量字段聚合。
+# 具体阈值由实验显式固定，不在数据集版本里写死。
+version: v01
+dimension: EC/efficiency_cost
+dataset: intent_evals/intent_master_v01
+scope:
+  level: run
+  group_by:
+    - metadata.task
+    - metadata.difficulty
+    - metadata.eval_dimensions
+  # 失败样本仍计入效率统计，但单列为 error/timeout，避免污染成功样本均值。
+  separate_status:
+    - error
+    - timeout
+
+metrics:
+  token_consumption:
+    description: 单次意图识别任务的 Token 消耗
+    source_fields:
+      - usage.input_tokens
+      - usage.output_tokens
+    aggregation:
+      - average
+      - p95
+    unit: tokens
+    threshold: null
+
+  latency:
+    description: 从用户输入到 publish_intent_label 返回的端到端延迟
+    source_fields:
+      - latency
+    aggregation:
+      - p50
+      - p95
+    unit: milliseconds
+    threshold: null
+
+  tool_call_count:
+    description: 单次任务内工具调用次数，用于观察冗余步骤与重复调用
+    source_fields:
+      - observations
+    aggregation:
+      - average
+      - p95
+    derived:
+      duplicate_call_rate: 重复调用次数 / 工具调用总次数
+    unit: count
+    threshold: null
+
+  cost:
+    description: 单次任务成本，按实验固定的模型单价换算
+    formula: input_tokens * input_price + output_tokens * output_price
+    requires:
+      - model_pricing
+    aggregation:
+      - average
+    unit: currency
+    threshold: null
+
+  retry_rate:
+    description: 失败重试率
+    formula: retry_count / run_count
+    aggregation:
+      - rate
+    unit: ratio
+    threshold: null
+
+report:
+  # EC 指标按 harness、模型、Prompt/工具版本分组报告，不与功能正确性合成总分。
+  group_by:
+    - harness
+    - model
+    - prompt_version
+    - tool_schema_version
+  # 指标缺失时跳过并标注，不按 0 分处理。
+  missing_metric: skip
