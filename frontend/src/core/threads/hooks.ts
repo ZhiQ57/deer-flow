@@ -10,18 +10,37 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 
 import { getAPIClient } from "../api";
+import { GatewayApiError } from "../api/errors";
 import { fetch } from "../api/fetcher";
+import { AuthQueryScopeContext } from "../auth/query-scope";
 import { getBackendBaseURL } from "../config";
+import { useRunInputsEnabled } from "../features";
 import { useI18n } from "../i18n/hooks";
-import { getMessageRunId } from "../messages/run-duration";
+import type { Locale } from "../i18n/locale";
+import type { Translations } from "../i18n/locales";
 import {
-  hasContent,
+  extractHitlApprovalRequests,
+  type HitlApprovalRequest,
+  type HitlApprovalResponse,
+} from "../messages/human-input";
+import { getMessageRunId, parseRunStartTime } from "../messages/run-duration";
+import { isErrorToolMessage } from "../messages/tool-error";
+import { indexToolResults } from "../messages/tool-result";
+import {
+  extractContentFromMessage,
   hasToolCalls,
   isHiddenFromUIMessage,
 } from "../messages/utils";
@@ -32,7 +51,6 @@ import { isSidecarThread, SIDECAR_METADATA_KEY } from "../sidecar/thread";
 import { useSubtaskContext, useUpdateSubtask } from "../tasks/context";
 import { taskEventToSubtaskUpdate } from "../tasks/lifecycle";
 import { messageToStep } from "../tasks/steps";
-import type { UploadedFileInfo } from "../uploads";
 import { promptInputFilePartToFile, uploadFiles } from "../uploads";
 import { uuid } from "../utils/uuid";
 
@@ -54,6 +72,13 @@ import {
   trustedMessageSeq,
 } from "./message-order";
 import {
+  fetchRunInputState,
+  fetchRunInputs,
+  runInputsKey,
+  submitRunInput,
+  type RunInputMode,
+} from "./run-inputs";
+import {
   hasRenderedThreadStateUpdate,
   reduceThreadStateUpdates,
 } from "./stream-state";
@@ -67,9 +92,17 @@ import {
   retainThreadTokenUsagePlaceholder,
   threadTokenUsageQueryKey,
 } from "./token-usage";
+import {
+  approvalsKey,
+  combineNativeApprovals,
+  fetchToolApprovals,
+  submitLiveApproval,
+  useToolApprovalFeature,
+} from "./tool-approvals";
 import type {
   AgentThread,
   AgentThreadState,
+  AppRun,
   RunMessage,
   ThreadTokenUsageResponse,
 } from "./types";
@@ -81,24 +114,125 @@ import {
 export type ThreadStreamOptions = {
   threadId?: string | null | undefined;
   displayThreadId?: string | null | undefined;
+  /**
+   * Assistant identity sent to the Gateway for run admission and execution.
+   * Default-chat and sidecar callers use the lead agent; custom-agent pages
+   * pass their stable agent name so server-side capability checks see the same
+   * assistant that the runtime loads from the request context.
+   */
+  assistantId?: string;
   context: LocalSettings["context"];
   isMock?: boolean;
   onSend?: (threadId: string) => void;
   onStart?: (threadId: string, runId: string) => void;
   onFinish?: (state: AgentThreadState) => void;
+  /** REST detail fallback for reloads and other tabs; live uses thread.interrupt. */
+  restInterrupts?: unknown;
+  restInterruptsLoading?: boolean;
+  restInterruptsError?: boolean;
 };
 
 type SendMessageOptions = {
   additionalKwargs?: Record<string, unknown>;
   additionalInputMessages?: Message[];
   /**
-   * Invoked exactly once when the send passes the in-flight guard and is
-   * genuinely dispatched. It never fires on the early-return path, so callers
-   * can safely perform one-time cleanup (e.g. clearing quoted references)
-   * without losing state when a concurrent send is dropped.
+   * Thread IDs of conversations the user attached for this run. They ride in
+   * `context.conversation_references`, which the Gateway consumes at admission;
+   * the LangGraph SDK drops unknown top-level body fields, so the top-level
+   * request field is not reachable from here. Display metadata for the
+   * transcript travels separately in `additionalKwargs`.
+   */
+  conversationReferences?: string[];
+  /**
+   * Invoked exactly once when the send is genuinely dispatched: after the
+   * in-flight guard and after any attachments upload, right before the run is
+   * submitted. It never fires for a dropped send or one whose attachments fail
+   * to prepare or upload, so callers can safely perform one-time cleanup (e.g.
+   * clearing quoted references) without losing state a retry still needs.
+   * The guarantee ends at dispatch: a run that fails afterwards does not
+   * reject `thread.submit` (the SDK reports it through the stream's
+   * `onError`), so the send resolves and the composer is cleared as a whole.
    */
   onSent?: () => void;
 };
+
+export const THREAD_RUN_RECURSION_LIMIT = 1000;
+export const HITL_APPROVAL_ACCEPTANCE_TIMEOUT_MS = 10_000;
+
+type PausedRunContext = {
+  extraContext?: Record<string, unknown>;
+  conversationReferences?: string[];
+};
+
+type PendingApprovalSubmission = {
+  threadId: string;
+  requestId: string;
+  requestIds: string[];
+  resolve: (accepted: boolean) => void;
+  timeout: number | undefined;
+};
+
+export function deriveHitlApprovalState({
+  liveInterrupt,
+  restInterrupts,
+  historyLoading,
+  restInterruptsError = false,
+  pendingApprovalRun = false,
+  next,
+  answeredRequestIds,
+}: {
+  liveInterrupt: unknown;
+  restInterrupts?: unknown;
+  historyLoading: boolean;
+  restInterruptsError?: boolean;
+  pendingApprovalRun?: boolean;
+  next: readonly string[];
+  answeredRequestIds: ReadonlySet<string>;
+}) {
+  const requests = extractHitlApprovalRequests([
+    ...extractHitlApprovalRequests(liveInterrupt),
+    ...extractHitlApprovalRequests(restInterrupts),
+  ]);
+  const pendingRequests = requests.filter(
+    (request) => !answeredRequestIds.has(request.request_id),
+  );
+  return {
+    requests: combineNativeApprovals(pendingRequests),
+    hasPendingApproval:
+      pendingRequests.length > 0 ||
+      ((historyLoading || restInterruptsError) &&
+        (pendingApprovalRun ||
+          next.includes("HitlApprovalMiddleware.after_model"))),
+  };
+}
+
+export function buildHitlApprovalSubmitOptions({
+  threadId,
+  settings,
+  responses,
+  extraContext,
+  conversationReferences,
+}: {
+  threadId: string;
+  settings: LocalSettings["context"];
+  responses: HitlApprovalResponse[];
+} & PausedRunContext) {
+  return {
+    threadId,
+    // The SDK otherwise injects the pre-interrupt history head in this window.
+    checkpoint: null,
+    command: { resume: { responses } },
+    streamMode: ["values" as const],
+    streamResumable: true,
+    config: { recursion_limit: THREAD_RUN_RECURSION_LIMIT },
+    context: buildRunContext({
+      settings,
+      threadId,
+      extraContext,
+      conversationReferences,
+    }),
+  };
+}
 
 type ThreadDeleteClient = {
   threads: {
@@ -136,25 +270,70 @@ export type PendingPreparedReplayMask = {
   replacementHumanMessageId?: string;
 };
 
-export function hasToolResult(messages: Message[], toolName: string): boolean {
-  const matchingToolCallIds = new Set<string>();
-  for (const message of messages) {
+export type ToolResultStatus = "pending" | "success" | "error";
+
+export function getToolResultStatus(
+  messages: Message[],
+  toolName: string,
+): ToolResultStatus {
+  let latestToolCallId: string | undefined;
+  let latestToolCallIndex = -1;
+  for (const [messageIndex, message] of messages.entries()) {
     if (message.type !== "ai") {
       continue;
     }
     for (const toolCall of message.tool_calls ?? []) {
       if (toolCall.name === toolName && toolCall.id) {
-        matchingToolCallIds.add(toolCall.id);
+        latestToolCallId = toolCall.id;
+        latestToolCallIndex = messageIndex;
       }
     }
   }
 
-  return messages.some(
-    (message) =>
-      message.type === "tool" &&
-      (message.name === toolName ||
-        matchingToolCallIds.has(message.tool_call_id)),
-  );
+  const results = latestToolCallId
+    ? (indexToolResults(messages).get(latestToolCallIndex) ?? [])
+    : messages;
+  for (let index = results.length - 1; index >= 0; index -= 1) {
+    const message = results[index];
+    if (message?.type !== "tool") {
+      continue;
+    }
+    const matches = latestToolCallId
+      ? message.tool_call_id === latestToolCallId
+      : message.name === toolName;
+    if (matches) {
+      return isErrorToolMessage(message) ? "error" : "success";
+    }
+  }
+
+  return "pending";
+}
+
+export function hasToolResult(messages: Message[], toolName: string): boolean {
+  return getToolResultStatus(messages, toolName) !== "pending";
+}
+
+/**
+ * `additional_kwargs` of this turn's visible human message. The optimistic
+ * display copy (before and after the upload) and the submitted message all
+ * build it here, so caller metadata such as quotes and conversation
+ * references stays on the bubble through the upload. Files staged out-of-band
+ * (e.g. a project document attached to this thread and carried in
+ * ``additionalKwargs.files``) ride alongside ``files`` instead of being
+ * overwritten by them.
+ */
+export function buildHumanMessageAdditionalKwargs(
+  additionalKwargs: Record<string, unknown> | undefined,
+  files: FileInMessage[],
+): Record<string, unknown> {
+  const stagedFiles = Array.isArray(additionalKwargs?.files)
+    ? (additionalKwargs.files as FileInMessage[])
+    : [];
+  const allFiles = [...stagedFiles, ...files];
+  return {
+    ...additionalKwargs,
+    ...(allFiles.length > 0 ? { files: allFiles } : {}),
+  };
 }
 
 export function buildThreadSubmitMessages({
@@ -186,12 +365,83 @@ export function buildThreadSubmitMessages({
           text,
         },
       ],
-      additional_kwargs: {
-        ...additionalKwargs,
-        ...(filesForSubmit.length > 0 ? { files: filesForSubmit } : {}),
-      },
+      additional_kwargs: buildHumanMessageAdditionalKwargs(
+        additionalKwargs,
+        filesForSubmit,
+      ),
     } as Message,
   ];
+}
+
+/**
+ * Run context sent with `thread.submit`. Both submit paths (send, and the
+ * regenerate/edit replay) build it here so the client half of the Gateway
+ * contract stays in one place: conversation references travel only as a plain
+ * `string[]` under `context.conversation_references`, only when the caller
+ * attached them, and never from local settings. A stray key in settings is
+ * dropped rather than forwarded, so a stale value can never grant access.
+ * `client_timezone` carries the browser's zone (scheduled-task default only).
+ * `locale` carries the live UI language and overrides any saved value.
+ */
+export function buildRunContext({
+  settings,
+  threadId,
+  locale,
+  extraContext,
+  conversationReferences,
+}: {
+  settings: LocalSettings["context"];
+  threadId: string;
+  locale?: Locale;
+  extraContext?: Record<string, unknown>;
+  conversationReferences?: string[];
+}): Record<string, unknown> {
+  const ownedSettings = Object.fromEntries(
+    Object.entries(settings).filter(
+      ([key]) => key !== "conversation_references",
+    ),
+  );
+  return {
+    ...extraContext,
+    ...ownedSettings,
+    ...(typeof extraContext?.model_name === "string"
+      ? { model_name: extraContext.model_name }
+      : {}),
+    ...(conversationReferences?.length
+      ? { conversation_references: [...conversationReferences] }
+      : {}),
+    thinking_enabled: settings.mode !== "flash",
+    is_plan_mode: settings.mode === "pro" || settings.mode === "ultra",
+    subagent_enabled: settings.mode === "ultra",
+    reasoning_effort:
+      settings.reasoning_effort ??
+      (settings.mode === "ultra"
+        ? "high"
+        : settings.mode === "pro"
+          ? "medium"
+          : settings.mode === "thinking"
+            ? "low"
+            : undefined),
+    thread_id: threadId,
+    ...(locale ? { locale } : {}),
+    ...clientTimezoneContext(),
+  };
+}
+
+/**
+ * The browser's IANA zone as `context.client_timezone`. The Gateway reads it
+ * only to offer a default zone when a chat creates a scheduled task; it never
+ * reaches the model's context. Omitted when the browser cannot tell.
+ */
+function clientTimezoneContext(): { client_timezone?: string } {
+  try {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof timeZone === "string" && timeZone.length > 0
+      ? { client_timezone: timeZone }
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 // Stable identity for "no optimistic messages" so the merged-messages memo
@@ -200,6 +450,61 @@ const EMPTY_MESSAGES: Message[] = [];
 const EMPTY_RUN_MESSAGES: RunMessage[] = [];
 const EMPTY_MESSAGE_IDENTITIES: readonly string[] = [];
 const EMPTY_MESSAGE_IDENTITIES_SET: ReadonlySet<string> = new Set<string>();
+const ACTIVE_RUN_STATUSES = new Set(["pending", "running"]);
+const ACTIVE_RUN_REJOIN_RETRY_DELAYS_MS = [1_000, 2_000] as const;
+const MAX_ACTIVE_RUN_REJOIN_ATTEMPTS =
+  ACTIVE_RUN_REJOIN_RETRY_DELAYS_MS.length + 1;
+
+type ActiveRunRejoinState = {
+  attempts: number;
+  inFlight: boolean;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  runId: string | null;
+  settled: boolean;
+  threadId: string | null;
+};
+
+function createActiveRunRejoinState(
+  threadId: string | null = null,
+  runId: string | null = null,
+): ActiveRunRejoinState {
+  return {
+    attempts: 0,
+    inFlight: false,
+    retryTimer: null,
+    runId,
+    settled: false,
+    threadId,
+  };
+}
+
+function readReconnectRun(threadId: string): string | null {
+  try {
+    return window.sessionStorage.getItem(`lg:stream:${threadId}`);
+  } catch {
+    return null;
+  }
+}
+
+function rememberReconnectRun(threadId: string, runId: string): void {
+  try {
+    window.sessionStorage.setItem(`lg:stream:${threadId}`, runId);
+  } catch {
+    // The stream can still be joined, but SDK stop cannot cancel it without
+    // the tab-local run pointer.
+  }
+}
+
+function clearReconnectRun(threadId: string, runId: string): void {
+  try {
+    const key = `lg:stream:${threadId}`;
+    if (window.sessionStorage.getItem(key) === runId) {
+      window.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Storage access is best-effort and must never block stream cleanup.
+  }
+}
 /**
  * The turn this client submitted, recorded at dispatch time. The visible human
  * input gets one client-generated identity shared by the optimistic display
@@ -468,6 +773,7 @@ export function buildThreadMessagesPageUrl(
   baseUrl: string,
   threadId: string,
   beforeSeq?: number,
+  limit?: number,
 ) {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
   const path = `/api/threads/${encodeURIComponent(threadId)}/messages/page`;
@@ -478,6 +784,7 @@ export function buildThreadMessagesPageUrl(
   if (beforeSeq !== undefined) {
     url.searchParams.set("before_seq", String(beforeSeq));
   }
+  if (limit !== undefined) url.searchParams.set("limit", String(limit));
   return normalizedBaseUrl ? url.toString() : `${url.pathname}${url.search}`;
 }
 
@@ -489,6 +796,40 @@ export function flattenThreadHistoryPages(
       .slice()
       .reverse()
       .flatMap((page) => page.data),
+  );
+}
+
+/** Read persisted history independently of the loaded UI and compacted state. */
+export async function fetchThreadExportMessages(threadId: string) {
+  const pages: ThreadMessagesPageResponse[] = [];
+  let beforeSeq: number | undefined;
+  do {
+    const response = await fetch(
+      buildThreadMessagesPageUrl(getBackendBaseURL(), threadId, beforeSeq, 200),
+    );
+    if (!response.ok) {
+      throw new Error("Failed to load conversation for export.");
+    }
+    const page = parseThreadMessagesPageResponse(await response.json());
+    const next = getThreadHistoryNextPageParam(page);
+    if (
+      next !== undefined &&
+      (page.data.length === 0 ||
+        next !== page.data[0]?.seq ||
+        (beforeSeq !== undefined && next >= beforeSeq))
+    ) {
+      throw new Error("Thread export history cursor did not advance.");
+    }
+    pages.push(page);
+    beforeSeq = next;
+  } while (beforeSeq !== undefined);
+  return mergeMessages(
+    buildVisibleHistoryMessages(
+      flattenThreadHistoryPages(pages),
+      new Set<string>(),
+    ),
+    [],
+    [],
   );
 }
 
@@ -525,16 +866,74 @@ export function reconcileThreadHistoryRows(
     rowsBySeq.set(row.seq, row);
   }
 
-  const reconciled = dedupeRunMessagesByIdentity(
-    [...rowsBySeq.values()].sort((left, right) => left.seq - right.seq),
+  const sortedRows = [...rowsBySeq.values()].sort(
+    (left, right) => left.seq - right.seq,
   );
+  const reconciled = dedupeRunMessagesByIdentity(sortedRows);
+  // Deduping collapses a re-persisted identity to its newest copy, but per
+  // the backend `get_message_seqs` earliest-seq-wins rule the message keeps
+  // the position it first occupied (see buildVisibleHistoryMessages).
+  // Re-anchor the surviving row to the earliest seq the identity held in
+  // this window, otherwise a re-persisted update pushes the message towards
+  // the tail. Prefer visible rows so a hidden control copy cannot move its
+  // visible twin; hidden rows provide a fallback only when no visible copy exists.
+  const earliestSeqByRunIdentity = new Map<string, number>();
+  const earliestVisibleSeqByRunIdentity = new Map<string, number>();
+  for (const row of sortedRows) {
+    const identity = messageIdentity(row.content);
+    if (!identity || !isValidMessageSeq(row.seq)) {
+      continue;
+    }
+    const key = `${row.run_id}:${identity}`;
+    const known = earliestSeqByRunIdentity.get(key);
+    if (known === undefined || row.seq < known) {
+      earliestSeqByRunIdentity.set(key, row.seq);
+    }
+    if (!isHiddenFromUIMessage(row.content)) {
+      const knownVisible = earliestVisibleSeqByRunIdentity.get(key);
+      if (knownVisible === undefined || row.seq < knownVisible) {
+        earliestVisibleSeqByRunIdentity.set(key, row.seq);
+      }
+    }
+  }
+  const anchored = reconciled.map((row) => {
+    const identity = messageIdentity(row.content);
+    if (!identity) {
+      return row;
+    }
+    const key = `${row.run_id}:${identity}`;
+    const earliestSeq =
+      earliestVisibleSeqByRunIdentity.get(key) ??
+      earliestSeqByRunIdentity.get(key);
+    if (earliestSeq === undefined || row.seq === earliestSeq) {
+      return row;
+    }
+    return { ...row, seq: earliestSeq };
+  });
+  // Re-anchoring can change row order. Sort before comparing with the retained
+  // snapshot so unchanged reconciliations can still reuse the previous array.
+  anchored.sort((left, right) => left.seq - right.seq);
   if (
-    reconciled.length === previousRows.length &&
-    reconciled.every((row, index) => row === previousRows[index])
+    anchored.length === previousRows.length &&
+    anchored.every((row, index) => {
+      const previous = previousRows[index];
+      if (!previous) {
+        return false;
+      }
+      // Re-anchoring rebuilds the row object on every pass; treat a row whose
+      // run_id, seq and content reference all match as unchanged so the
+      // retained-history state can stay referentially stable.
+      return (
+        row === previous ||
+        (row.run_id === previous.run_id &&
+          row.seq === previous.seq &&
+          row.content === previous.content)
+      );
+    })
   ) {
     return previousRows;
   }
-  return reconciled;
+  return anchored;
 }
 
 // mergeMessages now lives in ./message-order (pure, unit-testable ordering
@@ -785,7 +1184,9 @@ export function restoreReconnectedTurnMessageOrder(
     if (
       message.type === "ai" &&
       !isHiddenFromUIMessage(message) &&
-      hasContent(message) &&
+      // Thinking-only blocks (Anthropic) are not completed answers: require
+      // extractable text/image content to close the turn.
+      extractContentFromMessage(message).length > 0 &&
       !hasToolCalls(message)
     ) {
       candidateStart = index + 1;
@@ -1496,13 +1897,14 @@ export function upsertThreadInInfiniteCache(
       exact: false,
       predicate: (query) => !hasArchiveFilter(query),
     },
-    (oldData: InfiniteData<AgentThread[]> | undefined) => {
+    (oldData: InfiniteThreadsData | undefined) => {
       if (!oldData) {
         return oldData;
       }
 
-      const merged = oldData.pages.map((page) =>
-        page.map((t) =>
+      const merged = oldData.pages.map((page) => ({
+        ...page,
+        threads: page.threads.map((t) =>
           t.thread_id === thread.thread_id
             ? {
                 ...thread,
@@ -1518,20 +1920,27 @@ export function upsertThreadInInfiniteCache(
               }
             : t,
         ),
-      );
+      }));
 
       const exists = merged.some((page) =>
-        page.some((t) => t.thread_id === thread.thread_id),
+        page.threads.some((t) => t.thread_id === thread.thread_id),
       );
       if (exists) {
         return { ...oldData, pages: merged };
       }
 
-      const firstPage = merged[0] ?? [];
+      const firstPage = merged[0] ?? {
+        threads: [],
+        hiddenCount: 0,
+        hasMore: false,
+      };
       const restPages = merged.slice(1);
       return {
         ...oldData,
-        pages: [[thread, ...firstPage], ...restPages],
+        pages: [
+          { ...firstPage, threads: [thread, ...firstPage.threads] },
+          ...restPages,
+        ],
       };
     },
   );
@@ -1557,6 +1966,11 @@ export function invalidateStoppedThreadCaches(
   }
 
   void queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
+  void queryClient.invalidateQueries({
+    queryKey: ["tool-approvals"],
+    predicate: (query) => query.queryKey[2] === threadId,
+  });
+  void queryClient.invalidateQueries({ queryKey: runInputsKey(threadId) });
   void queryClient.invalidateQueries({
     queryKey: threadHistoryQueryKey(threadId),
   });
@@ -1656,6 +2070,30 @@ function getHttpStatus(error: unknown): number | undefined {
   return undefined;
 }
 
+function getStreamErrorToastMessage(
+  error: unknown,
+  t: Translations,
+  showApprovalErrors = false,
+): string {
+  const status = getHttpStatus(error);
+  if (status !== undefined && status >= 500 && status < 600) {
+    console.warn("Chat stream request failed:", getStreamErrorMessage(error));
+    return t.conversation.streamServerError(status);
+  }
+
+  const message = getStreamErrorMessage(error);
+  if (showApprovalErrors) {
+    const errorText = `${JSON.stringify(error) ?? ""} ${message}`;
+    if (errorText.includes("hitl_approval_disabled")) {
+      return t.humanInput.approval.featureDisabled;
+    }
+    if (errorText.includes("no_pending_approval")) {
+      return t.humanInput.approval.noPending;
+    }
+  }
+  return message;
+}
+
 function isThreadMissingError(error: unknown): boolean {
   const status = getHttpStatus(error);
   // Treat 403 like 404 here to avoid disclosing whether an inaccessible thread
@@ -1666,13 +2104,17 @@ function isThreadMissingError(error: unknown): boolean {
 export function useThreadStream({
   threadId,
   displayThreadId,
+  assistantId = "lead_agent",
   context,
   isMock,
   onSend,
   onStart,
   onFinish,
+  restInterrupts,
+  restInterruptsLoading = false,
+  restInterruptsError = false,
 }: ThreadStreamOptions) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const currentViewThreadId = displayThreadId ?? threadId ?? null;
   const currentViewThreadIdRef = useRef(currentViewThreadId);
   currentViewThreadIdRef.current = currentViewThreadId;
@@ -1705,6 +2147,29 @@ export function useThreadStream({
     onStart,
     onFinish,
   });
+  const [answeredApprovalState, setAnsweredApprovalState] = useState<{
+    threadId: string | null;
+    requestIds: Set<string>;
+  }>({ threadId: null, requestIds: new Set() });
+  const pendingApprovalSubmissionRef = useRef<PendingApprovalSubmission | null>(
+    null,
+  );
+  const timedOutApprovalSubmissionRef = useRef<{
+    threadId: string;
+    requestId: string;
+  } | null>(null);
+  const liveInterruptRef = useRef<unknown>(undefined);
+  const restInterruptsRef = useRef<unknown>(restInterrupts);
+  restInterruptsRef.current = restInterrupts;
+
+  const settlePendingApproval = useCallback((accepted: boolean) => {
+    const pending = pendingApprovalSubmissionRef.current;
+    if (!pending) return;
+    pendingApprovalSubmissionRef.current = null;
+    clearTimeout(pending.timeout);
+    pending.resolve(accepted);
+  }, []);
+  const pausedRunContextsRef = useRef(new Map<string, PausedRunContext>());
 
   const {
     messages: history,
@@ -1715,6 +2180,35 @@ export function useThreadStream({
     enabled: !isMock,
     pendingSupersededRunIds,
   });
+  const runsQuery = useThreadRuns(onStreamThreadId ?? undefined, {
+    enabled: !isMock,
+  });
+  const activeRunId = useMemo(
+    () =>
+      runsQuery.data?.find((run) => ACTIVE_RUN_STATUSES.has(String(run.status)))
+        ?.run_id,
+    [runsQuery.data],
+  );
+  const waitingForInputRunIds = useMemo(
+    () =>
+      new Set(
+        (runsQuery.data ?? [])
+          .filter((run) => run.status === "waiting_for_input")
+          .map((run) => run.run_id),
+      ),
+    [runsQuery.data],
+  );
+  const activeRunRejoinRef = useRef<ActiveRunRejoinState>(
+    createActiveRunRejoinState(),
+  );
+  const [activeRunRejoinRetry, setActiveRunRejoinRetry] = useState(0);
+  // Runs reads can lag behind SDK completion, including the initial read.
+  // Keep completed IDs across recovery-state resets so stale "running" data
+  // cannot restart a submitted or natively reconnected stream.
+  const completedRunIdsRef = useRef(new Set<string>());
+  // onCreated fires only for runs this hook submitted. A failed submit stays
+  // with the submit flow; only SDK reconnects are handed to recovery.
+  const submittedRunIdRef = useRef<string | null>(null);
 
   // Keep listeners ref updated with latest callbacks
   useEffect(() => {
@@ -1723,6 +2217,7 @@ export function useThreadStream({
 
   useEffect(() => {
     const normalizedThreadId = threadId ?? null;
+    timedOutApprovalSubmissionRef.current = null;
     if (!normalizedThreadId) {
       // Reset when the UI moves back to a brand new unsaved thread.
       startedRef.current = false;
@@ -1732,6 +2227,25 @@ export function useThreadStream({
     }
     threadIdRef.current = normalizedThreadId;
   }, [threadId]);
+  useEffect(() => {
+    return () => {
+      timedOutApprovalSubmissionRef.current = null;
+      settlePendingApproval(false);
+    };
+  }, [settlePendingApproval]);
+
+  useEffect(() => {
+    const timedOutApproval = timedOutApprovalSubmissionRef.current;
+    if (!timedOutApproval || restInterruptsLoading || restInterruptsError) {
+      return;
+    }
+    const stillPending = extractHitlApprovalRequests(restInterrupts).some(
+      (request) => request.request_id === timedOutApproval.requestId,
+    );
+    if (!stillPending) {
+      timedOutApprovalSubmissionRef.current = null;
+    }
+  }, [restInterrupts, restInterruptsError, restInterruptsLoading]);
 
   const handleStreamStart = useCallback((_threadId: string, _runId: string) => {
     threadIdRef.current = _threadId;
@@ -1768,6 +2282,62 @@ export function useThreadStream({
   const { tasksRef, setTasks } = useSubtaskContext();
   const updateSubtask = useUpdateSubtask();
 
+  const scheduleActiveRunRejoinRetry = useCallback(
+    (run: Pick<Run, "thread_id" | "run_id"> | undefined) => {
+      const rejoin = activeRunRejoinRef.current;
+      // SDK 1.6.0 LGP joinStream errors include { thread_id, run_id }; history
+      // errors omit it. Re-verify this callback contract when upgrading the SDK.
+      if (
+        run &&
+        !rejoin.inFlight &&
+        run.run_id !== submittedRunIdRef.current &&
+        readReconnectRun(run.thread_id) === run.run_id
+      ) {
+        // The SDK's same-tab reconnect tries once and keeps its pointer on
+        // error, so the recovery effect would keep deferring to a stream that
+        // no longer exists. Release the pointer and let recovery take over.
+        clearReconnectRun(run.thread_id, run.run_id);
+        setActiveRunRejoinRetry((current) => current + 1);
+        return;
+      }
+      if (
+        !rejoin.inFlight ||
+        !rejoin.threadId ||
+        !rejoin.runId ||
+        run?.thread_id !== rejoin.threadId ||
+        run?.run_id !== rejoin.runId
+      ) {
+        return;
+      }
+
+      rejoin.inFlight = false;
+      clearReconnectRun(rejoin.threadId, rejoin.runId);
+      const retryDelay = ACTIVE_RUN_REJOIN_RETRY_DELAYS_MS[rejoin.attempts - 1];
+      if (retryDelay === undefined) {
+        return;
+      }
+
+      rejoin.retryTimer = setTimeout(() => {
+        rejoin.retryTimer = null;
+        setActiveRunRejoinRetry((current) => current + 1);
+      }, retryDelay);
+    },
+    [],
+  );
+
+  const settleActiveRunRejoin = useCallback(() => {
+    const rejoin = activeRunRejoinRef.current;
+    if (!rejoin.inFlight) {
+      return;
+    }
+    rejoin.inFlight = false;
+    rejoin.settled = true;
+    if (rejoin.retryTimer !== null) {
+      clearTimeout(rejoin.retryTimer);
+      rejoin.retryTimer = null;
+    }
+  }, []);
+
   const clearPreparedReplayMasks = useCallback(
     (replay: PendingPreparedReplayMask | null) => {
       if (!replay) {
@@ -1788,7 +2358,7 @@ export function useThreadStream({
 
   const thread = useStream<AgentThreadState>({
     client: getAPIClient(isMock),
-    assistantId: "lead_agent",
+    assistantId,
     threadId: onStreamThreadId,
     reconnectOnMount: true,
     fetchStateHistory: { limit: 1 },
@@ -1800,6 +2370,30 @@ export function useThreadStream({
     // Keep explicit: SDK types claim @default true, but runtime uses throttle ?? false.
     throttle: true,
     onCreated(meta) {
+      const pendingApproval = pendingApprovalSubmissionRef.current;
+      const timedOutApproval = timedOutApprovalSubmissionRef.current;
+      const acceptedRequestId =
+        pendingApproval?.threadId === meta.thread_id
+          ? pendingApproval.requestId
+          : timedOutApproval?.threadId === meta.thread_id
+            ? timedOutApproval.requestId
+            : null;
+      if (pendingApproval?.threadId === meta.thread_id) {
+        settlePendingApproval(true);
+      }
+      if (acceptedRequestId) {
+        timedOutApprovalSubmissionRef.current = null;
+        setAnsweredApprovalState((current) => {
+          const requestIds = new Set(
+            current.threadId === meta.thread_id ? current.requestIds : [],
+          );
+          requestIds.add(acceptedRequestId);
+          for (const id of pendingApproval?.requestIds ?? [])
+            requestIds.add(id);
+          return { threadId: meta.thread_id, requestIds };
+        });
+      }
+      submittedRunIdRef.current = meta.run_id;
       handleStreamStart(meta.thread_id, meta.run_id);
       const now = new Date().toISOString();
       upsertThreadInSearchCache(queryClient, {
@@ -1942,20 +2536,50 @@ export function useThreadStream({
         }
       }
     },
-    onError(error) {
+    onError(error, run) {
+      timedOutApprovalSubmissionRef.current = null;
+      if (pendingApprovalSubmissionRef.current) {
+        settlePendingApproval(false);
+      }
+      const erroredThreadId = run?.thread_id ?? threadIdRef.current;
+      // Acceptance does not prove the replay completed. Reopen only requests
+      // still advertised as pending; completed historical answers stay hidden.
+      const stillPendingRequestIds = new Set(
+        extractHitlApprovalRequests([
+          ...extractHitlApprovalRequests(liveInterruptRef.current),
+          ...extractHitlApprovalRequests(restInterruptsRef.current),
+        ]).map((request) => request.request_id),
+      );
+      setAnsweredApprovalState((current) => {
+        if (current.threadId !== erroredThreadId) {
+          return current;
+        }
+        const requestIds = new Set(
+          [...current.requestIds].filter(
+            (requestId) => !stillPendingRequestIds.has(requestId),
+          ),
+        );
+        return requestIds.size === current.requestIds.size
+          ? current
+          : { threadId: current.threadId, requestIds };
+      });
+      scheduleActiveRunRejoinRetry(run);
       setOptimisticMessages([]);
       setOptimisticThreadId(null);
       setLiveMessagesThreadId(null);
       pendingPreparedReplayRef.current = null;
       setPendingSupersededRunIds(new Set());
       setPendingSupersededMessageIds(new Set());
-      toast.error(getStreamErrorMessage(error));
+      toast.error(getStreamErrorToastMessage(error, t, true));
       pendingUsageBaselineMessageIdsRef.current = new Set(
         messagesRef.current
           .map(messageIdentity)
           .filter((id): id is string => Boolean(id)),
       );
       if (threadIdRef.current && !isMock) {
+        void queryClient.invalidateQueries({
+          queryKey: runInputsKey(threadIdRef.current),
+        });
         void queryClient.invalidateQueries({
           queryKey: threadHistoryQueryKey(threadIdRef.current),
         });
@@ -1964,7 +2588,12 @@ export function useThreadStream({
         });
       }
     },
-    onFinish(state) {
+    onFinish(state, run) {
+      settlePendingApproval(false);
+      if (run) {
+        completedRunIdsRef.current.add(run.run_id);
+      }
+      settleActiveRunRejoin();
       listeners.current.onFinish?.(state.values);
       pendingPreparedReplayRef.current = null;
       pendingUsageBaselineMessageIdsRef.current = new Set(
@@ -1975,14 +2604,247 @@ export function useThreadStream({
       invalidateStoppedThreadCaches(queryClient, threadIdRef.current, isMock);
     },
   });
+  liveInterruptRef.current = thread.interrupt;
+
+  const { isLoading: isThreadLoading, joinStream } = thread;
+  const runInputAccount = useContext(AuthQueryScopeContext);
+  const approvalFeature = useToolApprovalFeature(!!runInputAccount && !isMock);
+  const liveApprovals = useQuery({
+    queryKey: approvalsKey(onStreamThreadId ?? "", runInputAccount),
+    queryFn: ({ signal }) => fetchToolApprovals(onStreamThreadId!, signal),
+    enabled:
+      !!approvalFeature.data?.enabled &&
+      !!onStreamThreadId &&
+      !!runInputAccount &&
+      !isMock,
+    refetchInterval: (query) =>
+      isThreadLoading || activeRunId || query.state.data?.requests.length
+        ? 1000
+        : false,
+    retry: false,
+  });
+  const inputCapability = useRunInputsEnabled(!!runInputAccount && !isMock);
+  const inputQuery = useQuery({
+    queryKey: [...runInputsKey(onStreamThreadId ?? ""), runInputAccount],
+    queryFn: ({ signal }) => fetchRunInputState(onStreamThreadId!, signal),
+    enabled:
+      inputCapability && !isMock && !!onStreamThreadId && !!runInputAccount,
+    refetchInterval: (q) =>
+      isThreadLoading || activeRunId
+        ? 1000
+        : q.state.data?.items.some((x) =>
+              ["pending", "applying", "dispatching"].includes(x.status),
+            )
+          ? 5000
+          : false,
+    retry: false,
+  });
+  const runInputAttemptRef = useRef<{
+    threadId: string;
+    runId: string;
+    text: string;
+    mode: RunInputMode;
+    id: string;
+    context?: Record<string, unknown>;
+  } | null>(null);
+  const runInputAbortRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      runInputAbortRef.current?.abort();
+      runInputAttemptRef.current = null;
+    },
+    [onStreamThreadId, runInputAccount],
+  );
+  const sendInput = useCallback(
+    async (text: string, mode: RunInputMode) => {
+      const targetThread = onStreamThreadId;
+      const runId = inputQuery.data?.active_run_id;
+      if (!targetThread || !runId)
+        throw new Error(t.inputBox.runInputUnavailable);
+      const previous = runInputAttemptRef.current;
+      const attempt =
+        previous?.threadId === targetThread &&
+        previous.text === text &&
+        previous.mode === mode
+          ? previous
+          : {
+              threadId: targetThread,
+              runId,
+              text,
+              mode,
+              id: uuid(),
+              context:
+                mode === "queue"
+                  ? buildRunContext({
+                      settings: context,
+                      threadId: targetThread,
+                      locale,
+                    })
+                  : undefined,
+            };
+      runInputAttemptRef.current = attempt;
+      const controller = new AbortController();
+      runInputAbortRef.current?.abort();
+      runInputAbortRef.current = controller;
+      try {
+        const item = await submitRunInput({
+          threadId: targetThread,
+          runId: attempt.runId,
+          requestId: attempt.id,
+          text,
+          mode,
+          context: attempt.context,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted)
+          throw new Error("thread-submission-stale");
+        runInputAttemptRef.current = null;
+        void queryClient.invalidateQueries({
+          queryKey: runInputsKey(targetThread),
+        });
+        return item;
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          const accepted = await fetchRunInputs(targetThread, controller.signal)
+            .then((items) =>
+              items.find(
+                (x) => x.id === attempt.id && x.target_run_id === attempt.runId,
+              ),
+            )
+            .catch(() => undefined);
+          if (accepted && !controller.signal.aborted) {
+            runInputAttemptRef.current = null;
+            void queryClient.invalidateQueries({
+              queryKey: runInputsKey(targetThread),
+            });
+            return accepted;
+          }
+          // A conflict rejects this submission. Let the next user attempt
+          // target the current run, but retain the original identity for
+          // uncertain failures: the recent-input list may omit its receipt.
+          if (
+            !controller.signal.aborted &&
+            runInputAttemptRef.current === attempt &&
+            error instanceof GatewayApiError &&
+            error.status === 409
+          ) {
+            runInputAttemptRef.current = null;
+          }
+          toast.error(t.inputBox.runInputUnavailable);
+        }
+        throw error;
+      }
+    },
+    [
+      context,
+      inputQuery.data?.active_run_id,
+      locale,
+      onStreamThreadId,
+      queryClient,
+      t.inputBox.runInputUnavailable,
+    ],
+  );
+
+  const inputActiveRunId = inputQuery.data?.active_run_id;
+  const knownActiveRunId =
+    inputActiveRunId && !completedRunIdsRef.current.has(inputActiveRunId)
+      ? inputActiveRunId
+      : activeRunId;
+  // A run observed mid-flight (remount, chat switch, rejoin) started before
+  // this view did. Its record carries the same start that turn_duration uses.
+  const knownActiveRun = knownActiveRunId
+    ? runsQuery.data?.find((run) => run.run_id === knownActiveRunId)
+    : undefined;
+  const knownActiveRunStartedAt =
+    knownActiveRun &&
+    ACTIVE_RUN_STATUSES.has(String(knownActiveRun.status)) &&
+    !completedRunIdsRef.current.has(knownActiveRun.run_id)
+      ? parseRunStartTime(knownActiveRun.created_at)
+      : null;
+
+  // reconnectOnMount only knows the run id stored in this tab's
+  // sessionStorage. A reopened browser or a new tab has no pointer, so recover
+  // the newest active run from the server and join its resumable SSE stream.
+  useEffect(() => {
+    const resolvedThreadId = onStreamThreadId ?? null;
+    const resolvedRunId = knownActiveRunId ?? null;
+    let rejoin = activeRunRejoinRef.current;
+
+    if (
+      rejoin.threadId !== resolvedThreadId ||
+      rejoin.runId !== resolvedRunId
+    ) {
+      if (rejoin.retryTimer !== null) {
+        clearTimeout(rejoin.retryTimer);
+      }
+      if (rejoin.attempts > 0 && rejoin.threadId && rejoin.runId) {
+        clearReconnectRun(rejoin.threadId, rejoin.runId);
+      }
+      rejoin = createActiveRunRejoinState(resolvedThreadId, resolvedRunId);
+      activeRunRejoinRef.current = rejoin;
+    }
+
+    if (
+      !resolvedThreadId ||
+      !resolvedRunId ||
+      completedRunIdsRef.current.has(resolvedRunId) ||
+      rejoin.inFlight ||
+      rejoin.retryTimer !== null ||
+      rejoin.settled ||
+      rejoin.attempts >= MAX_ACTIVE_RUN_REJOIN_ATTEMPTS ||
+      isThreadLoading
+    ) {
+      return;
+    }
+
+    // A matching pointer means the SDK's native same-tab reconnect owns this
+    // run. Do not create a second SSE consumer; if that reconnect fails,
+    // scheduleActiveRunRejoinRetry releases the pointer.
+    if (readReconnectRun(resolvedThreadId) === resolvedRunId) {
+      return;
+    }
+
+    rejoin.attempts += 1;
+    rejoin.inFlight = true;
+    rememberReconnectRun(resolvedThreadId, resolvedRunId);
+    void joinStream(resolvedRunId);
+  }, [
+    activeRunId,
+    knownActiveRunId,
+    activeRunRejoinRetry,
+    isThreadLoading,
+    joinStream,
+    onStreamThreadId,
+  ]);
+
+  useEffect(
+    () => () => {
+      const rejoin = activeRunRejoinRef.current;
+      if (rejoin.threadId !== (onStreamThreadId ?? null)) {
+        return;
+      }
+      if (rejoin.retryTimer !== null) {
+        clearTimeout(rejoin.retryTimer);
+      }
+      if (rejoin.attempts > 0 && rejoin.threadId && rejoin.runId) {
+        clearReconnectRun(rejoin.threadId, rejoin.runId);
+      }
+      activeRunRejoinRef.current = createActiveRunRejoinState();
+    },
+    [onStreamThreadId],
+  );
 
   const stopThread = useCallback(async () => {
+    settlePendingApproval(false);
     const stoppedThreadId =
       threadIdRef.current ?? displayThreadId ?? threadId ?? null;
     const pendingReplay = pendingPreparedReplayRef.current;
     await stopThreadAndInvalidateCaches(
       queryClient,
-      () => thread.stop(),
+      () =>
+        !thread.isLoading && knownActiveRunId && stoppedThreadId
+          ? getAPIClient(isMock).runs.cancel(stoppedThreadId, knownActiveRunId)
+          : thread.stop(),
       stoppedThreadId,
       isMock,
     );
@@ -1994,8 +2856,10 @@ export function useThreadStream({
   }, [
     clearPreparedReplayMasks,
     displayThreadId,
+    knownActiveRunId,
     isMock,
     queryClient,
+    settlePendingApproval,
     thread,
     threadId,
   ]);
@@ -2077,6 +2941,7 @@ export function useThreadStream({
   useEffect(() => {
     startedRef.current = false;
     sendInFlightRef.current = false;
+    settlePendingApproval(false);
     messagesRef.current = [];
     transientHistoryBridgeRef.current = [];
     transientHistoryOrderRef.current = [];
@@ -2088,13 +2953,19 @@ export function useThreadStream({
     };
     summarizedRef.current = new Set<string>();
     pendingUsageBaselineMessageIdsRef.current = new Set();
-    localTurnAnchorRef.current = null;
     pendingPreparedReplayRef.current = null;
     setPendingSupersededRunIds(new Set());
     setPendingSupersededMessageIds(new Set());
     prevHumanMsgCountRef.current =
       latestMessageCountsRef.current.humanMessageCount;
-  }, [threadId]);
+    return () => settlePendingApproval(false);
+  }, [settlePendingApproval, threadId]);
+
+  // Confirming a new thread only assigns its SDK id; the displayed
+  // conversation and its submitted human anchor have not changed.
+  useEffect(() => {
+    localTurnAnchorRef.current = null;
+  }, [currentViewThreadId]);
 
   // Release entries individually once canonical history confirms their stable
   // identities. Keep unconfirmed entries across failure/refetch within this
@@ -2178,10 +3049,6 @@ export function useThreadStream({
       }
       sendInFlightRef.current = true;
 
-      // The send has genuinely proceeded past the in-flight guard, so callers
-      // can now run one-time cleanup that must not fire on the dropped path.
-      options?.onSent?.();
-
       const text = message.text.trim();
 
       // Capture the current human message count before showing optimistic
@@ -2229,18 +3096,16 @@ export function useThreadStream({
         }),
       );
 
-      const optimisticAdditionalKwargs = {
-        ...options?.additionalKwargs,
-        ...(optimisticFiles.length > 0 ? { files: optimisticFiles } : {}),
-      };
-
       const newOptimistic: Message[] = [];
       if (!hideFromUI) {
         newOptimistic.push({
           type: "human",
           id: humanMessageId,
           content: text ? [{ type: "text", text }] : "",
-          additional_kwargs: optimisticAdditionalKwargs,
+          additional_kwargs: buildHumanMessageAdditionalKwargs(
+            options?.additionalKwargs,
+            optimisticFiles,
+          ),
         });
       }
 
@@ -2259,7 +3124,9 @@ export function useThreadStream({
 
       listeners.current.onSend?.(threadId);
 
-      let uploadedFileInfo: UploadedFileInfo[] = [];
+      // Shared by the optimistic bubble and the submit, so the files the
+      // user sees are exactly the files that are sent.
+      let uploadedFiles: FileInMessage[] = [];
 
       try {
         // Upload files first if any
@@ -2288,24 +3155,24 @@ export function useThreadStream({
 
             if (files.length > 0) {
               const uploadResponse = await uploadFiles(threadId, files);
-              uploadedFileInfo = uploadResponse.files;
+              uploadedFiles = uploadResponse.files.map((info) => ({
+                filename: info.filename,
+                size: info.size,
+                path: info.virtual_path,
+                status: "uploaded" as const,
+              }));
 
               // Update optimistic human message with uploaded status + paths
-              const uploadedFiles: FileInMessage[] = uploadedFileInfo.map(
-                (info) => ({
-                  filename: info.filename,
-                  size: info.size,
-                  path: info.virtual_path,
-                  status: "uploaded" as const,
-                }),
-              );
               setOptimisticMessages((messages) => {
                 if (messages.length > 1 && messages[0]) {
                   const humanMessage: Message = messages[0];
                   return [
                     {
                       ...humanMessage,
-                      additional_kwargs: { files: uploadedFiles },
+                      additional_kwargs: buildHumanMessageAdditionalKwargs(
+                        options?.additionalKwargs,
+                        uploadedFiles,
+                      ),
                     },
                     ...messages.slice(1),
                   ];
@@ -2328,23 +3195,23 @@ export function useThreadStream({
           }
         }
 
-        // Build files metadata for submission (included in additional_kwargs)
-        const filesForSubmit: FileInMessage[] = uploadedFileInfo.map(
-          (info) => ({
-            filename: info.filename,
-            size: info.size,
-            path: info.virtual_path,
-            status: "uploaded" as const,
-          }),
-        );
-
+        // Attachments are uploaded, so the send is genuinely dispatched and
+        // callers can drop one-time state. A failed upload rejected above
+        // without reaching here, leaving that state for a retry.
+        pausedRunContextsRef.current.set(threadId, {
+          extraContext,
+          conversationReferences: options?.conversationReferences
+            ? [...options.conversationReferences]
+            : undefined,
+        });
+        options?.onSent?.();
         await thread.submit(
           {
             messages: buildThreadSubmitMessages({
               text,
               additionalKwargs: options?.additionalKwargs,
               additionalInputMessages: options?.additionalInputMessages,
-              filesForSubmit,
+              filesForSubmit: uploadedFiles,
               humanMessageId,
             }),
           },
@@ -2355,25 +3222,15 @@ export function useThreadStream({
             // subagent's values/messages into the thread view (#4399).
             streamResumable: true,
             config: {
-              recursion_limit: 1000,
+              recursion_limit: THREAD_RUN_RECURSION_LIMIT,
             },
-            context: {
-              ...extraContext,
-              ...context,
-              thinking_enabled: context.mode !== "flash",
-              is_plan_mode: context.mode === "pro" || context.mode === "ultra",
-              subagent_enabled: context.mode === "ultra",
-              reasoning_effort:
-                context.reasoning_effort ??
-                (context.mode === "ultra"
-                  ? "high"
-                  : context.mode === "pro"
-                    ? "medium"
-                    : context.mode === "thinking"
-                      ? "low"
-                      : undefined),
-              thread_id: threadId,
-            },
+            context: buildRunContext({
+              settings: context,
+              threadId,
+              locale,
+              extraContext,
+              conversationReferences: options?.conversationReferences,
+            }),
           },
         );
         void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
@@ -2394,11 +3251,170 @@ export function useThreadStream({
     [
       thread,
       t.uploads.uploadingFiles,
+      locale,
       context,
       queryClient,
       humanMessageCount,
       persistedMessages,
       visibleHistory,
+    ],
+  );
+
+  const submitHitlApproval = useCallback(
+    async (
+      threadId: string,
+      request: HitlApprovalRequest,
+      responses: HitlApprovalResponse[],
+    ) => {
+      if (request.transport === "live") {
+        if (
+          threadId !== onStreamThreadId ||
+          !liveApprovals.data?.requests?.some(
+            (pending) =>
+              pending.request_id === request.request_id &&
+              pending.run_id === request.run_id,
+          )
+        )
+          return false;
+        try {
+          await submitLiveApproval(threadId, request, responses);
+          await queryClient.invalidateQueries({
+            queryKey: approvalsKey(threadId, runInputAccount),
+          });
+          return true;
+        } catch (error) {
+          await queryClient.invalidateQueries({
+            queryKey: approvalsKey(threadId, runInputAccount),
+          });
+          toast.error(getStreamErrorMessage(error));
+          return false;
+        }
+      }
+      if (thread.isLoading || sendInFlightRef.current) return false;
+      const expected = new Set(
+        request.actions.map((action) => action.tool_call_id),
+      );
+      const responseIds = new Set<string>();
+      const valid =
+        responses.length === request.actions.length &&
+        responses.every((response) => {
+          const action = request.actions.find(
+            (candidate) => candidate.tool_call_id === response.tool_call_id,
+          );
+          if (
+            !action ||
+            responseIds.has(response.tool_call_id) ||
+            response.request_id !== action.request_id ||
+            response.source !== "hitl_approval" ||
+            response.response_kind !== "option" ||
+            !request.allowed_decisions.includes(response.option_id) ||
+            response.value.length > 2000 ||
+            (response.option_id === "approve" && response.value !== "")
+          ) {
+            return false;
+          }
+          responseIds.add(response.tool_call_id);
+          return true;
+        });
+      if (!valid || responseIds.size !== expected.size) return false;
+
+      const timedOutApproval = timedOutApprovalSubmissionRef.current;
+      if (
+        timedOutApproval?.threadId === threadId &&
+        timedOutApproval.requestId !== request.request_id
+      ) {
+        // Without a request ID echo, a different resume cannot safely share
+        // the thread until the timed-out request resolves or disappears.
+        void queryClient.invalidateQueries({
+          queryKey: ["thread", "metadata", threadId],
+        });
+        return false;
+      }
+
+      sendInFlightRef.current = true;
+      // ES2022 target: Promise.withResolvers is not in the configured libs.
+      let resolveAccepted!: (accepted: boolean) => void;
+      const accepted = new Promise<boolean>((resolve) => {
+        resolveAccepted = resolve;
+      });
+      const submission: PendingApprovalSubmission = {
+        threadId,
+        requestId: request.request_id,
+        requestIds: request.actions.map((action) => action.request_id),
+        resolve: resolveAccepted,
+        timeout: undefined,
+      };
+      pendingApprovalSubmissionRef.current = submission;
+      try {
+        submission.timeout = window.setTimeout(() => {
+          if (pendingApprovalSubmissionRef.current === submission) {
+            timedOutApprovalSubmissionRef.current = {
+              threadId,
+              requestId: request.request_id,
+            };
+            toast.error(t.humanInput.approval.submitTimeout);
+            void stopThread().catch((error: unknown) => {
+              toast.error(getStreamErrorToastMessage(error, t));
+            });
+          }
+        }, HITL_APPROVAL_ACCEPTANCE_TIMEOUT_MS);
+        const pausedContext = pausedRunContextsRef.current.get(threadId);
+        // assistantId is fixed on this useStream instance and is therefore the
+        // same lead/custom agent used by the paused run.
+        const queued = thread.submit(
+          null,
+          buildHitlApprovalSubmitOptions({
+            threadId,
+            settings: context,
+            responses,
+            extraContext: pausedContext?.extraContext,
+            conversationReferences: pausedContext?.conversationReferences,
+          }),
+        );
+        // submit() resolves when the SDK has queued consumption, not when the
+        // Gateway has accepted the resume. Acceptance can arrive first, while
+        // onError, onFinish, abort, and the deadline can unblock a submit that
+        // never settles. Only onCreated proves acceptance.
+        const outcome = await Promise.race([
+          queued.then(() => "queued" as const),
+          accepted,
+        ]);
+        const wasAccepted = outcome === "queued" ? await accepted : outcome;
+        if (wasAccepted) {
+          void queryClient.invalidateQueries({
+            queryKey: ["thread", "metadata", threadId],
+          });
+          void queryClient.invalidateQueries({
+            queryKey: ["thread", threadId],
+          });
+        }
+        return wasAccepted;
+      } catch (error) {
+        if (
+          timedOutApprovalSubmissionRef.current?.threadId === threadId &&
+          timedOutApprovalSubmissionRef.current.requestId === request.request_id
+        ) {
+          timedOutApprovalSubmissionRef.current = null;
+        }
+        if (pendingApprovalSubmissionRef.current === submission) {
+          settlePendingApproval(false);
+        }
+        toast.error(getStreamErrorToastMessage(error, t, true));
+        return false;
+      } finally {
+        sendInFlightRef.current = false;
+      }
+    },
+    [
+      context,
+      queryClient,
+      settlePendingApproval,
+      stopThread,
+      t,
+      thread,
+      onStreamThreadId,
+      liveApprovals.data,
+      runInputAccount,
     ],
   );
 
@@ -2498,6 +3514,7 @@ export function useThreadStream({
           setOptimisticMessages(nextOptimisticMessages);
         }
 
+        pausedRunContextsRef.current.set(threadId, {});
         await thread.submit(prepared.input, {
           threadId,
           checkpoint: prepared.checkpoint,
@@ -2505,24 +3522,12 @@ export function useThreadStream({
           // No streamSubgraphs — same contract as the main submit path (#4399).
           streamResumable: true,
           config: {
-            recursion_limit: 1000,
+            recursion_limit: THREAD_RUN_RECURSION_LIMIT,
           },
-          context: {
-            ...context,
-            thinking_enabled: context.mode !== "flash",
-            is_plan_mode: context.mode === "pro" || context.mode === "ultra",
-            subagent_enabled: context.mode === "ultra",
-            reasoning_effort:
-              context.reasoning_effort ??
-              (context.mode === "ultra"
-                ? "high"
-                : context.mode === "pro"
-                  ? "medium"
-                  : context.mode === "thinking"
-                    ? "low"
-                    : undefined),
-            thread_id: threadId,
-          },
+          // Replaying a turn never carries conversation references: the grant
+          // is per send, so a regenerate or edit runs without them unless the
+          // user attaches them again.
+          context: buildRunContext({ settings: context, threadId, locale }),
         });
         void queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
         void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
@@ -2551,7 +3556,7 @@ export function useThreadStream({
             removeSetItems(current, preparedSupersededMessageIds),
           );
         }
-        toast.error(getStreamErrorMessage(error));
+        toast.error(getStreamErrorToastMessage(error, t));
         return false;
       } finally {
         sendInFlightRef.current = false;
@@ -2559,9 +3564,11 @@ export function useThreadStream({
     },
     [
       context,
+      locale,
       humanMessageCount,
       persistedMessages,
       queryClient,
+      t,
       thread,
       visibleHistory,
     ],
@@ -2608,6 +3615,7 @@ export function useThreadStream({
       threadId: string,
       humanMessageId: string,
       replacementText: string,
+      additionalKwargs?: Record<string, unknown>,
     ) => {
       if (!humanMessageId) {
         return false;
@@ -2634,7 +3642,25 @@ export function useThreadStream({
           if (!response.ok) {
             throw new Error(await readResponseErrorMessage(response));
           }
-          return (await response.json()) as EditRegeneratePrepareResponse;
+          const prepared =
+            (await response.json()) as EditRegeneratePrepareResponse;
+          if (!additionalKwargs || !Array.isArray(prepared.input.messages)) {
+            return prepared;
+          }
+          const messages = [...prepared.input.messages];
+          for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const message = messages[index];
+            if (message?.type !== "human") continue;
+            messages[index] = {
+              ...message,
+              additional_kwargs: {
+                ...message.additional_kwargs,
+                ...additionalKwargs,
+              },
+            };
+            break;
+          }
+          return { ...prepared, input: { ...prepared.input, messages } };
         },
         getSupersededMessageIds: (prepared) => prepared.source_message_ids,
         getOptimisticMessages: (prepared) => prepared.input.messages ?? [],
@@ -2706,7 +3732,7 @@ export function useThreadStream({
       visibleOptimisticMessages,
     );
     const localTurnAnchor =
-      localTurnAnchorRef.current?.threadId === threadId
+      localTurnAnchorRef.current?.threadId === currentViewThreadId
         ? localTurnAnchorRef.current
         : null;
     const canonicalHistoryIdentities = new Set(
@@ -2758,6 +3784,7 @@ export function useThreadStream({
           canonicalHistoryIdentities,
         );
   }, [
+    currentViewThreadId,
     previouslyRenderedOrder,
     renderMessages,
     threadId,
@@ -2819,11 +3846,53 @@ export function useThreadStream({
         pendingUsageBaselineMessageIdsRef.current,
       )
     : [];
+  const answeredApprovalRequestIds = useMemo(
+    () =>
+      answeredApprovalState.threadId === currentViewThreadId
+        ? answeredApprovalState.requestIds
+        : new Set<string>(),
+    [answeredApprovalState, currentViewThreadId],
+  );
+  const approvalState = useMemo(
+    () =>
+      deriveHitlApprovalState({
+        liveInterrupt: thread.interrupt,
+        restInterrupts,
+        restInterruptsError,
+        pendingApprovalRun: (runsQuery.data ?? []).some(
+          (run) =>
+            run.status === "waiting_for_input" &&
+            extractHitlApprovalRequests(run.metadata?.hitl_approval).some(
+              (request) => !answeredApprovalRequestIds.has(request.request_id),
+            ),
+        ),
+        historyLoading:
+          isHistoryLoading || restInterruptsLoading || thread.isThreadLoading,
+        next: thread.history?.[0]?.next ?? [],
+        answeredRequestIds: answeredApprovalRequestIds,
+      }),
+    [
+      answeredApprovalRequestIds,
+      isHistoryLoading,
+      restInterrupts,
+      restInterruptsError,
+      restInterruptsLoading,
+      runsQuery.data,
+      thread.history,
+      thread.interrupt,
+      thread.isThreadLoading,
+    ],
+  );
 
   // Merge history, live stream, and optimistic messages for display
   // History messages may overlap with thread.messages; thread.messages take precedence
   const mergedThread = {
     ...thread,
+    isLoading:
+      thread.isLoading ||
+      (inputCapability &&
+        !!knownActiveRunId &&
+        !completedRunIdsRef.current.has(knownActiveRunId)),
     stop: stopThread,
     values: hasVisibleStreamState ? thread.values : EMPTY_THREAD_VALUES,
     messages: mergedMessages,
@@ -2834,11 +3903,38 @@ export function useThreadStream({
     pendingUsageMessages,
     sendMessage,
     regenerateMessage,
+    approvalRequests: [
+      ...approvalState.requests,
+      ...(liveApprovals.data?.requests ?? []),
+    ],
+    hasPendingApproval:
+      approvalState.hasPendingApproval ||
+      !!liveApprovals.data?.requests?.length,
+    submitHitlApproval,
+    waitingForInputRunIds,
     editAndRegenerateMessage,
     isUploading,
     isHistoryLoading,
     hasMoreHistory,
     loadMoreHistory,
+    sendInput,
+    runInputs: (inputQuery.data?.items ?? []).map((item) =>
+      item.mode === "steer" &&
+      (item.status === "pending" || item.status === "applying") &&
+      ((thread.values.applied_run_inputs?.run_id === item.target_run_id &&
+        thread.values.applied_run_inputs.ids.includes(item.id)) ||
+        thread.messages.some(
+          (message) =>
+            message.type === "human" &&
+            getMessageRunId(message) === item.target_run_id &&
+            message.additional_kwargs?.run_input_id === item.id,
+        ))
+        ? { ...item, status: "applied" as const }
+        : item,
+    ),
+    canSendInput: inputCapability && !!inputQuery.data?.active_run_id,
+    activeRunId: knownActiveRunId,
+    activeRunStartedAt: knownActiveRunStartedAt,
   } as const;
 }
 
@@ -2969,10 +4065,6 @@ export const INFINITE_THREADS_QUERY_KEY_PREFIX = [
   "searchInfinite",
 ] as const;
 
-const INFINITE_THREADS_NEXT_PAGE_PARAM = Symbol(
-  "deerflow.infiniteThreads.nextPageParam",
-);
-
 type InfiniteThreadsParams = Omit<
   NonNullable<Parameters<ThreadsClient["search"]>[0]>,
   "limit" | "offset"
@@ -2984,29 +4076,30 @@ type InfiniteThreadsSearchClient = {
   };
 };
 
-type InfiniteThreadsPageWithNextParam = AgentThread[] & {
-  [INFINITE_THREADS_NEXT_PAGE_PARAM]?: number;
+/**
+ * One loaded page of an infinite thread list. `threads` holds the rows the
+ * list shows; `hiddenCount` counts the server rows the page consumed but the
+ * client filtered out (sidecar threads). Both live in the page data itself so
+ * cache writes and structural sharing, which rebuild pages, keep them.
+ */
+export type InfiniteThreadsPage = {
+  threads: AgentThread[];
+  hiddenCount: number;
+  /** False once the server returned fewer rows than requested. */
+  hasMore: boolean;
 };
 
-function annotateInfiniteThreadsPage(
-  page: AgentThread[],
-  nextPageParam: number | undefined,
-): AgentThread[] {
-  if (nextPageParam !== undefined) {
-    Reflect.set(page, INFINITE_THREADS_NEXT_PAGE_PARAM, nextPageParam);
-  }
-  return page;
-}
+export type InfiniteThreadsData = InfiniteData<InfiniteThreadsPage, number>;
 
 export async function fetchInfiniteThreadsPage(
   apiClient: InfiniteThreadsSearchClient,
   params: InfiniteThreadsParams,
   pageParam: number,
   pageSize: number = INFINITE_THREADS_PAGE_SIZE,
-): Promise<AgentThread[]> {
+): Promise<InfiniteThreadsPage> {
   const threads: AgentThread[] = [];
   let offset = pageParam;
-  let nextPageParam: number | undefined;
+  let hasMore = true;
 
   while (threads.length < pageSize) {
     const currentLimit = pageSize - threads.length;
@@ -3029,59 +4122,73 @@ export async function fetchInfiniteThreadsPage(
     offset += response.length;
 
     if (response.length < currentLimit) {
-      nextPageParam = undefined;
+      hasMore = false;
       break;
     }
-
-    nextPageParam = offset;
   }
 
-  return annotateInfiniteThreadsPage(threads, nextPageParam);
+  return {
+    threads,
+    hiddenCount: offset - pageParam - threads.length,
+    hasMore,
+  };
 }
 
 export function getInfiniteThreadsNextPageParam(
-  lastPage: AgentThread[],
-  allPages: AgentThread[][],
-  pageSize: number = INFINITE_THREADS_PAGE_SIZE,
+  lastPage: InfiniteThreadsPage,
+  allPages: InfiniteThreadsPage[],
 ): number | undefined {
-  const annotatedNextPageParam = Reflect.get(
-    lastPage as InfiniteThreadsPageWithNextParam,
-    INFINITE_THREADS_NEXT_PAGE_PARAM,
-  );
-  if (typeof annotatedNextPageParam === "number") {
-    return annotatedNextPageParam;
-  }
-
-  if (lastPage.length < pageSize) {
+  if (!lastPage.hasMore) {
     return undefined;
   }
-  return allPages.reduce((sum, page) => sum + page.length, 0);
+  // Count visible rows from the cache instead of freezing the fetch-time
+  // offset: a local delete or insert changes the server list the same way.
+  return allPages.reduce(
+    (offset, page) => offset + page.threads.length + page.hiddenCount,
+    0,
+  );
+}
+
+/** List components read plain thread pages; pagination state stays cached. */
+function selectInfiniteThreads(
+  data: InfiniteThreadsData,
+): InfiniteData<AgentThread[], number> {
+  return {
+    pages: data.pages.map((page) => page.threads),
+    pageParams: data.pageParams,
+  };
+}
+
+function updateInfiniteThreadsPages(
+  oldData: InfiniteThreadsData | undefined,
+  update: (threads: AgentThread[]) => AgentThread[],
+): InfiniteThreadsData | undefined {
+  if (!oldData) {
+    return oldData;
+  }
+  return {
+    ...oldData,
+    pages: oldData.pages.map((page) => ({
+      ...page,
+      threads: update(page.threads),
+    })),
+  };
 }
 
 export function mapInfiniteThreadsCache(
-  oldData: InfiniteData<AgentThread[]> | undefined,
+  oldData: InfiniteThreadsData | undefined,
   mapper: (thread: AgentThread) => AgentThread,
-): InfiniteData<AgentThread[]> | undefined {
-  if (!oldData) {
-    return oldData;
-  }
-  return {
-    ...oldData,
-    pages: oldData.pages.map((page) => page.map(mapper)),
-  };
+): InfiniteThreadsData | undefined {
+  return updateInfiniteThreadsPages(oldData, (threads) => threads.map(mapper));
 }
 
 export function filterInfiniteThreadsCache(
-  oldData: InfiniteData<AgentThread[]> | undefined,
+  oldData: InfiniteThreadsData | undefined,
   predicate: (thread: AgentThread) => boolean,
-): InfiniteData<AgentThread[]> | undefined {
-  if (!oldData) {
-    return oldData;
-  }
-  return {
-    ...oldData,
-    pages: oldData.pages.map((page) => page.filter(predicate)),
-  };
+): InfiniteThreadsData | undefined {
+  return updateInfiniteThreadsPages(oldData, (threads) =>
+    threads.filter(predicate),
+  );
 }
 
 function mergeThreadMetadata(
@@ -3144,7 +4251,7 @@ function setThreadInCaches(
   );
   queryClient.setQueriesData(
     filters.infiniteSearch,
-    (oldData: InfiniteData<AgentThread[]> | undefined) =>
+    (oldData: InfiniteThreadsData | undefined) =>
       mapInfiniteThreadsCache(oldData, (thread) =>
         thread.thread_id === threadId ? mapper(thread) : thread,
       ),
@@ -3182,12 +4289,13 @@ export function useInfiniteThreads(
     sortOrder: "desc",
     select: ["thread_id", "updated_at", "values", "metadata"],
   },
+  { enabled = true }: { enabled?: boolean } = {},
 ) {
   const apiClient = getAPIClient();
   return useInfiniteQuery<
-    AgentThread[],
+    InfiniteThreadsPage,
     Error,
-    InfiniteData<AgentThread[]>,
+    InfiniteData<AgentThread[], number>,
     readonly unknown[],
     number
   >({
@@ -3202,7 +4310,9 @@ export function useInfiniteThreads(
       ),
     getNextPageParam: (lastPage, allPages) =>
       getInfiniteThreadsNextPageParam(lastPage, allPages),
+    select: selectInfiniteThreads,
     refetchOnWindowFocus: false,
+    enabled,
   });
 }
 
@@ -3211,17 +4321,18 @@ export function useThreadRuns(
   { enabled = true }: { enabled?: boolean } = {},
 ) {
   const apiClient = getAPIClient();
-  return useQuery<Run[]>({
+  return useQuery<AppRun[]>({
     queryKey: ["thread", threadId],
     queryFn: async () => {
       if (!threadId) {
         return [];
       }
       const response = await apiClient.runs.list(threadId);
-      return response;
+      return response as AppRun[];
     },
     enabled: enabled && Boolean(threadId),
     refetchOnWindowFocus: false,
+    retry: false,
   });
 }
 
@@ -3387,11 +4498,11 @@ export function useMoveThreadToProject(options?: {
 
 export function useRunDetail(threadId: string, runId: string) {
   const apiClient = getAPIClient();
-  return useQuery<Run>({
+  return useQuery<AppRun>({
     queryKey: ["thread", threadId, "run", runId],
     queryFn: async () => {
       const response = await apiClient.runs.get(threadId, runId);
-      return response;
+      return response as AppRun;
     },
     refetchOnWindowFocus: false,
   });
@@ -3555,7 +4666,7 @@ export function useDeleteThread() {
           queryKey: INFINITE_THREADS_QUERY_KEY_PREFIX,
           exact: false,
         },
-        (oldData: InfiniteData<AgentThread[]> | undefined) =>
+        (oldData: InfiniteThreadsData | undefined) =>
           filterInfiniteThreadsCache(
             oldData,
             (t) => !deletedThreadIds.has(t.thread_id),

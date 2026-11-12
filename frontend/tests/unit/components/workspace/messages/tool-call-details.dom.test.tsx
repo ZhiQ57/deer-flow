@@ -12,6 +12,15 @@ import {
 import { MessageGroup } from "@/components/workspace/messages/message-group";
 import { I18nContext } from "@/core/i18n/context";
 import { enUS } from "@/core/i18n/locales/en-US";
+import type { ArtifactEntry } from "@/core/threads/types";
+
+import { FlipDisplay as StaticFlipDisplay } from "../../../helpers/flip-display";
+
+rs.mock("@/components/workspace/flip-display", () => ({
+  FlipDisplay: (props: Parameters<typeof StaticFlipDisplay>[0]) => (
+    <StaticFlipDisplay {...props} />
+  ),
+}));
 
 rs.mock("@/components/workspace/artifacts", () => ({
   useArtifacts: () => ({ setOpen: () => undefined, select: () => undefined }),
@@ -41,12 +50,20 @@ function tool(
     status,
   };
 }
-function group(messages: Message[], debug = true) {
+function group(
+  messages: Message[],
+  debug = true,
+  toolArtifacts?: ArtifactEntry[],
+) {
   return (
     <I18nContext.Provider
       value={{ locale: "en-US", setLocale: () => undefined, t: enUS }}
     >
-      <MessageGroup messages={messages} showTokenDebugSummaries={debug} />
+      <MessageGroup
+        messages={messages}
+        showTokenDebugSummaries={debug}
+        toolArtifacts={toolArtifacts}
+      />
     </I18nContext.Provider>
   );
 }
@@ -57,6 +74,30 @@ function expand() {
 }
 
 describe("generic tool details", () => {
+  it("updates artifact badges with unchanged messages while retaining Debug details", () => {
+    const messages = [call, tool("report ready")];
+    const { rerender } = render(group(messages));
+    expect(screen.queryByText("art_12345678")).toBeNull();
+    const artifact: ArtifactEntry = {
+      handle: "art_12345678",
+      tool_name: "mcp_lookup",
+      tool_call_id: "call-1",
+      call_index: 0,
+      artifact_type: "file",
+      display_name: "report.csv",
+      real_ref: "/mnt/user-data/outputs/report.csv",
+    };
+    rerender(group(messages, true, [artifact]));
+    expect(screen.getByText("art_12345678")).toBeTruthy();
+    expect(screen.getByText("report.csv")).toBeTruthy();
+    expand();
+    expect(
+      screen.getByRole("region", { name: "Result" }).textContent,
+    ).toContain("report ready");
+    rerender(group(messages, true, []));
+    expect(screen.queryByText("art_12345678")).toBeNull();
+  });
+
   it("distinguishes multiple calls even when they use the same tool", () => {
     render(
       group([
@@ -67,9 +108,11 @@ describe("generic tool details", () => {
             { id: "call-2", name: "mcp_lookup", args: {} },
           ],
         } as Message,
+        tool("first call failed", "error"),
       ]),
     );
     fireEvent.click(screen.getByRole("button", { name: "1 more step" }));
+    expect(screen.getAllByText("Failed", { exact: true })).toHaveLength(1);
     fireEvent.click(
       screen.getByRole("button", { name: "Tool details: mcp_lookup (call-2)" }),
     );
@@ -141,7 +184,10 @@ describe("generic tool details", () => {
     render(
       group([
         tool(""),
-        tool('{"reason":"denied"}', "error"),
+        {
+          ...tool('{"reason":"denied"}'),
+          additional_kwargs: { deerflow_tool_meta: { status: "error" } },
+        } as Message,
         call,
         tool("later result"),
       ]),
@@ -220,6 +266,67 @@ describe("generic tool details", () => {
       }),
     ).toBeNull();
   });
+});
+
+it.each(["bash", "read_file", "mcp_lookup"])(
+  "shows explicit %s failures without adding normal-mode details",
+  (name) => {
+    const invocation = {
+      ...call,
+      tool_calls: [
+        {
+          id: "call-1",
+          name,
+          args: {
+            description: "Requested operation",
+            path: "/mnt/user-data/workspace/input.txt",
+          },
+        },
+      ],
+    } as Message;
+    const { rerender } = render(
+      group(
+        [
+          invocation,
+          {
+            ...tool("provider denied"),
+            additional_kwargs: { deerflow_tool_meta: { status: "error" } },
+          } as Message,
+        ],
+        false,
+      ),
+    );
+    expect(screen.getByText("Failed", { exact: true })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Tool details:/ })).toBeNull();
+    for (const result of [
+      undefined,
+      tool('{"error":"ordinary document data"}'),
+      {
+        ...tool("limited results"),
+        additional_kwargs: {
+          deerflow_tool_meta: { status: "partial_success" },
+        },
+      } as Message,
+    ]) {
+      rerender(group(result ? [invocation, result] : [invocation], false));
+      expect(screen.queryByText("Failed", { exact: true })).toBeNull();
+    }
+  },
+);
+
+it("does not announce scheduler success when a received object is marked as failed", () => {
+  const invocation = {
+    ...call,
+    tool_calls: [
+      { id: "call-1", name: "schedule_task", args: { action: "create" } },
+    ],
+  } as Message;
+  render(group([invocation, tool("{}", "error")], false));
+  expect(
+    screen.getByText("The scheduled task change didn't go through"),
+  ).toBeTruthy();
+  expect(screen.queryByText("Scheduled a task")).toBeNull();
+  expect(screen.queryByRole("button", { name: /^Tool details:/ })).toBeNull();
 });
 
 it.each([

@@ -2,13 +2,13 @@
 
 import asyncio
 import concurrent.futures
-import json
 import logging
 import threading
 import time
 import uuid
 from contextvars import ContextVar
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
@@ -20,8 +20,16 @@ from langgraph.types import Command
 
 from deerflow.agents.middlewares.receipt_verification import verify_receipt_citations
 from deerflow.authz.principal import normalize_authz_attributes
+from deerflow.community.ragflow.sources import cited_source_artifact
 from deerflow.config import get_app_config
 from deerflow.extensions import resolve_run_extensions
+from deerflow.knowledge_scope import KNOWLEDGE_SCOPE_RUNTIME_KEY, execution_scope
+from deerflow.mcp_scope import (
+    THREAD_INCARNATION_CONTEXT_KEY,
+    THREAD_INCARNATION_METADATA_GUARD_KEY,
+    runtime_thread_incarnation,
+)
+from deerflow.models.selection import authorize_selected_model
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox.security import LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE, is_host_bash_allowed
 from deerflow.subagents import SubagentExecutor, get_available_subagent_names, get_subagent_config
@@ -43,10 +51,7 @@ from deerflow.subagents.status_contract import (
     format_subagent_result_message,
     make_subagent_additional_kwargs,
 )
-from deerflow.subagents.tool_provider import (
-    SubagentToolContext,
-    build_registered_subagent_tools,
-)
+from deerflow.tools.sync import make_sync_tool_wrapper
 from deerflow.tools.types import Runtime
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, resolve_trace_id
 from deerflow.utils.assembly_io import run_assembly
@@ -69,6 +74,11 @@ _SUBAGENT_POLL_INTERVAL_SECONDS = 5.0
 # the parent run that long. The remaining lifecycle is handed to the deferred
 # cleaner on the persistent subagent loop.
 _UNEXPECTED_EXIT_GRACE_SECONDS = 5.0
+
+# A hard timeout returns to the lead immediately while cleanup stays owned on
+# the isolated loop. Retain its terminal result for this bounded usage-tail
+# window so callbacks emitted during cleanup are not lost.
+_TERMINAL_USAGE_TAIL_POLLS = 12
 
 # Sentinel returned by ``_peek_subagent_result`` when the registry entry exists
 # but cannot be read (persistent status-lookup / status-object failure).
@@ -101,6 +111,9 @@ class _ParentLoopMiddlewareRecorderProxy:
     """
 
     def __init__(self, journal: Any, loop: asyncio.AbstractEventLoop) -> None:
+        journal_owner_loop = getattr(journal, "_owner_loop", None)
+        if isinstance(journal_owner_loop, asyncio.AbstractEventLoop) and journal_owner_loop is not loop:
+            raise ValueError("subagent middleware recorder loop must match the RunJournal owner loop")
         self._journal = journal
         self._loop = loop
         self._state_lock = threading.Lock()
@@ -154,7 +167,20 @@ class _ParentLoopMiddlewareRecorderProxy:
 
 def _is_subagent_terminal(result: Any) -> bool:
     """Return whether a background subagent result is safe to clean up."""
-    return result.status in {SubagentStatus.COMPLETED, SubagentStatus.FAILED, SubagentStatus.CANCELLED, SubagentStatus.TIMED_OUT} or getattr(result, "completed_at", None) is not None
+    status = result.status
+    terminal = getattr(status, "is_terminal", None)
+    if isinstance(terminal, bool):
+        return terminal
+    return (
+        getattr(status, "value", status)
+        in {
+            "completed",
+            "failed",
+            "cancelled",
+            "timed_out",
+        }
+        or getattr(result, "completed_at", None) is not None
+    )
 
 
 def _peek_subagent_result(execution_id: str, *, trace_id: str) -> Any:
@@ -284,6 +310,13 @@ async def _finalize_interrupted_subagent(
         if final_result is not None:
             _report_subagent_usage(runtime, final_result)
         if final_terminal:
+            _supervise_terminal_usage_tail(
+                runtime,
+                execution_id,
+                trace_id,
+                max_polls,
+                final_result,
+            )
             cleanup_background_task(execution_id)
         else:
             _schedule_deferred_subagent_cleanup(runtime, execution_id, trace_id, max_polls)
@@ -366,14 +399,15 @@ async def _deferred_cleanup_subagent_task(
     max_polls: int,
     *,
     report_loop: asyncio.AbstractEventLoop | None = None,
+    terminal_result: Any | None = None,
 ) -> None:
     """Keep polling an interrupted subagent until it can be safely removed.
 
-    Only the resolved usage recorder is retained (plus ids and the captured
-    report loop) — never the whole ``runtime``: the strongly-referenced
-    cleanup task lives for up to the full poll budget, and through
-    ``runtime`` it would pin the parent run's journal and event store for
-    that entire window.
+    Only the resolved usage recorder is retained (plus ids, the captured report
+    loop, and an optional already-terminal result) — never the whole ``runtime``:
+    the strongly-referenced cleanup task lives for up to the full poll budget,
+    and through ``runtime`` it would pin the parent run's journal and event store
+    for that entire window.
 
     On a terminal result, schedule the subagent's FINAL usage report (deltas
     since the unwind snapshot included) onto the parent run's loop BEFORE
@@ -386,7 +420,9 @@ async def _deferred_cleanup_subagent_task(
     """
     cleanup_poll_count = 0
     while True:
-        result = _peek_subagent_result(execution_id, trace_id=trace_id)
+        result = terminal_result
+        if result is None:
+            result = _peek_subagent_result(execution_id, trace_id=trace_id)
         if result is None:
             return
         if result is _STATUS_UNREADABLE:
@@ -395,6 +431,17 @@ async def _deferred_cleanup_subagent_task(
                 force_cleanup_background_task(execution_id)
                 return
         elif _is_subagent_terminal(result):
+            execution_done = getattr(result, "execution_done_event", None)
+            if isinstance(execution_done, threading.Event) and not execution_done.is_set():
+                if cleanup_poll_count >= max_polls:
+                    # Non-pinned callers have not requested registry removal
+                    # yet. The supervisor must reap it when the fence opens.
+                    cleanup_background_task(execution_id)
+                    logger.warning(f"[trace={trace_id}] Deferred cleanup for terminal execution {execution_id} timed out after {cleanup_poll_count} polls")
+                    return
+                await asyncio.sleep(_SUBAGENT_POLL_INTERVAL_SECONDS)
+                cleanup_poll_count += 1
+                continue
             # Never-raise by contract: delivery problems (closed parent loop)
             # are logged inside and must not block the registry removal.
             _deliver_final_usage_report(usage_recorder, result, report_loop, execution_id=execution_id)
@@ -431,9 +478,10 @@ def bind_task_tool(
     """Return a task tool bound to one explicit SDK runtime capacity.
 
     The copied tool keeps the original name, description, and argument schema;
-    only its coroutine is wrapped. ``ContextVar`` keeps concurrent direct
-    factories isolated while the resolved capacity is passed into the executor
-    before work crosses to the persistent subagent event loop.
+    its coroutine and sync func are wrapped around the bound coroutine.
+    ``ContextVar`` keeps concurrent direct factories isolated while the
+    resolved capacity is passed into the executor before work crosses to the
+    persistent subagent event loop.
     """
 
     original_coroutine = task_tool.coroutine
@@ -449,7 +497,15 @@ def bind_task_tool(
             _explicit_app_config.reset(config_token)
             _explicit_execution_capacity.reset(capacity_token)
 
-    return task_tool.model_copy(update={"coroutine": bound_coroutine})
+    # The source tool may carry a sync func around the unbound coroutine (set
+    # in place by _ensure_sync_invocable_tool) or none at all; either way the
+    # copy's sync path must go through the bound coroutine.
+    return task_tool.model_copy(
+        update={
+            "coroutine": bound_coroutine,
+            "func": make_sync_tool_wrapper(bound_coroutine, task_tool.name),
+        }
+    )
 
 
 def _schedule_deferred_subagent_cleanup(
@@ -457,6 +513,8 @@ def _schedule_deferred_subagent_cleanup(
     execution_id: str,
     trace_id: str,
     max_polls: int,
+    *,
+    terminal_result: Any | None = None,
 ) -> asyncio.Task[None] | concurrent.futures.Future:
     """Schedule the deferred registry cleanup on the process-owned subagent loop.
 
@@ -467,7 +525,7 @@ def _schedule_deferred_subagent_cleanup(
     obtained, fall back to the caller loop rather than raising out of an
     unwind path that is already handling an error.
     """
-    logger.debug(f"[trace={trace_id}] Scheduling deferred cleanup for cancelled execution {execution_id}")
+    logger.debug(f"[trace={trace_id}] Scheduling deferred cleanup for execution {execution_id}")
     # Resolve both cross-loop dependencies here, on the unwind path's loop:
     # the parent run's loop, so the deferred final usage report can be
     # delivered back onto the loop that owns the RunJournal (see
@@ -479,12 +537,19 @@ def _schedule_deferred_subagent_cleanup(
     except RuntimeError:
         report_loop = None
     usage_recorder = _find_usage_recorder(runtime)
-    coro = _deferred_cleanup_subagent_task(usage_recorder, execution_id, trace_id, max_polls, report_loop=report_loop)
+    coro = _deferred_cleanup_subagent_task(
+        usage_recorder,
+        execution_id,
+        trace_id,
+        max_polls,
+        report_loop=report_loop,
+        terminal_result=terminal_result,
+    )
     try:
         cleanup_handle = run_on_isolated_subagent_loop(coro)
     except Exception:
-        # Unreachable in practice — the persistent loop backs the subagent
-        # execution itself, so it exists by the time a poller needs cleanup.
+        # The persistent loop can be temporarily fenced while retained
+        # shutdown ownership is still exiting; keep cleanup on the caller loop.
         logger.warning(
             f"[trace={trace_id}] Persistent subagent loop unavailable for deferred cleanup of {execution_id}; falling back to the caller loop",
             exc_info=True,
@@ -584,6 +649,29 @@ def _report_subagent_usage(runtime: Any, result: Any, *, final: bool = False) ->
     _report_usage_records(_find_usage_recorder(runtime), result, final=final)
 
 
+def _supervise_terminal_usage_tail(
+    runtime: Any,
+    execution_id: str,
+    trace_id: str,
+    max_polls: int,
+    result: Any,
+) -> None:
+    """Deliver usage collected after a terminal outcome was published."""
+    execution_done = getattr(result, "execution_done_event", None)
+    if not isinstance(execution_done, threading.Event):
+        return
+    if execution_done.is_set():
+        _report_subagent_usage(runtime, result, final=True)
+        return
+    _schedule_deferred_subagent_cleanup(
+        runtime,
+        execution_id,
+        trace_id,
+        max_polls,
+        terminal_result=result,
+    )
+
+
 def _get_runtime_app_config(runtime: Any) -> "AppConfig | None":
     explicit = _explicit_app_config.get()
     if explicit is not None:
@@ -606,143 +694,43 @@ def _merge_skill_allowlists(parent: list[str] | None, child: list[str] | None) -
     parent_set = set(parent)
     return [skill for skill in child if skill in parent_set]
 
-# ADD:
-def _data_query_sql_request_from_prompt(prompt: str) -> dict[str, Any] | None:
-    """从 SQL SubAgent 的 task prompt 中读取本次 SQL 请求。"""
-    try:
-        parsed = json.loads(prompt)
-    except (TypeError, json.JSONDecodeError):
-        return None
-
-    if not isinstance(parsed, dict) or parsed.get("kind") != "data_query_sql_request":
-        return None
-
-    flow_id = parsed.get("flow_id")
-    action = parsed.get("action")
-    if not isinstance(flow_id, str) or not flow_id.strip():
-        return None
-    if action not in {"execute", "sql_only"}:
-        return None
-
-    request_payload = dict(parsed)
-    request_payload["flow_id"] = flow_id.strip()
-    return request_payload
-
-# ADD:
-def _build_data_query_sql_result_from_steps(
-    steps: list[dict[str, Any]],
-    *,
-    request_payload: dict[str, Any],
-    data_source_id: str,
-    binding: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """从 SQL 子代理真实工具步骤构造权威 SQL 结果。"""
-
-    flow_id = request_payload.get("flow_id")
-    action = request_payload.get("action")
-    if not isinstance(flow_id, str) or not flow_id.strip():
-        return None
-    if action not in {"execute", "sql_only"}:
-        return None
-
-    flow_id = flow_id.strip()
-    request_data_source_id = request_payload.get("data_source_id")
-    if request_data_source_id is not None and request_data_source_id != data_source_id:
-        return None
-
-    if not isinstance(binding, dict) or binding.get("data_source_id") != data_source_id:
-        return None
-
-    expected_database_type = binding.get("database_type")
-    expected_binding_fingerprint = binding.get("binding_fingerprint")
-    if not isinstance(expected_database_type, str) or not isinstance(expected_binding_fingerprint, str):
-        return None
-
-    parsed_tools: list[tuple[str, dict[str, Any]]] = []
-    for step in steps:
-        if not isinstance(step, dict) or step.get("type") != "tool":
-            continue
-        name = step.get("name")
-        artifact = step.get("artifact")
-        if isinstance(name, str) and isinstance(artifact, dict):
-            parsed_tools.append((name, artifact))
-
-    validation: dict[str, Any] | None = None
-    execution: dict[str, Any] | None = None
-
-    if action == "sql_only":
-        if any(name == "data_execute_sql" for name, _value in parsed_tools):
-            return None
-        validate_payload = next((value for name, value in reversed(parsed_tools) if name == "data_validate_sql"), None)
-        if isinstance(validate_payload, dict) and validate_payload.get("kind") == "data_query_sql_result":
-            candidate = validate_payload.get("validation")
-            validation = dict(candidate) if isinstance(candidate, dict) else None
-            if validate_payload.get("execution") is not None:
-                return None
-    else:
-        execute_payload = next((value for name, value in reversed(parsed_tools) if name == "data_execute_sql"), None)
-        if isinstance(execute_payload, dict) and execute_payload.get("kind") == "data_query_sql_result":
-            candidate_validation = execute_payload.get("validation")
-            candidate_execution = execute_payload.get("execution")
-            validation = dict(candidate_validation) if isinstance(candidate_validation, dict) else None
-            execution = dict(candidate_execution) if isinstance(candidate_execution, dict) else None
-
-    if (
-        not isinstance(validation, dict)
-        or validation.get("version") != 1
-        or validation.get("valid") is not True
-        or validation.get("flow_id") != flow_id
-        or not isinstance(validation.get("executable_sql"), str)
-        or not isinstance(validation.get("sql_sha256"), str)
-        or not isinstance(validation.get("validation_digest"), str)
-        or validation.get("database_type") != expected_database_type
-        or validation.get("binding_fingerprint") != expected_binding_fingerprint
-    ):
-        return None
-
-    if action == "execute":
-        if (
-            not isinstance(execution, dict)
-            or execution.get("version") != 1
-            or execution.get("flow_id") != flow_id
-            or execution.get("validation_digest") != validation.get("validation_digest")
-            or not isinstance(execution.get("ok"), bool)
-        ):
-            return None
-
-    return {
-        "version": 1,
-        "kind": "data_query_sql_result",
-        "flow_id": flow_id,
-        "data_source_id": data_source_id,
-        "action": action,
-        "validation": validation,
-        "execution": execution,
-    }
 
 def _task_result_command(
     *,
     tool_call_id: str,
+    message_id: str | None = None,
     status: SubagentStatusValue,
     result: str | None = None,
     error: str | None = None,
     stop_reason: SubagentStopReasonValue | None = None,
     model_name: str | None = None,
     usage: dict[str, int] | None = None,
-    artifact: Any | None = None,
     tool_receipts: list[dict] | None = None,
+    source_messages: list[dict] | None = None,
     receipt_verdict: dict | None = None,
     acceptance_verdict: dict | None = None,
+    knowledge_sources: list[dict] | None = None,
 ) -> Command:
     content, metadata_error = format_subagent_result_message(status, result=result, error=error, stop_reason=stop_reason)
     if acceptance_verdict is not None:
         # RFC #4651 PR4: the rendered checklist rides the model-visible result
         # text; metadata carries the structured verdict for the ledger/judge.
         content = f"{content}\n\n{render_acceptance_section(acceptance_verdict)}"
+    artifact = cited_source_artifact(source_messages or [], content, include_omissions=True)
+    if knowledge_sources:
+        from deerflow.knowledge.sources import forward_sources
+
+        content, unified_artifact = forward_sources(content, knowledge_sources)
+        if artifact is None:
+            artifact = unified_artifact
+        else:
+            # Preserve the native RAGFlow envelope for existing history and batch readers.
+            artifact = {**artifact, "retrieval_sources": unified_artifact["knowledge_sources"], "knowledge_sources_version": 1}
     return Command(
         update={
             "messages": [
                 ToolMessage(
+                    id=message_id,
                     content=content,
                     tool_call_id=tool_call_id,
                     name="task",
@@ -774,6 +762,7 @@ async def task_tool(
     acceptance_criteria: list[str] | None = None,
     description: str = "",
     context_mode: Literal["isolated", "snapshot"] = "isolated",
+    model_name: str | None = None,
 ) -> str | Command:
     """Delegate a bounded task to a specialized subagent in its own context.
 
@@ -836,6 +825,14 @@ async def task_tool(
       every criterion that cannot be checked deterministically is marked
       UNVERIFIED — never silently passed. A `holds` leaf is execution evidence,
       not a guarantee that the deliverable is correct.
+    - JSON deliverables can opt into `file:<path> json-valid`: validate complete UTF-8 JSON
+      syntax up to 50,000 bytes, rejecting NaN/Infinity. Oversize files, incomplete reads,
+      or parser resource limits return UNVERIFIED. No schema or business validation;
+      .json files are not checked automatically.
+    - CSV deliverables can opt into `file:<path> csv-columns:["id","name"]`: check the
+      first UTF-8 header record (optional BOM), with exact required names and extra columns
+      allowed. Empty/duplicate headers fail; incomplete or oversized headers are UNVERIFIED.
+      The header budget is 50,000 bytes; data rows are not validated.
     - `completed` means execution ended, not task acceptance. Read each criterion
       and retain useful work. For `does not hold`, inspect the reason and repair
       or recheck only the unmet condition, reusing unaffected outputs.
@@ -864,6 +861,7 @@ async def task_tool(
             back marked UNVERIFIED. Example for a report-writing delegation:
             ["file:../outputs/report.md non-empty"]. Omit for open-ended
             exploration where no crisp acceptance condition exists.
+            JSON example: ["file:../outputs/report.json json-valid"].
         description: Optional short (3-5 word) description of the task for logging/display.
         context_mode: Defaults to isolated (only the delegated prompt). Choose
             snapshot when relevant requirements or failed approaches are spread
@@ -871,9 +869,19 @@ async def task_tool(
             summary as background at dispatch time, increasing input tokens.
             The child keeps its own role/tools; later parent turns are not synced.
             Historical tool actions are not evidence of child completion.
+        model_name: Optional configured model name for this child only. Omit to
+            keep the subagent's configured/inherited model. Does not change the
+            parent conversation or the saved subagent configuration.
     """
+    from deerflow.runtime.runs.input_control import run_input_control
+
+    parent_context = getattr(runtime, "context", None)
+    parent_context = parent_context if isinstance(parent_context, dict) else {}
+    input_control = run_input_control(parent_context)
+    input_gate = input_control.child(tool_call_id) if input_control is not None else None
+    result_command = partial(_task_result_command, message_id=input_gate.result_id) if input_gate is not None else _task_result_command
     if context_mode not in {"isolated", "snapshot"}:
-        return _task_result_command(tool_call_id=tool_call_id, status="failed", error=f"Unknown context_mode '{context_mode}'. Use isolated or snapshot.")
+        return result_command(tool_call_id=tool_call_id, status="failed", error=f"Unknown context_mode '{context_mode}'. Use isolated or snapshot.")
     runtime_app_config = _get_runtime_app_config(runtime)
     metadata: dict = runtime.config.get("metadata", {}) if runtime is not None else {}
     allowed_subagents = metadata.get("allowed_subagents")
@@ -887,7 +895,7 @@ async def task_tool(
     if subagent_type == "bash":
         host_bash_allowed = is_host_bash_allowed(runtime_app_config) if runtime_app_config is not None else is_host_bash_allowed()
         if not host_bash_allowed:
-            return _task_result_command(
+            return result_command(
                 tool_call_id=tool_call_id,
                 status="failed",
                 error=LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE,
@@ -903,7 +911,7 @@ async def task_tool(
         else:
             available = "none"
         error = f"Unknown subagent type '{subagent_type}'. Available: {available}"
-        return _task_result_command(
+        return result_command(
             tool_call_id=tool_call_id,
             status="failed",
             error=error,
@@ -961,8 +969,22 @@ async def task_tool(
     # None when absent (e.g. internal-auth runs) so guardrail behavior is
     # unchanged. Without this, role-aware policy silently mis-attributes any
     # tool call delegated to a subagent (user_role=None).
-    parent_context = runtime.context if runtime is not None else None
-    parent_context = parent_context if isinstance(parent_context, dict) else {}
+    requested_model = parent_context.get("subagent_model_name")
+    if model_name is not None and requested_model is not None and model_name != requested_model:
+        return result_command(tool_call_id=tool_call_id, status="failed", error="The child model conflicts with the user's selection.")
+    selected_model = model_name if model_name is not None else requested_model
+    if selected_model is not None:
+        resolved_config = runtime_app_config or await run_assembly(get_app_config)
+        try:
+            if not isinstance(selected_model, str) or not selected_model.strip():
+                raise ValueError("A configured model name is required.")
+            await run_assembly(authorize_selected_model, selected_model, context=parent_context, app_config=resolved_config)
+        except ValueError as exc:
+            return result_command(tool_call_id=tool_call_id, status="failed", error=str(exc))
+        runtime_app_config = resolved_config
+        config = replace(config, model=selected_model)
+    if parent_context.get(THREAD_INCARNATION_METADATA_GUARD_KEY) is True:
+        runtime_thread_incarnation(runtime)
     user_role = parent_context.get("user_role")
     oauth_provider = parent_context.get("oauth_provider")
     oauth_id = parent_context.get("oauth_id")
@@ -984,6 +1006,9 @@ async def task_tool(
     # runtime context is authoritative (worker._bind_trace_id always fills it);
     # the ambient fallback covers tools invoked outside a Gateway run.
     deerflow_trace_id = resolve_trace_id(parent_context.get(DEERFLOW_TRACE_METADATA_KEY))
+    knowledge_scope = None
+    if KNOWLEDGE_SCOPE_RUNTIME_KEY in parent_context:
+        knowledge_scope = execution_scope(parent_context[KNOWLEDGE_SCOPE_RUNTIME_KEY])
 
     parent_available_skills = metadata.get("available_skills")
     if parent_available_skills is not None:
@@ -1014,50 +1039,15 @@ async def task_tool(
         "subagent_enabled": False,
         "include_upload_tool": upload_state_available,
     }
+    if metadata.get("mcp_plugins") is not None:
+        available_tools_kwargs["mcp_plugins"] = metadata["mcp_plugins"]
     if resolved_app_config is not None:
         available_tools_kwargs["app_config"] = resolved_app_config
     # Assemble off-loop: tool assembly may block on MCP cache initialization,
     # which must not stall the calling event loop (issue #5172).
+    if run_extensions is not None:
+        available_tools_kwargs["extensions"] = run_extensions
     tools = await run_assembly(get_available_tools, **available_tools_kwargs)
-
-    data_query_sql_request: dict[str, Any] | None = None
-    data_query_runtime_ability: dict[str, Any] | None = None
-
-    service_ability_raw = parent_context.get("data_query_service_ability")
-    if isinstance(service_ability_raw, dict) and parent_context.get("data_query_sql_subagent_allowed") is True:
-        sql_request = _data_query_sql_request_from_prompt(prompt)
-        data_source_id = service_ability_raw.get("data_source_id")
-        request_data_source_id = sql_request.get("data_source_id") if sql_request is not None else None
-
-        if (
-            service_ability_raw.get("type") == "data_query"
-            and service_ability_raw.get("version") == 1
-            and service_ability_raw.get("enable_sql_rag") is True
-            and service_ability_raw.get("sql_execution_enabled") is True
-            and subagent_type == service_ability_raw.get("sql_subagent_name")
-            and isinstance(data_source_id, str)
-            and sql_request is not None
-            and (request_data_source_id is None or request_data_source_id == data_source_id)
-        ):
-            data_query_sql_request = sql_request
-            data_query_runtime_ability = service_ability_raw
-
-    # ADD: Harness 只调用通用提供器扩展点；Gateway 等应用层决定是否注入业务工具。
-    parent_state = runtime.state if runtime is not None and isinstance(runtime.state, dict) else {}
-    tools.extend(
-        build_registered_subagent_tools(
-            SubagentToolContext(
-                subagent_type=subagent_type,
-                thread_id=str(thread_id) if thread_id is not None else None,
-                run_id=str(run_id) if run_id is not None else None,
-                user_id=str(user_id) if user_id is not None else None,
-                agent_name=str(parent_context.get("agent_name")) if parent_context.get("agent_name") else None,
-                parent_context=parent_context,
-                parent_state=parent_state,
-                task_prompt=prompt,
-            )
-        )
-    )
 
     # Create executor
     executor_kwargs = {
@@ -1078,6 +1068,7 @@ async def task_tool(
         "is_internal": is_internal,
         "authz_attributes": authz_attributes,
         "deerflow_trace_id": deerflow_trace_id,
+        "knowledge_scope": knowledge_scope,
         # RFC #4651 PR3: lead-supplied acceptance criteria are handed to the
         # executor, which appends them to the subagent's task HumanMessage as
         # untrusted data (sanitized and boundary-framed by
@@ -1086,6 +1077,13 @@ async def task_tool(
         # system-channel authority over framework instructions.
         "acceptance_criteria": acceptance_criteria,
     }
+    approval_runtime = parent_context.get("__tool_approval_runtime")
+    if approval_runtime is not None:
+        executor_kwargs["approval_runtime"] = approval_runtime.child()
+    # Carry the host-captured lifecycle, including legacy None, without
+    # inventing a legacy scope for missing context or re-reading thread state.
+    if THREAD_INCARNATION_CONTEXT_KEY in parent_context:
+        executor_kwargs["thread_incarnation"] = parent_context[THREAD_INCARNATION_CONTEXT_KEY]
     if context_snapshot is not None:
         executor_kwargs["context_snapshot"] = context_snapshot
     middleware_recorder = None
@@ -1100,6 +1098,7 @@ async def task_tool(
         )
         executor_kwargs["loop_detection_recorder"] = middleware_recorder
         executor_kwargs["tool_promotion_recorder"] = middleware_recorder
+        executor_kwargs["tool_progress_recorder"] = middleware_recorder
     if resolved_app_config is not None:
         executor_kwargs["app_config"] = resolved_app_config
     if run_extensions is not None:
@@ -1107,11 +1106,15 @@ async def task_tool(
     explicit_capacity = _explicit_execution_capacity.get()
     if explicit_capacity is not None:
         executor_kwargs["execution_capacity"] = explicit_capacity
+    if input_gate is not None:
+        executor_kwargs["input_gate"] = input_gate
     executor = SubagentExecutor(**executor_kwargs)
 
     # Keep the provider tool-call ID for stream/message correlation, but use a
     # server-generated execution ID for process-wide background task control.
     execution_id = executor.execute_async(prompt, task_id=tool_call_id)
+    if input_control is not None:
+        input_control.bind_execution(tool_call_id, execution_id)
 
     # Poll for task completion in backend (removes need for LLM to poll)
     poll_count = 0
@@ -1149,7 +1152,7 @@ async def task_tool(
                 )
                 cleanup_background_task(execution_id)
                 error = f"Task {tool_call_id} disappeared from background tasks"
-                return _task_result_command(
+                return result_command(
                     tool_call_id=tool_call_id,
                     status="failed",
                     error=error,
@@ -1190,43 +1193,11 @@ async def task_tool(
             # Check if task completed, failed, or timed out
             if result.status == SubagentStatus.COMPLETED:
                 _report_subagent_usage(runtime, result)
-                task_result = result.result
-                task_result_artifact: dict[str, Any] | None = None
-                if data_query_sql_request is not None and data_query_runtime_ability is not None:
-                    # ADD: DataAgent SQL 结果只从捕获的工具输出重建，子代理最终自由文本不具备数据库事实权限。
-                    runtime_binding = parent_context.get("data_query_binding")
-                    authoritative_result = _build_data_query_sql_result_from_steps(
-                        result.ai_messages or [],
-                        request_payload=data_query_sql_request,
-                        data_source_id=str(data_query_runtime_ability["data_source_id"]),
-                        binding=runtime_binding if isinstance(runtime_binding, dict) else None,
-                    )
-                    if authoritative_result is None:
-                        error = "SQL_SUBAGENT_TOOL_RESULT_INVALID"
-                        writer(
-                            {
-                                "type": "task_failed",
-                                "task_id": tool_call_id,
-                                "error": error,
-                                "usage": usage,
-                                "model_name": effective_model,
-                            }
-                        )
-                        cleanup_background_task(execution_id)
-                        return _task_result_command(
-                            tool_call_id=tool_call_id,
-                            status="failed",
-                            error=error,
-                            model_name=effective_model,
-                            usage=usage,
-                        )
-                    task_result = json.dumps(authoritative_result, ensure_ascii=False, separators=(",", ":"))
-                    task_result_artifact = authoritative_result
                 await aemit_custom_event(
                     {
                         "type": "task_completed",
                         "task_id": tool_call_id,
-                        "result": task_result,
+                        "result": result.result,
                         "usage": usage,
                         "model_name": effective_model,
                     },
@@ -1263,17 +1234,18 @@ async def task_tool(
                         )
                     except Exception:
                         logger.warning(f"[trace={trace_id}] Acceptance checklist failed for task {tool_call_id}; result flows back unchecked", exc_info=True)
-                return _task_result_command(
+                return result_command(
                     tool_call_id=tool_call_id,
                     status="completed",
-                    result=task_result,
+                    result=result.result,
                     stop_reason=result.stop_reason,
                     model_name=effective_model,
                     usage=usage,
-                    artifact=task_result_artifact,
                     tool_receipts=receipts,
+                    source_messages=getattr(result, "ai_messages", None),
                     receipt_verdict=receipt_verdict,
                     acceptance_verdict=acceptance_verdict,
+                    knowledge_sources=getattr(result, "knowledge_sources", None),
                 )
             elif result.status == SubagentStatus.FAILED:
                 _report_subagent_usage(runtime, result)
@@ -1292,7 +1264,7 @@ async def task_tool(
                 # A turn-capped run with no usable output surfaces as failed +
                 # stop_reason=turn_capped; the cap note lets the lead tell "out
                 # of budget" from "broken subagent".
-                return _task_result_command(
+                return result_command(
                     tool_call_id=tool_call_id,
                     status="failed",
                     error=result.error,
@@ -1300,6 +1272,7 @@ async def task_tool(
                     model_name=effective_model,
                     usage=usage,
                     tool_receipts=getattr(result, "tool_receipts", None),
+                    source_messages=getattr(result, "ai_messages", None),
                 )
             elif result.status == SubagentStatus.CANCELLED:
                 _report_subagent_usage(runtime, result)
@@ -1315,13 +1288,14 @@ async def task_tool(
                 )
                 logger.info(f"[trace={trace_id}] Task {tool_call_id} cancelled: {result.error}")
                 cleanup_background_task(execution_id)
-                return _task_result_command(
+                return result_command(
                     tool_call_id=tool_call_id,
                     status="cancelled",
                     error=result.error,
                     model_name=effective_model,
                     usage=usage,
                     tool_receipts=getattr(result, "tool_receipts", None),
+                    source_messages=getattr(result, "ai_messages", None),
                 )
             elif result.status == SubagentStatus.TIMED_OUT:
                 _report_subagent_usage(runtime, result)
@@ -1336,14 +1310,22 @@ async def task_tool(
                     writer=writer,
                 )
                 logger.warning(f"[trace={trace_id}] Task {tool_call_id} timed out: {result.error}")
+                _supervise_terminal_usage_tail(
+                    runtime,
+                    execution_id,
+                    trace_id,
+                    _TERMINAL_USAGE_TAIL_POLLS,
+                    result,
+                )
                 cleanup_background_task(execution_id)
-                return _task_result_command(
+                return result_command(
                     tool_call_id=tool_call_id,
                     status="timed_out",
                     error=result.error,
                     model_name=effective_model,
                     usage=usage,
                     tool_receipts=getattr(result, "tool_receipts", None),
+                    source_messages=getattr(result, "ai_messages", None),
                 )
 
             # Still running, wait before next poll
@@ -1373,13 +1355,14 @@ async def task_tool(
                 request_cancel_background_task(execution_id)
                 _schedule_deferred_subagent_cleanup(runtime, execution_id, trace_id, max_poll_count)
                 message = f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}"
-                return _task_result_command(
+                return result_command(
                     tool_call_id=tool_call_id,
                     status="polling_timed_out",
                     error=message,
                     model_name=effective_model,
                     usage=usage,
                     tool_receipts=getattr(result, "tool_receipts", None),
+                    source_messages=getattr(result, "ai_messages", None),
                 )
     except asyncio.CancelledError:
         # Signal the background subagent thread to stop cooperatively, then

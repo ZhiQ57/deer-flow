@@ -69,6 +69,26 @@ class TestMergeDelegations:
 
         assert out[0]["run_id"] == "run-1"
 
+    def test_same_tool_call_id_in_different_runs_keeps_both_delegations(self):
+        existing = [{**_entry("call_1", "completed", "old task"), "run_id": "run-old"}]
+        new = [{**_entry("call_1", "in_progress", "new task"), "run_id": "run-new"}]
+
+        merged = merge_delegations(existing, new)
+
+        assert [(entry["run_id"], entry["description"], entry["status"]) for entry in merged] == [
+            ("run-old", "old task", "completed"),
+            ("run-new", "new task", "in_progress"),
+        ]
+
+    def test_same_tool_call_id_in_one_run_still_updates_one_delegation(self):
+        existing = [{**_entry("call_1", "in_progress"), "run_id": "run-1"}]
+        new = [{**_entry("call_1", "completed"), "run_id": "run-1"}]
+
+        merged = merge_delegations(existing, new)
+
+        assert len(merged) == 1
+        assert merged[0]["status"] == "completed"
+
     def test_over_cap_keeps_most_recent_entries(self):
         from deerflow.agents import thread_state as thread_state_module
 
@@ -533,7 +553,7 @@ class TestReceiptVerdictRendering:
         verdict["citation_resolved"] = False
         messages = [_ai_task_call("c1", "write report"), _completed_task_message("c1", verdict)]
         rendered = render_delegation_ledger(extract_delegations(messages))
-        assert "citations: UNVERIFIED — action claims without receipt citations" in rendered
+        assert "citations: UNVERIFIED — no receipt citations" in rendered
 
     def test_legacy_messages_without_verdict_render_unchanged(self):
         messages = [_ai_task_call("c1", "write report"), _completed_task_message("c1", None)]

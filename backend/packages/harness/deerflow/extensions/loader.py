@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from deerflow_extension_api import API_VERSION
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from deerflow.extensions.documentation import read_documentation
+from deerflow.extensions.host_access import HostAccess, bind_host_access
+from deerflow.extensions.model_access import ModelInvocationScope
 from deerflow.extensions.registry import ExtensionRegistry, LoadedExtensions
 from deerflow.persistence.migrations._env_filters import register_extension_table_prefix
 from deerflow.reflection import resolve_variable
@@ -47,6 +50,14 @@ class ExtensionSpec(BaseModel):
         default_factory=dict,
         description="Extension-private configuration, passed to install() verbatim",
     )
+    host_access: HostAccess = Field(default_factory=HostAccess)
+
+    @model_validator(mode="after")
+    def _validate_host_identity(self):
+        if self.host_access.granted and (not self.name or self.name.strip() != self.name or len(self.name) > 128):
+            raise ValueError("host_access requires an explicit stable plugin name")
+        return self
+
     required: bool = Field(
         default=False,
         description="When true, a load failure aborts startup instead of being skipped",
@@ -73,8 +84,8 @@ class ExtensionSpec(BaseModel):
 class Diagnostic:
     """A load- or run-time problem attributed to a specific extension.
 
-    The repository has no structured diagnostics channel today; this is a
-    deliberately minimal one whose only job is keeping failures attributable.
+    Raw details stay in the Gateway log. HTTP diagnostics use a redacted
+    projection while this record keeps the failure attributable.
     """
 
     level: DiagnosticLevel
@@ -154,9 +165,12 @@ def load_extensions(specs: Sequence[ExtensionSpec]) -> tuple[LoadedExtensions, l
     the Gateway still starts. `required: true` flips that to fail-closed for
     extensions whose absence changes behaviour rather than just observability.
     """
+    # Validate attribution before importing any extension, even optional ones.
+    bind_host_access(specs)
     registry = ExtensionRegistry()
     diagnostics: list[Diagnostic] = []
     loaded_sources: list[str] = []
+    documentation: list[tuple[str, dict]] = []
 
     for spec in specs:
         if spec.table_prefix:
@@ -237,7 +251,9 @@ def load_extensions(specs: Sequence[ExtensionSpec]) -> tuple[LoadedExtensions, l
         # installed instance that happens to share this spec's `use`.
         mark = registry.mark()
         try:
-            with registry.attributed_to(spec.use):
+            grant = spec.host_access.model_invocation
+            scope = ModelInvocationScope(spec.use, grant) if grant is not None else None
+            with registry.attributed_to(spec.use, model_access=scope):
                 install(registry, _frozen_config(spec.config))
         except Exception as exc:
             registry.rollback_to(mark)
@@ -249,6 +265,15 @@ def load_extensions(specs: Sequence[ExtensionSpec]) -> tuple[LoadedExtensions, l
             continue
 
         loaded_sources.append(spec.use)
+        if registry.mark() != mark:
+            try:
+                page = read_documentation(spec.use)
+                if page is not None:
+                    documentation.append((spec.use, page))
+            except (ValueError, OSError, TypeError, RecursionError):
+                # Bad optional copy must not disable a working legacy extension.
+                diagnostics.append(Diagnostic.warning(spec.use, "Extension documentation is invalid."))
+                logger.warning("Extension %s: invalid documentation", spec.use)
 
     # Loading third-party code is exactly the event an operator needs positive
     # confirmation of, and every other branch here is failure-only — so without
@@ -263,7 +288,7 @@ def load_extensions(specs: Sequence[ExtensionSpec]) -> tuple[LoadedExtensions, l
         # every deployment, and an unconditional line would be pure boot noise.
         logger.debug("No extensions configured")
 
-    return registry.build(), diagnostics
+    return replace(registry.build(), documentation=tuple(documentation)), diagnostics
 
 
 def _frozen_config(config: dict[str, Any]) -> Mapping[str, Any]:

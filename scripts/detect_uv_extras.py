@@ -13,7 +13,10 @@ Order of resolution:
    - stream_bridge.type == redis         -> redis
    - tools[].name == browser_navigate    -> browser
    - sandbox.ownership.type == redis     -> redis
+   - channels.discord.enabled == true    -> discord
    - channels.buzz.enabled == true       -> buzz
+   - channel_connections.enabled and channel_connections.discord.enabled -> discord
+   - channel_connections.enabled and channel_connections.buzz.enabled    -> buzz
    - models[].use == langchain_ollama:*  -> ollama
 3. Runtime environment toggles that enable optional backends:
    - DEER_FLOW_STREAM_BRIDGE_REDIS_URL   -> redis
@@ -64,10 +67,14 @@ def parse_env_extras(value: str) -> list[str]:
 
 
 def find_config_file() -> Path | None:
-    """Locate config.yaml using the same precedence as serve.sh."""
+    """Prefer explicit config and project-root settings before legacy locations."""
     explicit = os.environ.get("DEER_FLOW_CONFIG_PATH")
     if explicit:
         candidate = Path(explicit)
+        if candidate.is_file():
+            return candidate
+    if project_root := os.environ.get("DEER_FLOW_PROJECT_ROOT"):
+        candidate = Path(project_root) / "config.yaml"
         if candidate.is_file():
             return candidate
     for path in (Path("config.yaml"), Path("backend/config.yaml")):
@@ -79,7 +86,7 @@ def find_config_file() -> Path | None:
 _SECTION_RE = re.compile(r"^([A-Za-z_][\w-]*)\s*:\s*$")
 _INDENTED_SECTION_RE = re.compile(r"^\s+([A-Za-z_][\w-]*)\s*:\s*$")
 _KEY_RE = re.compile(r"^\s+([A-Za-z_][\w-]*)\s*:\s*(\S.*?)\s*$")
-_LIST_ITEM_NAME_RE = re.compile(r"^\s*-\s+name\s*:\s*(\S.*?)\s*$")
+_LIST_ITEM_KEY_RE = re.compile(r"^(\s*)-\s+([A-Za-z_][\w-]*)\s*:\s*(.*?)\s*$")
 # `use:` on a models list item, whether it is the first key (`- use: X`) or a
 # later one (`  use: X`). Leading whitespace is optional because
 # `yaml.safe_dump` (the setup wizard, config-upgrade.sh) writes list items
@@ -242,8 +249,15 @@ def nested_section_value(lines: list[str], section_path: str, key: str) -> str |
 
 
 def tools_include_name(lines: list[str], tool_name: str) -> bool:
-    """Return True when the top-level tools list has an active item name."""
+    """Return True when the top-level tools list has an active item name.
+
+    The first list item fixes the list indent, and each item's first key column
+    identifies its direct fields. The name may appear anywhere in the mapping;
+    deeper-nested names are ignored in both indented and indentless lists.
+    """
     inside = False
+    list_indent: int | None = None
+    field_indent: int | None = None
     for raw in lines:
         line = _strip_comment(raw)
         if not line.strip():
@@ -251,19 +265,34 @@ def tools_include_name(lines: list[str], tool_name: str) -> bool:
         sect_match = _SECTION_RE.match(line)
         if sect_match:
             inside = sect_match.group(1) == "tools"
+            list_indent = None
+            field_indent = None
             continue
         if not inside:
             continue
-        name_match = _LIST_ITEM_NAME_RE.match(line)
-        if name_match:
-            if _unquote(name_match.group(1).strip()) == tool_name:
-                return True
-            continue
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
-        if indent == 0:
+        item_match = _LIST_ITEM_KEY_RE.match(line)
+        if item_match:
+            indent = item_match.end(1)
+            if list_indent is None:
+                list_indent = indent
+            if indent != list_indent:
+                continue
+            # The first mapping key need not be name. Its column determines
+            # which continuation keys belong to the tool rather than options.
+            field_indent = item_match.start(2)
+            key, value = item_match.group(2, 3)
+        elif indent == 0:
             inside = False
             continue
+        else:
+            key_match = _KEY_RE.match(line)
+            if indent != field_indent or key_match is None:
+                continue
+            key, value = key_match.group(1, 2)
+        if key == "name" and _unquote(value.strip()) == tool_name:
+            return True
     return False
 
 
@@ -323,7 +352,7 @@ def models_use_providers(lines: list[str]) -> set[str]:
 
 def detect_from_config(path: Path) -> list[str]:
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return []
     lines = text.splitlines()
@@ -336,10 +365,13 @@ def detect_from_config(path: Path) -> list[str]:
         extras.add("redis")
     if (nested_section_value(lines, "sandbox.ownership", "type") or "").lower() == "redis":
         extras.add("redis")
-    if (nested_section_value(lines, "channels.discord", "enabled") or "").lower() == "true":
-        extras.add("discord")
-    if (nested_section_value(lines, "channels.buzz", "enabled") or "").lower() == "true":
-        extras.add("buzz")
+    connections_enabled = (section_value(lines, "channel_connections", "enabled") or "").lower() == "true"
+    # Only channel providers with extras in backend/pyproject.toml [project.optional-dependencies] belong here; keep this set in sync.
+    for provider in ("discord", "buzz"):
+        legacy_enabled = (nested_section_value(lines, f"channels.{provider}", "enabled") or "").lower() == "true"
+        browser_enabled = connections_enabled and (nested_section_value(lines, f"channel_connections.{provider}", "enabled") or "").lower() == "true"
+        if legacy_enabled or browser_enabled:
+            extras.add(provider)
     if tools_include_name(lines, "browser_navigate"):
         extras.add("browser")
     for provider in models_use_providers(lines):

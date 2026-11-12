@@ -7,8 +7,8 @@ DataAgent 使用 DeerFlow 的 custom-agent 机制运行。模型和子代理的�
 ## 入口与 MCP 服务
 
 - 模板：`docs/agents/data-agent/config.yaml`、`docs/agents/data-agent/SOUL.md`
-- 运行：前端/SDK 仍使用 `assistantId=lead_agent`，并通过
-  `agent_name=data-agent` 加载 custom-agent。
+- 运行：前端智能体页把 `agent_name` 同时作为 `assistantId` 和运行时
+  `context.agent_name` 发送，后端据此加载 custom-agent。
 - `sqltable-rag` 提供 `sqlrag_retrieve`，用于表、字段、业务口径、字段值和 Join
   Graph 检索。
 - `sql-execute` 提供 `sql_execute`，只接收 SQL 字符串并返回真实
@@ -40,9 +40,9 @@ MCP Server 负责数据库边界、只读检查、结果预算和错误脱敏。
 - 只允许 Lead-Agent：不要把 `sql_execute` 放入 SQL SubAgent 白名单。
 - 需要两者都能执行：同时在两处显式配置。
 
-Lead-Agent 自身可通过 custom-agent 配置中的 `mcp_tools` 精确限制 MCP 工具，例如
-`mcp_tools: [sqlrag_retrieve]` 表示 Lead-Agent 只能检索表结构，SQL SubAgent
-再通过 `tools: [sql_execute]` 获得执行权。
+Lead-Agent 通过 custom-agent 的 `mcp_plugins` 选择可用的 MCP 安装实例；官方管线
+不再支持 `mcp_tools` 按工具名白名单裁剪，选中实例暴露的工具由模型自主决定。
+SQL SubAgent 仍通过 `tools: [sql_execute]` 控制自己的工具面。
 
 不需要恢复 `SqlStageMiddleware`，也不要在 AgentLoop 增加 DataAgent 专属 SQL
 强校验。

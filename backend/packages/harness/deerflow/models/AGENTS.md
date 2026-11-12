@@ -1,16 +1,93 @@
-### Model Factory (`packages/harness/deerflow/models/factory.py`)
+# Models (`deerflow/models/`)
 
-- `create_chat_model(name, thinking_enabled)` instantiates LLM from config via reflection
-- Supports `thinking_enabled` flag with per-model `when_thinking_enabled` overrides
-- Supports vLLM-style thinking toggles via `when_thinking_enabled.extra_body.chat_template_kwargs.enable_thinking` for Qwen reasoning models, while normalizing legacy `thinking` configs for backward compatibility
-- A per-request `reasoning_effort` kwarg (the regular, non-bootstrap lead-agent build passes it even when `None`) is popped from `kwargs` and layered like `model_overrides`: a non-`None` value replaces the profile's, and the thinking transforms applied afterwards (`when_thinking_enabled`, `when_thinking_disabled`, the `extra_body.thinking` disable path) still decide the final value. Never let a key reach the constructor through both `kwargs` and the profile settings — Python raises `got multiple values for keyword argument` and the lead agent cannot be built for that model. Codex checks the requested level itself. Pinned by `tests/test_model_factory.py` and `tests/test_lead_agent_model_resolution.py`
-- Supports `supports_vision` flag for image understanding models
-- Config values starting with `$` resolved as environment variables
-- Missing provider modules surface actionable install hints from reflection resolvers (for example `uv add langchain-google-genai`)
+The model factory, the reasoning capability contract, request admission, and the
+provider adapters (Claude, Codex, vLLM, MindIE, OpenAI-compatible). The managed
+shared-model catalog lives in `config/managed_models.py`. Model fields and their
+defaults are in the config models and `config.example.yaml`; see
+[the config guide](../config/AGENTS.md).
 
-### vLLM Provider (`packages/harness/deerflow/models/vllm_provider.py`)
+## Verify
 
-- `VllmChatModel` subclasses `langchain_openai:ChatOpenAI` for vLLM 0.19.0 OpenAI-compatible endpoints
-- Preserves vLLM's non-standard assistant `reasoning` field on full responses, streaming deltas, and follow-up tool-call turns
-- Designed for configs that enable thinking through `extra_body.chat_template_kwargs.enable_thinking` on vLLM 0.19.0 Qwen reasoning models, while accepting the older `thinking` alias
-- `cumulative_stream_usage` is an opt-in model setting (default `false`) for endpoints that repeat cumulative token totals on each streaming chunk. The provider converts snapshots to deltas only when a stable completion id is present, isolates interleaved streams by id, and leaves the original usage untouched otherwise. Per-model tracking is lock-protected and cleared on the trailing empty-`choices` frame whether or not that frame carries usage. A soft cap of 1024 ids evicts only entries idle for at least one hour; active streams may temporarily exceed the cap so eviction cannot corrupt their deltas. Regression coverage lives in `tests/test_vllm_provider.py`.
+```bash
+cd backend
+python -m pytest tests -q -k "model or provider or codex or claude or mindie or vllm or reasoning or admission"
+make test-blocking-io
+```
+
+Provider tests drive the public sync and async calls through an offline HTTP
+transport, so they check the payload that DeerFlow sends.
+
+## Factory and reasoning
+
+- **`create_chat_model` is the one place a model is built.** The lead agent,
+  titles, summarization, subagents and the Gateway probe all call it, so the
+  reasoning contract and request admission apply to every caller. A second
+  construction path would skip both.
+- **A declared `reasoning.effort.path` is the only way effort is serialized.** A
+  leftover `reasoning_effort` key on such a profile is rejected, because two
+  serializations of one setting can disagree on the wire.
+- **Thinking templates add or override keys and never remove one.** The disable
+  path treats a null template value as absent, so the native and vLLM fallbacks
+  still apply.
+- **`aliases` is presentation metadata.** It is stripped before provider kwargs
+  are built. An explicit user model choice is authorized as given and is not
+  replaced by the default when it is denied.
+- **A missing provider module raises an install hint**, not a bare import error.
+
+## Request admission and retries
+
+- **Admission is first-in, first-out across model instances, threads and event
+  loops.** Taking a free permit and joining the wait queue are one decision under
+  one lock. If they are split, a new caller overtakes an older one.
+- **The wait cap is an upper bound.** It must not become a minimum poll interval,
+  which would limit throughput at a high request rate.
+- **A local `AdmissionError` is never retried**, whatever its message says.
+- **A paced model retries in one layer only.** With request admission, the Claude
+  and Codex wrappers and the SDK make a single attempt, and middleware retries
+  re-enter admission. Log a warning when this lowers a configured attempt count.
+  Unpaced models keep their own retry policy.
+- **`Retry-After` goes through `utils.retry_after`.** HTTP dates are read as UTC,
+  a past date means zero, and the delay is bounded.
+
+## Provider wire rules
+
+- **A non-blank tool-call ID is sent unchanged, byte for byte.** Calls and results
+  are paired by that ID. A warning about a repaired ID never includes result
+  content.
+- **An empty `choices` list becomes `EmptyModelResponseError`** before LangChain
+  indexes it. Every OpenAI-compatible adapter keeps `OpenAIEmptyChoicesMixin`.
+- **A completed response with null or empty usage keeps its text.**
+- **A terminal stream error returns no partial output.** The caller must not take
+  a truncated answer for a finished one.
+- **MindIE requests `stream=False` and simulates streaming**, and its XML tool
+  calls and numeric arguments are parsed in the adapter.
+- **Claude prompt caching copies before it marks.** The request payload shares
+  blocks and tool dicts with the caller, and a `cache_control` marker written in
+  place is checkpointed with the thread. Strip stored markers on every request,
+  with caching on or off.
+- **`thinking` and `redacted_thinking` blocks take no cache marker.** Anthropic
+  rejects one there. Keep their content, signature and order, so a later
+  breakpoint still covers them.
+
+## Credentials
+
+- **CLI credential files are read per model instance**, and models are built
+  fresh for each run, so a refreshed login applies to the next run. Read the JSON
+  with or without a BOM.
+
+## Managed shared models
+
+- **The catalog is two files**: the encrypted catalog and its generated key, under
+  `runtime_home()/managed-models`. A backup or a shared deployment needs both. SQL
+  storage does not replicate them. A missing key or an invalid catalog fails
+  closed.
+- **Managed models are merged after the YAML profiles, and a YAML name wins.** The
+  merge happens in `get_app_config()` and `reload_app_config()` only. Runtime-scoped
+  and explicitly injected configurations are left as given, and an `AppConfig`
+  that was already returned is never mutated.
+- **`config/managed_model_providers.py` is the only provider registry.** Do not
+  infer an adapter from a substring of the model name.
+- **A full update needs the current revision**, and a response reports
+  `has_api_key`, never the credential.
+- **Only trusted admins create or probe a managed model.** An admin-supplied
+  endpoint can address a host on the local network.

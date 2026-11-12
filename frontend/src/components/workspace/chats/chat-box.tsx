@@ -15,6 +15,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Sheet,
   SheetContent,
@@ -22,12 +23,21 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import {
+  areStringArraysEqual,
+  collectThreadArtifactPaths,
+} from "@/core/artifacts/utils";
+import { useI18n } from "@/core/i18n/hooks";
 import { env } from "@/env";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 
 import { useArtifacts } from "../artifacts/context";
 import { useMaybeBrowserView } from "../browser-view/context";
+import {
+  MessageDetailsProvider,
+  useMaybeMessageDetails,
+} from "../message-details/context";
 import { useThread } from "../messages/context";
 import { useMaybeSidecar } from "../sidecar/context";
 import {
@@ -73,10 +83,23 @@ const SidecarPanel = dynamic(
   { loading: RightPanelLoading },
 );
 
+const MessageDetailsPanel = dynamic(
+  () =>
+    import("../message-details/message-details-panel").then(
+      (module) => module.MessageDetailsPanel,
+    ),
+  { loading: RightPanelLoading },
+);
+
 const RIGHT_PANEL_ANIMATION_MS = 280;
 const RIGHT_PANEL_DEFAULT_SIZE = "40%";
 
-type RightPanelKind = "sidecar" | "artifacts" | "browser" | "sql-result";
+type RightPanelKind =
+  | "sidecar"
+  | "artifacts"
+  | "browser"
+  | "details"
+  | "sql-result";
 
 type ChatBoxProps = {
   children: React.ReactNode;
@@ -91,6 +114,9 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
   threadId,
   browserEnabled = true,
 }) => {
+  const { t } = useI18n();
+  const messageDetails = useMaybeMessageDetails();
+  const detailsOpen = messageDetails?.open ?? false;
   const { thread } = useThread();
   const isMobile = useIsMobile();
   const pathname = usePathname();
@@ -113,10 +139,19 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
   const sqlResultOpen = sqlExecution?.open ?? false;
 
   const [autoSelectFirstArtifact, setAutoSelectFirstArtifact] = useState(true);
+  // A reopened thread can recover artifacts from its tool history.
+  const stateArtifacts = thread.values.artifacts;
+  const threadArtifactPaths = useMemo(
+    () =>
+      collectThreadArtifactPaths(
+        Array.isArray(stateArtifacts) ? stateArtifacts : [],
+        thread.messages,
+      ),
+    [stateArtifacts, thread.messages],
+  );
   useEffect(() => {
-    const threadArtifacts = Array.isArray(thread.values.artifacts)
-      ? thread.values.artifacts
-      : undefined;
+    const threadArtifacts =
+      threadArtifactPaths.length > 0 ? [...threadArtifactPaths] : undefined;
 
     if (threadIdRef.current !== threadId) {
       threadIdRef.current = threadId;
@@ -126,7 +161,7 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
     // Update artifacts from the current thread
     // An empty initial state must not erase artifacts restored by the provider
     // before the persisted thread state has arrived.
-    if (threadArtifacts && threadArtifacts.length > 0) {
+    if (threadArtifacts && !areStringArraysEqual(artifacts, threadArtifacts)) {
       setArtifacts(threadArtifacts);
     }
 
@@ -149,12 +184,13 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
     }
   }, [
     threadId,
+    artifacts,
     autoSelectFirstArtifact,
     deselect,
     selectArtifact,
     selectedArtifact,
     setArtifacts,
-    thread.values.artifacts,
+    threadArtifactPaths,
   ]);
 
   const artifactPanelOpen = useMemo(() => {
@@ -175,7 +211,9 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
         ? "browser"
         : artifactPanelOpen
           ? "artifacts"
-          : null;
+          : detailsOpen
+            ? "details"
+            : null;
   const rightPanelOpen = activeRightPanel !== null;
   const [renderedRightPanel, setRenderedRightPanel] =
     useState<RightPanelKind | null>(activeRightPanel);
@@ -229,11 +267,23 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
         sidecar?.close();
       } else if (activeRightPanel === "browser") {
         browserView?.close();
+      } else if (activeRightPanel === "details") {
+        messageDetails?.close();
+      } else if (activeRightPanel === "sql-result") {
+        sqlExecution?.close();
       } else if (activeRightPanel === "artifacts") {
         setArtifactsOpen(false);
       }
     },
-    [activeRightPanel, browserView, resizableIdBase, setArtifactsOpen, sidecar],
+    [
+      activeRightPanel,
+      browserView,
+      messageDetails,
+      resizableIdBase,
+      setArtifactsOpen,
+      sidecar,
+      sqlExecution,
+    ],
   );
 
   useEffect(() => {
@@ -291,35 +341,79 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
   }, [activeRightPanel]);
 
   useEffect(() => {
-    if (sidecarOpen && artifactsOpen) {
-      setArtifactsOpen(false);
-    }
-  }, [artifactsOpen, setArtifactsOpen, sidecarOpen]);
-
-  useEffect(() => {
     if (!browserEnabled && browserView?.open) {
       browserView.close();
     }
   }, [browserEnabled, browserView]);
 
+  // 右侧面板互斥：最后一次用户打开的面板获胜。
+  // SQL 结果、Details、产物、Sidecar、浏览器共用同一右侧面板，
+  // 任一面板从关闭变为打开时，关闭其余所有面板。
+  const rightPanelOpenStateRef = useRef({
+    sql: sqlResultOpen,
+    sidecar: sidecarOpen,
+    browser: browserViewOpen,
+    artifacts: artifactsOpen,
+    details: detailsOpen,
+  });
   useEffect(() => {
-    if (!sqlResultOpen) return;
-    if (sidecarOpen) sidecar?.close();
-    if (browserViewOpen) browserView?.close();
-    if (artifactsOpen) setArtifactsOpen(false);
+    const previous = rightPanelOpenStateRef.current;
+    const current = {
+      sql: sqlResultOpen,
+      sidecar: sidecarOpen,
+      browser: browserViewOpen,
+      artifacts: artifactsOpen,
+      details: detailsOpen,
+    };
+    rightPanelOpenStateRef.current = current;
+
+    // 按右侧面板渲染优先级记录本次新打开的面板。
+    const newlyOpened: RightPanelKind[] = [];
+    if (current.sql && !previous.sql) newlyOpened.push("sql-result");
+    if (current.sidecar && !previous.sidecar) newlyOpened.push("sidecar");
+    if (current.browser && !previous.browser) newlyOpened.push("browser");
+    if (current.artifacts && !previous.artifacts) newlyOpened.push("artifacts");
+    if (current.details && !previous.details) newlyOpened.push("details");
+
+    const winner = newlyOpened[0];
+    if (!winner) {
+      return;
+    }
+
+    if (winner !== "sql-result" && current.sql) {
+      sqlExecution?.close();
+    }
+    if (winner !== "sidecar" && current.sidecar) {
+      sidecar?.close();
+    }
+    if (winner !== "browser" && current.browser) {
+      browserView?.close();
+    }
+    if (winner !== "artifacts" && current.artifacts) {
+      setArtifactsOpen(false);
+    }
+    if (winner !== "details" && current.details) {
+      messageDetails?.close({ restoreFocus: false });
+    }
   }, [
     artifactsOpen,
     browserView,
     browserViewOpen,
+    detailsOpen,
+    messageDetails,
     setArtifactsOpen,
     sidecar,
     sidecarOpen,
+    sqlExecution,
     sqlResultOpen,
   ]);
 
   const rightPanelContent = useMemo(() => {
     if (renderedRightPanel === "sql-result") {
       return <SqlResultPanel />;
+    }
+    if (renderedRightPanel === "details") {
+      return <MessageDetailsPanel />;
     }
     if (renderedRightPanel === "browser") {
       return <BrowserViewPanel threadId={threadId} className="size-full" />;
@@ -361,13 +455,13 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
               <header className="shrink-0">
                 <h2 className="text-lg font-medium">Artifacts</h2>
               </header>
-              <main className="min-h-0 grow">
+              <ScrollArea className="min-h-0 grow">
                 <ArtifactFileList
                   className="max-w-(--container-width-sm) p-4 pt-12"
                   files={artifacts}
                   threadId={threadId}
                 />
-              </main>
+              </ScrollArea>
             </div>
           )}
         </div>
@@ -391,6 +485,9 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
           onOpenChange={(open) => {
             if (open) {
               return;
+            }
+            if (detailsOpen) {
+              messageDetails?.close();
             }
             if (sidecarOpen) {
               sidecar?.close();
@@ -418,7 +515,10 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
                     ? "Browser"
                     : renderedRightPanel === "sql-result"
                       ? "SQL Result"
-                      : "Artifacts"}
+                      : renderedRightPanel === "details"
+                        ? (messageDetails?.selectedDetail?.title ??
+                          t.common.more)
+                        : "Artifacts"}
               </SheetTitle>
               <SheetDescription>
                 Browse the side panel for this conversation.
@@ -500,6 +600,31 @@ const ChatBoxContent: React.FC<ChatBoxProps> = ({
   );
 };
 
+/**
+ * 详情面板宿主组件。
+ *
+ * 位于 SqlExecutionProvider 内部，选中消息详情时关闭其他所有右侧面板
+ * （产物、Sidecar、浏览器、SQL 结果），保证右侧面板互斥且最后一次用户选择优先。
+ */
+const ChatBoxDetailsHost: React.FC<ChatBoxProps> = (props) => {
+  const { setOpen: setArtifactsOpen } = useArtifacts();
+  const sidecar = useMaybeSidecar();
+  const browserView = useMaybeBrowserView();
+  const sqlExecution = useMaybeSqlExecution();
+  const closeOtherPanels = useCallback(() => {
+    setArtifactsOpen(false);
+    sidecar?.close();
+    browserView?.close();
+    sqlExecution?.close();
+  }, [setArtifactsOpen, sidecar, browserView, sqlExecution]);
+
+  return (
+    <MessageDetailsProvider key={props.threadId} onSelect={closeOtherPanels}>
+      <ChatBoxContent {...props} />
+    </MessageDetailsProvider>
+  );
+};
+
 const ChatBox: React.FC<ChatBoxProps> = ({
   agentName,
   sqlExecutionEnabled = false,
@@ -511,7 +636,11 @@ const ChatBox: React.FC<ChatBoxProps> = ({
       enabled={sqlExecutionEnabled}
       threadId={props.threadId}
     >
-      <ChatBoxContent {...props} />
+      <ChatBoxDetailsHost
+        agentName={agentName}
+        sqlExecutionEnabled={sqlExecutionEnabled}
+        {...props}
+      />
     </SqlExecutionProvider>
   );
 };

@@ -16,8 +16,7 @@
 #      retry stays `--locked`, so it repairs a broken .venv but not a stale
 #      lock; a second failure aborts with recovery instructions rather than
 #      starting uvicorn against an environment that does not match the lock.
-#   5. Hand off to uvicorn, optionally with reload, replacing this shell so
-#      uvicorn becomes PID 1 inside the container.
+#   5. Hand off to uvicorn with reload, replacing this shell so uvicorn becomes
 #      PID 1 inside the container.
 #
 # Anchored at /bin/sh (not bash) since alpine-based base images may not ship
@@ -33,9 +32,10 @@ if [ "${1:-}" = "--print-extras" ]; then
     PRINT_EXTRAS_ONLY=1
 fi
 
-# 默认将 stdout/stderr 写入宿主机挂载的 gateway.log；源码映射 Compose 可通过
-# DEER_FLOW_LOG_TO_FILE=0 保留 Docker 日志，便于直接使用 docker compose logs 查看。
-if [ "$PRINT_EXTRAS_ONLY" = "0" ] && [ "${DEER_FLOW_LOG_TO_FILE:-1}" != "0" ]; then
+# Mirror the legacy command's behavior: redirect both stdout and stderr to the
+# host-mounted log file (../logs/gateway.log → /app/logs/gateway.log). Skip
+# the redirect under --print-extras so the test runner can capture stdout.
+if [ "$PRINT_EXTRAS_ONLY" = "0" ]; then
     exec >/app/logs/gateway.log 2>&1
 fi
 
@@ -162,13 +162,13 @@ fi
 
 # ── Hand off to uvicorn ─────────────────────────────────────────────────────
 
-if [ "${DEER_FLOW_GATEWAY_RELOAD:-1}" = "0" ]; then
-    PYTHONPATH=. exec uv run --no-sync uvicorn app.gateway.app:app \
-        --host 0.0.0.0 --port 8001
-fi
-
+# --timeout-graceful-shutdown bounds how long open SSE connections may delay
+# lifespan shutdown (memory flush, run drain) after SIGTERM; the compose
+# service's stop_grace_period (90s) covers this bound plus the lifespan's
+# worst-case drain work (~61s).
 PYTHONPATH=. exec uv run --no-sync uvicorn app.gateway.app:app \
     --host 0.0.0.0 --port 8001 \
+    --timeout-graceful-shutdown 10 \
     --reload \
     --reload-include='*.yaml' \
     --reload-include='.env' \

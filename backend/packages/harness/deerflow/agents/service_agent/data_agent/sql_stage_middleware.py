@@ -112,7 +112,7 @@ class SqlStageMiddleware(AgentMiddleware):
             return None
         runtime_context = getattr(request.runtime, "context", None)
         runtime_context = runtime_context if isinstance(runtime_context, Mapping) else {}
-        # ADD: 正式 custom-agent 运行必须由服务端显式确认 SQL SubAgent 位于 allowable_subagents。
+        # ADD: 正式 custom-agent 运行必须由服务端显式确认 SQL SubAgent 位于 allowed_subagents。
         if "data_query_service_ability" in runtime_context and runtime_context.get("data_query_sql_subagent_allowed") is not True:
             return None
         # ADD: 只传递当前 snapshot 的最小结构化证据，不传 DSN、Secret 或完整数据库行。

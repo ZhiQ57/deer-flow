@@ -1,14 +1,20 @@
 """CRUD API for projects (Phase 1: organization only — no documents/trash)."""
 
+import asyncio
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from app.gateway.authz import require_permission
-from app.gateway.deps import get_project_repo, get_thread_store
+from app.gateway.deps import get_config, get_project_repo, get_thread_store
+from app.gateway.persistent_writes import run_drained_write
+from deerflow.config.app_config import AppConfig, get_app_config
+from deerflow.config.projects_config import ProjectsConfig
+from deerflow.projects.memory import MAX_FACTS, get_project_memory_repository
 from deerflow.runtime.secret_context import redact_metadata_secrets
+from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.utils.time import coerce_iso
 
 logger = logging.getLogger(__name__)
@@ -41,6 +47,79 @@ class ProjectPatchRequest(BaseModel):
 
 class ProjectListResponse(BaseModel):
     projects: list[ProjectResponse]
+
+
+class ProjectMemoryFactResponse(BaseModel):
+    id: str
+    content: str
+    source_thread_id: str
+    created_at: str
+
+
+class ProjectMemoryResponse(BaseModel):
+    enabled: bool
+    facts: list[ProjectMemoryFactResponse]
+    max_facts: int = MAX_FACTS
+
+
+class ProjectMemoryPatch(BaseModel):
+    enabled: bool
+
+
+class ProjectMemoryPromotion(BaseModel):
+    expected_instructions: str
+
+
+class ProjectMemoryPromotionResponse(BaseModel):
+    instructions: str
+    memory: ProjectMemoryResponse
+
+
+async def _memory_call(method: str, project_id: str, *args, **kwargs):
+    user_id = get_effective_user_id()
+
+    def call():
+        return getattr(get_project_memory_repository(), method)(project_id, user_id, *args, **kwargs)
+
+    result = await asyncio.to_thread(call) if method == "get" else await run_drained_write("Project memory update", call, (ValueError,))
+    if result is None:
+        raise _not_found()
+    return result
+
+
+@router.get("/{project_id}/memory", response_model=ProjectMemoryResponse)
+@require_permission("projects", "read")
+async def get_project_memory(project_id: str, request: Request) -> ProjectMemoryResponse:
+    return ProjectMemoryResponse(**await _memory_call("get", project_id))
+
+
+@router.patch("/{project_id}/memory", response_model=ProjectMemoryResponse)
+@require_permission("projects", "write")
+async def patch_project_memory(project_id: str, body: ProjectMemoryPatch, request: Request) -> ProjectMemoryResponse:
+    return ProjectMemoryResponse(**await _memory_call("set_enabled", project_id, body.enabled))
+
+
+@router.delete("/{project_id}/memory/{fact_id}", response_model=ProjectMemoryResponse)
+@require_permission("projects", "write")
+async def delete_project_memory(project_id: str, fact_id: str, request: Request) -> ProjectMemoryResponse:
+    return ProjectMemoryResponse(**await _memory_call("delete", project_id, fact_id))
+
+
+@router.post("/{project_id}/memory/{fact_id}/promote", response_model=ProjectMemoryPromotionResponse)
+@require_permission("projects", "write")
+async def promote_project_memory(project_id: str, fact_id: str, body: ProjectMemoryPromotion, request: Request) -> ProjectMemoryPromotionResponse:
+    try:
+        result = await _memory_call("promote", project_id, fact_id, max_bytes=_projects_config().instructions_max_bytes, expected_instructions=body.expected_instructions)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ProjectMemoryPromotionResponse(instructions=result["instructions"], memory=ProjectMemoryResponse(**result["memory"]))
+
+
+class ProjectsConfigResponse(BaseModel):
+    """The projects-block knobs the UI needs before it can validate client-side."""
+
+    instructions_max_bytes: int
+    trash_retention_days: int
 
 
 class ProjectThreadResponse(BaseModel):
@@ -83,9 +162,31 @@ def _not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Project not found")
 
 
+def _projects_config() -> ProjectsConfig:
+    """Projects config, falling back to defaults when the app config is unavailable."""
+    try:
+        return get_app_config().projects
+    except (FileNotFoundError, RuntimeError):
+        return ProjectsConfig()
+
+
+def _validate_instructions_length(instructions: str | None) -> None:
+    """Reject oversized instructions with 422 — never truncate (spec §6.5/§11).
+
+    The cap counts UTF-8 bytes, so multi-byte characters cost their encoded
+    length rather than one character each.
+    """
+    if instructions is None:
+        return
+    max_bytes = _projects_config().instructions_max_bytes
+    if len(instructions.encode("utf-8")) > max_bytes:
+        raise HTTPException(status_code=422, detail=f"instructions exceeds the configured {max_bytes}-byte UTF-8 limit")
+
+
 @router.post("", response_model=ProjectResponse, status_code=201)
 @require_permission("projects", "write")
 async def create_project(body: ProjectCreateRequest, request: Request) -> ProjectResponse:
+    _validate_instructions_length(body.instructions)
     repo = get_project_repo(request)
     return _to_response(await repo.create(name=body.name, instructions=body.instructions, presentation=body.presentation))
 
@@ -95,6 +196,21 @@ async def create_project(body: ProjectCreateRequest, request: Request) -> Projec
 async def list_projects(request: Request, status: ProjectStatus | None = None) -> ProjectListResponse:
     repo = get_project_repo(request)
     return ProjectListResponse(projects=[_to_response(r) for r in await repo.list(status=status)])
+
+
+@router.get("/config", response_model=ProjectsConfigResponse)
+@require_permission("projects", "read")
+async def get_projects_config(request: Request, config: AppConfig = Depends(get_config)) -> ProjectsConfigResponse:
+    """Projects config for the UI (instructions byte cap, trash retention).
+
+    Declared before ``/{project_id}`` so ``config`` is never swallowed as a
+    project id. Values come from the live ``projects`` config block; when the
+    block is absent the ``ProjectsConfig`` defaults apply.
+    """
+    return ProjectsConfigResponse(
+        instructions_max_bytes=config.projects.instructions_max_bytes,
+        trash_retention_days=config.projects.trash_retention_days,
+    )
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -109,6 +225,7 @@ async def get_project(project_id: str, request: Request) -> ProjectResponse:
 @router.patch("/{project_id}", response_model=ProjectResponse)
 @require_permission("projects", "write")
 async def patch_project(project_id: str, body: ProjectPatchRequest, request: Request) -> ProjectResponse:
+    _validate_instructions_length(body.instructions)
     row = await get_project_repo(request).patch(project_id, name=body.name, instructions=body.instructions, presentation=body.presentation)
     if row is None:
         raise _not_found()

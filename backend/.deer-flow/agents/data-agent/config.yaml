@@ -2,13 +2,12 @@ name: data-agent
 description: 面向 Text2SQL / NL2SQL 的专业数据分析智能体.
 model: 使用 Qwen / Deepseek / glm 系列国产模型
 
-# 排除系统默认的子智能体以外的子智能体列表，default 表示使用系统默认
-allowable_subagents: 
-  - default
+# 可调用的子智能体白名单，default 表示使用系统默认子智能体。
+# 原 allowable_subagents 已迁移为官方 allowed_subagents 字段。
+allowed_subagents:
+  - general-purpose
+  - bash
   - sql-subagent
-# Lead-Agent 只检索表结构；SQL 执行权交给显式配置的 sql-subagent。
-mcp_tools:
-  - sqlrag_retrieve
 
 # 工具列表
 tool_groups:

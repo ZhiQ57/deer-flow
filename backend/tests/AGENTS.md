@@ -1,15 +1,76 @@
-# Backend Tests
+# Backend tests (`backend/tests/`)
 
-Backend tests must preserve the runtime invariants they exercise without changing production execution topology.
+The offline suite for the Gateway and the harness. `blocking_io/` is the strict
+event-loop gate, `support/` holds shared helpers, and `fixtures/` holds recorded
+data. What a single test file covers is stated in that file, not here.
 
-## Executor starvation tests
+## Verify
 
-`test_executor_starvation.py` covers the deterministic starvation semantics from RFC #4560:
+```bash
+cd backend
+make test                 # four offline shards; TEST_JOBS=1 runs serially
+make test-blocking-io     # strict gate over tests/blocking_io/
+python -m pytest tests/test_<feature>.py::test_<name> -q
+```
 
-- default-executor saturation and queueing;
-- cancellation of an awaiter while an already-started synchronous worker continues;
-- isolation between the asyncio default executor and DeerFlow's dedicated file-I/O executor.
+Live tests run only with `DEER_FLOW_RUN_LIVE_TESTS=1`. PostgreSQL cases run when
+`TEST_POSTGRES_URI` is set and skip otherwise. Helm and real-Compose cases skip
+with a reason when the binary is missing.
 
-Use explicit synchronization such as `threading.Event` rather than sleep-based timing thresholds for worker lifecycle assertions. Every test must release blocked workers and restore any process-global monkeypatches so teardown cannot leak threads or state into later tests.
+## What a test must exercise
 
-Stress/soak testing, AnyIO worker instrumentation, Uvicorn multi-process behavior, and broad production executor redesign are separate concerns and should not be folded into these deterministic regressions.
+- **Run the production path.** Drive the real graph, worker, repository, script
+  or HTTP client, and replace only the outermost boundary: the model response,
+  the network transport, the clock. A test that raises the expected error itself
+  or writes the stored result directly proves nothing about the code.
+- **Put the double below the SDK.** A fake HTTP transport under the real vendor
+  client checks the payload that DeerFlow sends. A mocked client method does not.
+- **A regression test fails on the unfixed code.** Check that before you commit
+  the fix. Do not encode a known bug as expected behaviour, and do not hide it
+  behind a permanent `xfail`.
+- **Assert on structure.** Check decoded payloads, stored rows and metadata.
+  User-facing wording is asserted only where the wording is the contract.
+- **Scripts run as copies in a temporary checkout.** Never swap sources in the
+  working tree during a test, and never let a test read the developer's own
+  `config.yaml`, `.env` or runtime home.
+
+## Concurrency and timing
+
+- **Synchronize with events and barriers.** A sleep or a timing threshold passes
+  on a fast machine and fails on a loaded CI runner. Park the code at a named
+  point, observe the peer reach it, then release.
+- **Use a controlled clock** for leases, expiry and scheduling.
+- **Release everything in `finally`.** Blocked workers, paused tasks, patched
+  process-wide state and event loops are restored even when the assertion fails.
+  A leaked worker fails a later, unrelated test.
+- **Treat an unhandled warning from a worker thread as an error.**
+- **Injected failures must be shown to fire.** Assert that the injection ran, so
+  a refactor cannot turn a failure test into a silent pass.
+
+## Portability
+
+- **Use the helpers in `support/`.** `support.postgres` builds the isolated schema
+  URL, `support.symlinks.symlink_or_skip` handles hosts without symlink rights,
+  `support.shell` finds a POSIX shell or Git Bash, and `support.compose` detects
+  the Compose version.
+- **Guard POSIX-only cases with `os.name`** so that Windows collection succeeds.
+  Permission tests also skip as root, where mode bits do not restrict access.
+- **Write fixtures with an explicit newline mode and encoding.** Platform
+  defaults change LF/CRLF hashes and non-ASCII paths.
+- **Do not import another test module's private fixtures.** Shared code moves to
+  `support/` or `conftest.py`.
+- **Circular imports are solved in `conftest.py`** with a `sys.modules` stub; see
+  the existing entry for `deerflow.subagents.executor`.
+
+## Blocking-I/O tests
+
+Every test under `blocking_io/` runs with a detector that fails on a blocking
+call made on the event loop through DeerFlow code. Add a case there when you add
+an async entry point that touches files, subprocesses or a synchronous SDK.
+`@pytest.mark.allow_blocking_io` is for a test that needs the unguarded behaviour
+and states why.
+
+## Guidance inventory
+
+When you add a scoped `AGENTS.md`, add its path to `EXPECTED_GUIDANCE_PATHS` in
+`test_agent_guidance_check.py` in the same change.

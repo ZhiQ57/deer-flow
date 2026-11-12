@@ -23,7 +23,7 @@ def _resolve_subagents_app_config(app_config: Any | None = None):
         from deerflow.config.subagents_config import get_subagents_app_config
 
         return get_subagents_app_config()
-    return getattr(app_config, "subagents", app_config) # 尝试读取 app_config 的 subagents 属性，找不到则直接把 app_config自身返回
+    return getattr(app_config, "subagents", app_config)  # 尝试读取 app_config 的 subagents 属性，找不到则直接把 app_config自身返回
 
 
 def _build_custom_subagent_config(name: str, *, app_config: Any | None = None) -> SubagentConfig | None:
@@ -49,6 +49,8 @@ def _build_custom_subagent_config(name: str, *, app_config: Any | None = None) -
         disallowed_tools=custom.disallowed_tools,
         skills=custom.skills,
         model=custom.model,
+        thinking_enabled=custom.thinking_enabled,
+        reasoning_effort=custom.reasoning_effort,
         max_turns=custom.max_turns,
         timeout_seconds=custom.timeout_seconds,
     )
@@ -97,6 +99,8 @@ def _build_managed_subagent_config(name: str, *, app_config: Any | None = None) 
             disallowed_tools=definition.disallowed_tools,
             skills=definition.skills,
             model=definition.model,
+            thinking_enabled=definition.thinking_enabled,
+            reasoning_effort=definition.reasoning_effort,
             max_turns=definition.max_turns,
             timeout_seconds=definition.timeout_seconds,
         )
@@ -110,7 +114,7 @@ def get_subagent_config(name: str, *, app_config: Any | None = None) -> Subagent
     1. Built-in subagents (general-purpose, bash)
     2. Custom subagents from config.yaml custom_agents section
     3. Enabled administrator-managed subagents
-    4. Per-agent overrides from config.yaml agents section (timeout, max_turns, model, skills)
+    4. Per-agent overrides from config.yaml agents section (timeout, max_turns, model, thinking_enabled, reasoning_effort, skills)
 
     Args:
         name: The name of the subagent.
@@ -138,6 +142,10 @@ def get_subagent_config(name: str, *, app_config: Any | None = None) -> Subagent
     agent_override = subagents_config.agents.get(name)
 
     overrides = {}
+    if agent_override is not None:
+        overlay = agent_override.prompt_overlay
+        if overlay.prepend or overlay.append:
+            overrides["prompt_overlay"] = overlay
 
     # Timeout: per-agent override > global default (builtins only) > config's own value
     if agent_override is not None and agent_override.timeout_seconds is not None:
@@ -169,6 +177,18 @@ def get_subagent_config(name: str, *, app_config: Any | None = None) -> Subagent
         logger.debug("Subagent '%s': skills overridden (%s -> %s)", name, config.skills, effective_skills)
         overrides["skills"] = effective_skills
 
+    # Thinking: per-agent override only (no global default)
+    effective_thinking = subagents_config.get_thinking_enabled_for(name)
+    if effective_thinking is not None and effective_thinking != config.thinking_enabled:
+        logger.debug("Subagent '%s': thinking_enabled overridden (%s -> %s)", name, config.thinking_enabled, effective_thinking)
+        overrides["thinking_enabled"] = effective_thinking
+
+    # Reasoning effort: per-agent override only (no global default)
+    effective_reasoning = subagents_config.get_reasoning_effort_for(name)
+    if effective_reasoning is not None and effective_reasoning != config.reasoning_effort:
+        logger.debug("Subagent '%s': reasoning_effort overridden (%s -> %s)", name, config.reasoning_effort, effective_reasoning)
+        overrides["reasoning_effort"] = effective_reasoning
+
     if overrides:
         config = replace(config, **overrides)
 
@@ -193,7 +213,6 @@ def get_subagent_names(
     *,
     app_config: Any | None = None,
     allowed_subagents: list[str] | None = None,
-    allowable_subagents: set[str] | None = None,
 ) -> list[str]:
     """Get registered subagent names, optionally restricted by caller policy.
 
@@ -220,15 +239,9 @@ def get_subagent_names(
             continue
         names.append(definition.name)
 
-    # 新策略使用 allowed_subagents；旧 DataAgent 配置仍使用 allowable_subagents。
-    # 两者同时存在时以新的运行时策略为准，避免请求方策略被旧配置放宽。
+    # 服务端 allowed_subagents 是唯一子代理白名单来源。
     if allowed_subagents is not None:
         allowed = set(allowed_subagents)
-    elif allowable_subagents is not None and len(allowable_subagents) > 0:
-        allowed = set(allowable_subagents)
-        if "default" in allowed:
-            allowed.remove("default")
-            allowed.update(BUILTIN_SUBAGENTS.keys())
     else:
         allowed = None
     if allowed is not None:
@@ -241,7 +254,6 @@ def get_available_subagent_names(
     *,
     app_config: Any | None = None,
     allowed_subagents: list[str] | None = None,
-    allowable_subagents: set[str] | None = None,
 ) -> list[str]:
     """Get subagent names that should be exposed to the active runtime.
 
@@ -251,7 +263,6 @@ def get_available_subagent_names(
     names = get_subagent_names(
         app_config=app_config,
         allowed_subagents=allowed_subagents,
-        allowable_subagents=allowable_subagents,
     )
     try:
         host_bash_allowed = is_host_bash_allowed(app_config) if hasattr(app_config, "sandbox") else is_host_bash_allowed()

@@ -3,10 +3,10 @@ description: 面向 Text2SQL / NL2SQL 的专业数据分析智能体，优先通
 model: Qwen3.6-plus
 tool_groups:
   - file:read
-allowable_subagents:
+allowed_subagents:
+  - general-purpose
+  - bash
   - sql-subagent
-mcp_tools:
-  - sqlrag_retrieve
 skills:
   - table-rag-agent
   - data-analysis
@@ -34,5 +34,4 @@ service_ability:
     allowed_schemas:
       - text2sql
 
-# 通过 extensions_config.json、custom-agent 工具白名单控制
-# Lead-Agent/SubAgent 可见的 MCP 工具。
+# MCP 工具按安装实例由官方 mcp_plugins 管线选择；不再支持按工具名白名单。

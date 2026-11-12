@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextvars
+import threading
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -8,7 +10,9 @@ import pytest
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import RunnableBinding
 from langgraph.constants import TAG_NOSTREAM
 from pydantic import ValidationError
 
@@ -18,9 +22,10 @@ from deerflow.agents.middlewares.summarization_middleware import DeerFlowSummari
 from deerflow.agents.thread_state import ThreadState
 from deerflow.config.app_config import AppConfig
 from deerflow.config.memory_config import MemoryConfig
-from deerflow.config.model_config import ModelConfig
+from deerflow.config.model_config import ModelConfig, ReasoningCapabilities
 from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.config.summarization_config import ContextSize, SummarizationConfig
+from deerflow.models.vllm_provider import VllmChatModel
 
 
 def _messages() -> list:
@@ -107,6 +112,54 @@ def test_before_summarization_hook_receives_messages_before_compression() -> Non
     assert isinstance(result["messages"][0], RemoveMessage)
     assert result["summary_text"] == "compressed summary"
     assert [message.content for message in result["messages"][1:]] == ["user-2", "assistant-2"]
+
+
+def test_compaction_preserves_all_state_system_messages_in_order() -> None:
+    """State-level instructions, including legacy untagged reminders, stay authoritative."""
+    captured: list[SummarizationEvent] = []
+    middleware = _middleware(before_summarization=[captured.append])
+    prompt = SystemMessage(content="subagent role and report contract", id="prompt")
+    legacy_reminder = SystemMessage(content="<current_date>2026-05-08</current_date>", id="legacy-date")
+    extension_instructions = SystemMessage(content="extension instructions", id="extension")
+    current_request = HumanMessage(content="current request", id="current")
+    tail = [AIMessage(content="recent analysis", id="recent"), AIMessage(content="recent result", id="result")]
+    state = {"messages": [prompt, HumanMessage(content="old request", id="old-user"), AIMessage(content="old answer", id="old-ai"), legacy_reminder, extension_instructions, current_request, *tail]}
+
+    result = middleware.compact_state(state, _runtime())
+
+    assert result is not None
+    assert [message.id for message in result.messages_to_summarize] == ["old-user", "old-ai"]
+    assert [message.id for message in result.preserved_messages] == ["prompt", "legacy-date", "extension", "current", "recent", "result"]
+    assert captured[0].messages_to_summarize == result.messages_to_summarize
+    summary_input = middleware.model.invoke.call_args.args[0]
+    assert "subagent role and report contract" not in str(summary_input)
+    assert "extension instructions" not in str(summary_input)
+    assert "2026-05-08" not in str(summary_input)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_compaction_skips_a_fully_rescued_partition(asynchronous: bool) -> None:
+    captured: list[SummarizationEvent] = []
+    middleware = _middleware(before_summarization=[captured.append])
+    messages = [
+        SystemMessage(content="subagent instructions", id="prompt"),
+        HumanMessage(content="current request", id="current"),
+        AIMessage(content="searching", tool_calls=[{"name": "search", "id": "call", "args": {}}], id="assistant"),
+        ToolMessage(content="search result", tool_call_id="call", id="tool"),
+    ]
+    state = {"messages": messages, "summary_text": "previous summary"}
+
+    # The trigger is met, but rescuing the prompt and request leaves no history
+    # to compress. Repeated checks must not invoke the summary model or hooks.
+    for _ in range(2):
+        result = await middleware.acompact_state(state, _runtime()) if asynchronous else middleware.compact_state(state, _runtime())
+        assert result is None
+    middleware.model.invoke.assert_not_called()
+    middleware.model.ainvoke.assert_not_called()
+    assert captured == []
+    assert state["messages"] == messages
+    assert state["summary_text"] == "previous summary"
 
 
 def test_summarization_middleware_emits_frontend_update_key_in_agent_stream() -> None:
@@ -326,6 +379,38 @@ async def test_abefore_model_calls_hooks_same_as_sync() -> None:
 
     assert len(captured) == 1
     assert [message.content for message in captured[0].messages_to_summarize] == ["user-1", "assistant-1"]
+
+
+_HOOK_CONTEXT: contextvars.ContextVar[str] = contextvars.ContextVar("_HOOK_CONTEXT")
+
+
+@pytest.mark.anyio
+async def test_abefore_model_runs_hooks_in_a_worker_with_sync_semantics(caplog: pytest.LogCaptureFixture) -> None:
+    loop_thread = threading.get_ident()
+    calls: list[tuple[str, int, str | None]] = []
+
+    def _hook(name: str):
+        def hook(_: SummarizationEvent) -> None:
+            calls.append((name, threading.get_ident(), _HOOK_CONTEXT.get(None)))
+
+        return hook
+
+    def _broken_hook(_: SummarizationEvent) -> None:
+        raise RuntimeError("hook failure")
+
+    middleware = _middleware(before_summarization=[_hook("first"), _broken_hook, _hook("second")])
+    token = _HOOK_CONTEXT.set("run-context")
+    try:
+        with caplog.at_level("ERROR"):
+            result = await middleware.abefore_model({"messages": _messages()}, _runtime())
+    finally:
+        _HOOK_CONTEXT.reset(token)
+
+    assert [name for name, _, _ in calls] == ["first", "second"]
+    assert all(thread != loop_thread for _, thread, _ in calls)
+    assert all(context == "run-context" for _, _, context in calls)
+    assert "before_summarization hook _broken_hook failed" in caplog.text
+    assert isinstance(result["messages"][0], RemoveMessage)
 
 
 def test_memory_flush_hook_skips_when_memory_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -652,7 +737,9 @@ def test_factory_attaches_memory_flush_hook_by_default(monkeypatch):
     middleware = create_summarization_middleware(app_config=app_config)
 
     assert middleware is not None
-    assert memory_flush_hook in middleware._before_summarization_hooks
+    # The hook is wrapped in functools.partial to carry the pii_redaction
+    # config; unwrap it for the identity check.
+    assert any(getattr(h, "func", h) is memory_flush_hook for h in middleware._before_summarization_hooks)
 
 
 def test_factory_skip_memory_flush_omits_hook(monkeypatch):
@@ -674,6 +761,37 @@ def test_factory_skip_memory_flush_omits_hook(monkeypatch):
     # memory.enabled is True but the hook is skipped — the whole point.
     assert memory_flush_hook not in middleware._before_summarization_hooks
     assert middleware._before_summarization_hooks == []
+
+
+def test_memory_opt_out_compaction_never_queues_durable_memory(monkeypatch):
+    """A real compaction remains memory-silent when the caller opts out."""
+    manager = MagicMock()
+    monkeypatch.setattr(
+        "deerflow.agents.middlewares.summarization_middleware.create_chat_model",
+        lambda **_kw: _StaticChatModel(),
+    )
+    monkeypatch.setattr(
+        "deerflow.agents.memory.summarization_hook.get_memory_config",
+        lambda: MemoryConfig(enabled=True),
+    )
+    monkeypatch.setattr(
+        "deerflow.agents.memory.summarization_hook.get_memory_manager",
+        lambda: manager,
+    )
+    app_config = SimpleNamespace(
+        summarization=SummarizationConfig(enabled=True),
+        memory=MemoryConfig(enabled=True),
+    )
+
+    middleware = create_summarization_middleware(
+        app_config=app_config,
+        keep=("messages", 2),
+        skip_memory_flush=True,
+    )
+
+    assert middleware is not None
+    assert middleware.compact_state({"messages": _messages()}, _runtime(agent_name="stateless-worker"), force=True) is not None
+    manager.add_nowait.assert_not_called()
 
 
 def test_new_messages_block_escapes_breakout() -> None:
@@ -1092,6 +1210,151 @@ def _factory_app_config(model_names, *, summary_model_name=None, summarization_k
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual", [False, True], ids=["automatic", "manual"])
+@pytest.mark.parametrize("custom_prompt", [None, "Operator summary:\n{messages}"], ids=["built-in", "custom"])
+async def test_compaction_requests_use_configured_or_builtin_summary_prompt(monkeypatch, manual, custom_prompt):
+    model = MagicMock()
+    model.invoke.return_value = AIMessage(content="compressed summary")
+    model.ainvoke = AsyncMock(return_value=AIMessage(content="compressed summary"))
+    model.with_config.return_value = model
+    monkeypatch.setattr("deerflow.agents.middlewares.summarization_middleware.create_chat_model", lambda *args, **kwargs: model)
+    app_config = _factory_app_config(
+        ("summary-model",),
+        summarization_kwargs={
+            "trigger": ContextSize(type="messages", value=4),
+            "keep": ContextSize(type="messages", value=2),
+            "summary_prompt": custom_prompt,
+        },
+    )
+    messages = _messages()
+    approval = 'Wait for the exact phrase "review V-592 approved" and then wait for final confirmation.'
+    messages[0] = HumanMessage(content=approval)
+    state = {"messages": messages}
+
+    if manual:
+        from deerflow.runtime.context_compaction import _create_compaction_middleware
+
+        middleware = _create_compaction_middleware(app_config=app_config, keep=None)
+        assert await middleware.acompact_state(state, _runtime(), force=True) is not None
+        prompt = model.ainvoke.await_args.args[0]
+    else:
+        middleware = create_summarization_middleware(app_config=app_config)
+        assert middleware is not None
+        assert middleware.before_model(state, _runtime()) is not None
+        prompt = model.invoke.call_args.args[0]
+
+    assert approval in prompt
+    if custom_prompt is None:
+        assert "## ACTIVE USER REQUIREMENTS" in prompt
+        assert "Preserve the original wording of any literal approval phrase" in prompt
+        assert "which action it permits" in prompt
+    else:
+        assert prompt.startswith("Operator summary:\n")
+        assert "## ACTIVE USER REQUIREMENTS" not in prompt
+
+
+@pytest.fixture
+def vllm_compaction(monkeypatch):
+    models = {
+        "vllm": VllmChatModel(model="test-model", api_key="dummy", base_url="http://localhost:8000/v1"),
+        "summary": _StaticChatModel(text="compressed summary"),
+    }
+    monkeypatch.setattr(
+        "deerflow.agents.middlewares.summarization_middleware.create_chat_model",
+        lambda name, **_: models[name],
+    )
+    config = _factory_app_config(
+        ("vllm", "summary"),
+        summary_model_name="summary",
+        summarization_kwargs={"trigger": ContextSize(type="tokens", value=150)},
+    )
+    middleware = create_summarization_middleware(app_config=config, run_model_name="vllm", keep=("tokens", 100))
+    assert middleware is not None
+    return middleware
+
+
+_REPLAYED_REASONING = "Review the tool results. " * 100
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["single-binding", "double-binding"])
+def test_vllm_compaction_counts_reasoning_through_bindings(vllm_compaction, nested):
+    model = vllm_compaction.model
+    if nested:
+        model = RunnableBinding(bound=model)
+    middleware = DeerFlowSummarizationMiddleware(model=model)
+    message = AIMessage(content="Checked.", additional_kwargs={"reasoning": _REPLAYED_REASONING})
+    counted = AIMessage(content="Checked." + _REPLAYED_REASONING)
+
+    assert middleware.token_counter([message]) == count_tokens_approximately([counted])
+
+
+@pytest.mark.parametrize(
+    ("fields", "replayed"),
+    [
+        pytest.param({}, None, id="ordinary-message"),
+        pytest.param({"reasoning": _REPLAYED_REASONING}, _REPLAYED_REASONING, id="reasoning-only"),
+        pytest.param({"reasoning_content": _REPLAYED_REASONING}, _REPLAYED_REASONING, id="legacy-only"),
+        pytest.param({"reasoning": None, "reasoning_content": _REPLAYED_REASONING}, _REPLAYED_REASONING, id="null-canonical"),
+        pytest.param({"reasoning": _REPLAYED_REASONING, "reasoning_content": _REPLAYED_REASONING}, _REPLAYED_REASONING, id="duplicate-alias"),
+        pytest.param({"reasoning": _REPLAYED_REASONING, "reasoning_content": "different text" * 500}, _REPLAYED_REASONING, id="canonical-wins"),
+        pytest.param({"reasoning": "", "reasoning_content": _REPLAYED_REASONING}, "", id="empty-canonical"),
+    ],
+)
+def test_vllm_compaction_counts_replayed_reasoning_once(vllm_compaction, fields, replayed):
+    message = AIMessage(
+        content="Checked.",
+        additional_kwargs=fields,
+        tool_calls=[{"name": "check", "args": {}, "id": "call-1"}],
+    )
+    payload = vllm_compaction.model._get_request_payload([message])
+    assert payload["messages"][0].get("reasoning") == replayed
+    assert "reasoning_content" not in payload["messages"][0]
+
+    counted = message.model_copy(update={"content": message.content + (replayed or "")})
+    assert vllm_compaction.token_counter([message]) == count_tokens_approximately([counted])
+    assert message.content == "Checked."
+    assert message.additional_kwargs == fields
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual", [False, True], ids=["auto", "manual"])
+async def test_vllm_compaction_uses_replayed_reasoning_for_trigger_and_retention(vllm_compaction, manual):
+    messages = _messages()
+    plain_state = {"messages": messages}
+    assert await vllm_compaction.abefore_model(plain_state, _runtime()) is None
+    messages[1] = messages[1].model_copy(update={"additional_kwargs": {"reasoning": _REPLAYED_REASONING}})
+    state = {"messages": messages}
+
+    if manual:
+        result = await vllm_compaction.acompact_state(state, _runtime(), force=True)
+        assert result is not None
+        assert result.total_tokens >= 150
+        assert list(result.preserved_messages) == messages[2:]
+        assert result.summary_text == "compressed summary"
+    else:
+        update = await vllm_compaction.abefore_model(state, _runtime())
+        assert update is not None
+        assert update["messages"][1:] == messages[2:]
+        assert update["summary_text"] == "compressed summary"
+
+
+def test_non_vllm_compaction_keeps_existing_token_estimate():
+    middleware = DeerFlowSummarizationMiddleware(model=_StaticChatModel())
+    message = AIMessage(content="Checked.", additional_kwargs={"reasoning": _REPLAYED_REASONING})
+    assert middleware.token_counter([message]) == count_tokens_approximately([message])
+
+
+def test_vllm_compaction_ignores_reasoning_when_using_responses_api(vllm_compaction):
+    model = vllm_compaction.model.bound.model_copy(update={"use_responses_api": True})
+    middleware = DeerFlowSummarizationMiddleware(model=model)
+    message = AIMessage(content="Checked.", additional_kwargs={"reasoning": _REPLAYED_REASONING})
+    payload = model._get_request_payload([message])
+    assert "input" in payload
+    assert _REPLAYED_REASONING not in repr(payload["input"])
+    assert middleware.token_counter([message]) == count_tokens_approximately([message])
+
+
 @pytest.mark.parametrize("trim_limit", [None, 80, 4000])
 def test_factory_preserves_explicit_summary_input_limit(monkeypatch, trim_limit):
     monkeypatch.setattr("deerflow.agents.middlewares.summarization_middleware.create_chat_model", _tracking_create_chat_model([]))
@@ -1125,14 +1388,186 @@ def test_factory_null_case_anchor_is_run_model_not_models0(monkeypatch):
     assert result.summary_text == "from-run-model"
 
 
+@pytest.mark.parametrize(
+    ("run_window", "summary_window", "current_tokens", "expected"),
+    [
+        pytest.param(1_000, 100_000, 900, True, id="small-run-window-triggers"),
+        pytest.param(100_000, 1_000, 900, False, id="large-run-window-does-not-trigger"),
+    ],
+)
+def test_factory_fraction_trigger_uses_run_model_profile_with_explicit_summary(
+    monkeypatch,
+    run_window,
+    summary_window,
+    current_tokens,
+    expected,
+):
+    """An explicit summary model owns generation, not context-budget policy.
+
+    When the summary and active run models have different context windows, the
+    fraction trigger must follow the model that receives the next agent request.
+    Otherwise compaction can happen too late for a small run model or discard useful
+    history prematurely for a large one.
+    """
+    run_model = MagicMock()
+    run_model.profile = {"max_input_tokens": run_window}
+    run_model.with_config.return_value = run_model
+    run_model.invoke.return_value = SimpleNamespace(text="from-run-model")
+    summary_model = MagicMock()
+    summary_model.profile = {"max_input_tokens": summary_window}
+    summary_model.with_config.return_value = summary_model
+    summary_model.invoke.return_value = SimpleNamespace(text="from-summary-model")
+    models = {"run-model": run_model, "summary-model": summary_model}
+
+    monkeypatch.setattr(
+        "deerflow.agents.middlewares.summarization_middleware.create_chat_model",
+        lambda *, name=None, **_kwargs: models[name],
+    )
+    cfg = _factory_app_config(
+        ("run-model", "summary-model"),
+        summary_model_name="summary-model",
+        summarization_kwargs={"trigger": ContextSize(type="fraction", value=0.8)},
+    )
+
+    middleware = create_summarization_middleware(
+        app_config=cfg,
+        run_model_name="run-model",
+        keep=("messages", 2),
+    )
+
+    assert middleware is not None
+    assert middleware.model is run_model
+    assert middleware._get_profile_limits() == run_window
+    assert middleware._should_summarize([], current_tokens) is expected
+
+    # Profile ownership must not change the generation model.
+    result = middleware.compact_state(
+        {"messages": _messages()},
+        _runtime(),
+        force=True,
+    )
+    assert result is not None
+    assert result.summary_text == "from-summary-model"
+    summary_model.invoke.assert_called_once()
+    run_model.invoke.assert_not_called()
+
+    # Release identity records the independently configurable owners.
+    policy = middleware.release_policy_parameters()
+    assert policy["summary_model"] == "summary-model"
+    assert policy["profile_model"] == "run-model"
+
+
+def test_factory_required_thinking_run_model_anchors_explicit_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A required-thinking run model remains the profile owner when a distinct
+    explicit model generates summaries.
+
+    ``on_disable_request: reject`` makes ``thinking_enabled=False`` an invalid
+    constructor request, so the anchor must use the model's accepted mode rather
+    than falling through to the default model or disabling compaction.
+    """
+    run_model = MagicMock()
+    run_model.profile = {"max_input_tokens": 4_096}
+    run_model.with_config.return_value = run_model
+    summary_model = MagicMock()
+    summary_model.profile = {"max_input_tokens": 65_536}
+    summary_model.with_config.return_value = summary_model
+    summary_model.invoke.return_value = SimpleNamespace(text="from-summary-model")
+    models = {"run-model": run_model, "summary-model": summary_model}
+    calls: list[tuple[str | None, bool]] = []
+
+    def _factory(*, name=None, thinking_enabled=False, **_kwargs):
+        calls.append((name, thinking_enabled))
+        if name == "run-model" and not thinking_enabled:
+            raise ValueError("model requires thinking, but the request asked for it to be disabled")
+        return models[name]
+
+    monkeypatch.setattr("deerflow.agents.middlewares.summarization_middleware.create_chat_model", _factory)
+    cfg = _factory_app_config(
+        ("run-model", "summary-model"),
+        summary_model_name="summary-model",
+        summarization_kwargs={"trigger": ContextSize(type="fraction", value=0.8)},
+    )
+    cfg.get_model_config("run-model").reasoning = ReasoningCapabilities(
+        thinking="required",
+        on_disable_request="reject",
+    )
+
+    middleware = create_summarization_middleware(
+        app_config=cfg,
+        run_model_name="run-model",
+        keep=("messages", 2),
+    )
+
+    assert middleware is not None
+    assert middleware.model is run_model
+    assert middleware._get_profile_limits() == 4_096
+    assert calls == [("run-model", True), ("summary-model", False)]
+
+    result = middleware.compact_state({"messages": _messages()}, _runtime(), force=True)
+
+    assert result is not None
+    assert result.summary_text == "from-summary-model"
+    summary_model.invoke.assert_called_once()
+    run_model.invoke.assert_not_called()
+
+
+def test_direct_construction_without_app_config_keeps_run_model_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Direct middleware construction resolves the global config before building
+    the run-model fallback.
+
+    This path has no injected ``app_config``. A failed explicit summary model must
+    still reach the configured run model, including when that model requires
+    thinking and rejects disable requests.
+    """
+    cfg = _factory_app_config(("run-model",))
+    cfg.get_model_config("run-model").reasoning = ReasoningCapabilities(
+        thinking="required",
+        on_disable_request="reject",
+    )
+    monkeypatch.setattr("deerflow.agents.middlewares.summarization_middleware.get_app_config", lambda: cfg)
+
+    run_model = MagicMock()
+    run_model.with_config.return_value = run_model
+    run_model.invoke.return_value = SimpleNamespace(text="from-run-model")
+    calls: list[tuple[str | None, bool, object]] = []
+
+    def _factory(*, name=None, thinking_enabled=False, app_config=None, **_kwargs):
+        calls.append((name, thinking_enabled, app_config))
+        if not thinking_enabled:
+            raise ValueError("model requires thinking, but the request asked for it to be disabled")
+        return run_model
+
+    monkeypatch.setattr("deerflow.agents.middlewares.summarization_middleware.create_chat_model", _factory)
+
+    explicit_summary_model = MagicMock()
+    explicit_summary_model.with_config.return_value = explicit_summary_model
+    explicit_summary_model.invoke.side_effect = RuntimeError("summary provider down")
+    middleware = DeerFlowSummarizationMiddleware(
+        model=explicit_summary_model,
+        trigger=("messages", 4),
+        keep=("messages", 2),
+        token_counter=len,
+        configured_model_name="summary-model",
+        run_model_name="run-model",
+    )
+
+    result = middleware.before_model({"messages": _messages()}, _runtime())
+
+    assert result is not None
+    assert result["summary_text"] == "from-run-model"
+    assert calls == [("run-model", True, None)]
+
+
 def test_factory_configured_constructor_failure_falls_back_to_run_model(monkeypatch):
     """A configured summary model whose *constructor* raises must not break middleware
-    creation or skip the healthy run model. The anchor falls through the broken
-    constructor to the run model, and generation summarizes with it (the reviewer's
-    ``configured='broken-summary'`` reproduction)."""
+    creation or skip the healthy run model. The run model remains the profile anchor,
+    the failed generation model is cached as unavailable, and generation falls back to
+    the run model (the reviewer's ``configured='broken-summary'`` reproduction)."""
+    attempted: list = []
     built: list = []
 
     def _factory(*, name=None, thinking_enabled=False, app_config=None, attach_tracing=True, **kwargs):
+        attempted.append(name)
         if name == "broken-summary":
             raise RuntimeError("cannot construct summary provider")
         model = MagicMock()
@@ -1152,9 +1587,11 @@ def test_factory_configured_constructor_failure_falls_back_to_run_model(monkeypa
 
     assert middleware is not None  # a broken configured constructor did not break creation
     assert "run-model" in built  # the healthy run model was constructed as the anchor
+    assert attempted == ["run-model", "broken-summary"]
     result = middleware.compact_state({"messages": _messages()}, _runtime(), force=True)
     assert result is not None
     assert result.summary_text == "from-run-model"
+    assert attempted == ["run-model", "broken-summary"]  # failed config is not rebuilt
 
 
 def _profileless_anchor_stub() -> MagicMock:
@@ -1165,6 +1602,52 @@ def _profileless_anchor_stub() -> MagicMock:
     model.invoke.return_value = SimpleNamespace(text="summary")
     model.ainvoke = AsyncMock(return_value=SimpleNamespace(text="summary"))
     return model
+
+
+def test_factory_fraction_trigger_degrades_against_profileless_run_model_not_profiled_summary(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A summary model's profile must not make an unsafe run-model trigger valid."""
+    run_model = _profileless_anchor_stub()
+    summary_model = _StaticChatModel(
+        text="from-summary-model",
+        profile={"max_input_tokens": 65_536},
+    )
+    models = {"run-model": run_model, "summary-model": summary_model}
+    monkeypatch.setattr(
+        "deerflow.agents.middlewares.summarization_middleware.create_chat_model",
+        lambda *, name=None, **_kwargs: models[name],
+    )
+    cfg = _factory_app_config(
+        ("run-model", "summary-model"),
+        summary_model_name="summary-model",
+        summarization_kwargs={"trigger": ContextSize(type="fraction", value=0.8)},
+    )
+
+    with caplog.at_level(
+        "WARNING",
+        logger="deerflow.agents.middlewares.summarization_middleware",
+    ):
+        middleware = create_summarization_middleware(
+            app_config=cfg,
+            run_model_name="run-model",
+            keep=("messages", 2),
+        )
+
+    assert middleware is not None
+    assert middleware.model is run_model
+    assert middleware.trigger is None
+    assert "run model" in caplog.text
+
+    # Manual compaction remains available and still uses the explicit summary model.
+    result = middleware.compact_state(
+        {"messages": _messages()},
+        _runtime(),
+        force=True,
+    )
+    assert result is not None
+    assert result.summary_text == "from-summary-model"
 
 
 def test_factory_fraction_only_trigger_degrades_to_manual_compaction_only(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
@@ -1458,6 +1941,51 @@ def test_current_request_survives_and_stale_peer_compresses() -> None:
     summarized_contents = [m.content for m in ev.messages_to_summarize]
     assert any("metric A" in c for c in summarized_contents)
     # Compression is non-empty (guards the no-op regression).
+    assert len(ev.messages_to_summarize) > 0
+
+
+def test_human_input_card_reply_survives_as_current_request() -> None:
+    """A Human Input Card reply is the current request, so it survives compaction.
+
+    The frontend sends the answer as a hidden HumanMessage carrying
+    ``human_input_response``. It must be rescued like a visible request instead
+    of the older request that triggered the clarification.
+    """
+    captured: list[SummarizationEvent] = []
+    middleware = _middleware(before_summarization=[captured.append], keep=("messages", 6))
+
+    request = HumanMessage(content="Research topic X and write a report", id="request")
+    reply = HumanMessage(
+        content="Only Europe, and only 2025 data",
+        id="card-reply",
+        additional_kwargs={
+            "hide_from_ui": True,
+            "human_input_response": {
+                "version": 1,
+                "kind": "human_input_response",
+                "source": "ask_clarification",
+                "request_id": "clarify-1",
+                "response_kind": "text",
+                "value": "Only Europe, and only 2025 data",
+            },
+        },
+    )
+    messages = [
+        request,
+        AIMessage(content="", id="ai-clarify", tool_calls=[{"id": "clarify-1", "name": "ask_clarification", "args": {"question": "Which region?"}}]),
+        ToolMessage(content="Which region?", tool_call_id="clarify-1", id="tool-clarify"),
+        reply,
+    ]
+    for k in range(1, 6):
+        messages.append(AIMessage(content=f"ai{k}", id=f"ai{k}", tool_calls=[{"id": f"tc{k}", "name": "web_search", "args": {}}]))
+        messages.append(ToolMessage(content=f"r{k}", tool_call_id=f"tc{k}", id=f"tool{k}"))
+
+    middleware.before_model({"messages": messages}, _runtime())
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert reply.id in [m.id for m in ev.preserved_messages]
+    assert reply.id not in [m.id for m in ev.messages_to_summarize]
     assert len(ev.messages_to_summarize) > 0
 
 

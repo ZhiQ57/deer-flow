@@ -54,7 +54,7 @@ run_agent()
       ├─ load_agent_config("data-agent")
       │  ├─ 加载 DataAgent Lead 模型
       │  ├─ 加载 tool_groups
-      │  ├─ 加载 allowable_subagents
+      │  ├─ 加载 allowed_subagents
       │  └─ 加载 service_ability
       │
       ├─ resolve_service_ability()
@@ -62,7 +62,7 @@ run_agent()
       │
       ├─ 检查 SQL SubAgent 双重授权
       │  ├─ service_ability.sql_subagent_name
-      │  └─ agent_config.allowable_subagents 包含 sql-subagent
+      │  └─ agent_config.allowed_subagents 包含 sql-subagent
       │
       ├─ 构造 DataAgent 工具面
       │  ├─ 默认 Lead 工具（受 tool_groups 限制）
@@ -79,7 +79,7 @@ run_agent()
          └─ Checkpointer / Store
 ```
 
-这里有一个重要行为：即使前端没有正确传递 `subagent_enabled=true`，只要 DataAgent 的 `allowable_subagents` 明确包含 SQL SubAgent，当前代码也会把有效的 `subagent_enabled` 打开。
+这里有一个重要行为：即使前端没有正确传递 `subagent_enabled=true`，只要 DataAgent 的 `allowed_subagents` 是非空列表，当前代码也会把有效的 `subagent_enabled` 打开；显式空列表则是硬拒绝，请求方不能放宽。
 
 ## 三、DataAgent Lead Middleware 完整装配
 

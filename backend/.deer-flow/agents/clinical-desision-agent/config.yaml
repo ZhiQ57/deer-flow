@@ -3,8 +3,9 @@ description: 面向辅助生殖临床场景的 AI 临床诊断助手(AI Clinical
 model: 使用 Qwen / Deepseek / glm 系列国产模型
 
 # 使用的子智能体列表，default 表示使用系统默认, 可以定制化设计.
-allowable_subagents: 
-  - default
+allowed_subagents:
+  - general-purpose
+  - bash
 
 # 工具列表
 tool_groups:

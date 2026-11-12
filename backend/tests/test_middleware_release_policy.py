@@ -136,6 +136,20 @@ def _make_terminal_response_middleware():
     return TerminalResponseMiddleware()
 
 
+def _make_llm_error_handling_middleware():
+    from deerflow.agents.middlewares.llm_error_handling_middleware import LLMErrorHandlingMiddleware
+    from deerflow.config.app_config import AppConfig
+    from deerflow.config.sandbox_config import SandboxConfig
+
+    return LLMErrorHandlingMiddleware(app_config=AppConfig(sandbox=SandboxConfig(use="test")))
+
+
+def _make_model_length_finish_reason_middleware():
+    from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware
+
+    return ModelLengthFinishReasonMiddleware()
+
+
 def _make_todo_middleware():
     from deerflow.agents.middlewares.todo_middleware import TodoMiddleware
 
@@ -199,7 +213,7 @@ def _make_system_message_coalescing_middleware():
 def _make_dynamic_context_middleware():
     from deerflow.agents.middlewares.dynamic_context_middleware import DynamicContextMiddleware
 
-    return DynamicContextMiddleware()
+    return DynamicContextMiddleware(memory_enabled=False)
 
 
 def _make_subagent_date_context_middleware():
@@ -219,6 +233,12 @@ _MIDDLEWARE_DECLARATIONS = [
     ("deerflow.agents.middlewares.loop_detection_middleware", "LoopDetectionMiddleware", _make_loop_detection_middleware),
     ("deerflow.agents.middlewares.subagent_limit_middleware", "SubagentLimitMiddleware", _make_subagent_limit_middleware),
     ("deerflow.agents.middlewares.terminal_response_middleware", "TerminalResponseMiddleware", _make_terminal_response_middleware),
+    ("deerflow.agents.middlewares.llm_error_handling_middleware", "LLMErrorHandlingMiddleware", _make_llm_error_handling_middleware),
+    (
+        "deerflow.agents.middlewares.model_length_finish_reason_middleware",
+        "ModelLengthFinishReasonMiddleware",
+        _make_model_length_finish_reason_middleware,
+    ),
     # DeerFlow's own subclass, not the LangChain base class re-exported into
     # this module under the same import path (TodoListMiddleware).
     ("deerflow.agents.middlewares.todo_middleware", "TodoMiddleware", _make_todo_middleware),
@@ -283,6 +303,28 @@ def _middleware_fingerprint(middleware):
     ).fingerprint
 
 
+def test_todo_hard_stop_policy_changes_assembly_identity(monkeypatch):
+    from deerflow.agents.middlewares.todo_middleware import TodoMiddleware
+
+    current = TodoMiddleware()
+    previous = TodoMiddleware()
+    previous_params = previous.release_policy_parameters()
+    assert previous_params["completion_reminder_hard_stop_reasons"] == ["loop_capped", "token_capped", "safety_capped", "model_length_capped"]
+    previous_params["completion_reminder_hard_stop_reasons"] = ["loop_capped", "token_capped"]
+    assert previous_params.pop("skip_completion_reminder_on_safety_cap") is True
+    monkeypatch.setattr(previous, "release_policy_parameters", lambda: previous_params)
+    assert _middleware_fingerprint(current) != _middleware_fingerprint(previous)
+
+
+def test_safety_text_only_stop_policy_changes_assembly_identity(monkeypatch):
+    current = _make_safety_finish_reason_middleware()
+    previous = _make_safety_finish_reason_middleware()
+    previous_params = previous.release_policy_parameters()
+    assert previous_params.pop("mark_text_only_termination") is True
+    monkeypatch.setattr(previous, "release_policy_parameters", lambda: previous_params)
+    assert _middleware_fingerprint(current) != _middleware_fingerprint(previous)
+
+
 def _continuity_summarizer(config):
     from deerflow.agents.middlewares.summarization_middleware import DeerFlowSummarizationMiddleware
 
@@ -308,7 +350,7 @@ def test_disabled_continuity_retention_does_not_change_assembly_identity():
     assert _middleware_fingerprint(omitted) == _middleware_fingerprint(disabled)
 
 
-@pytest.mark.parametrize("kwargs", [{"task_continuity_enabled": True}, {"skills_container_path": "/other-skills"}, {"skill_file_read_tool_names": ["custom_read"]}])
+@pytest.mark.parametrize("kwargs", [{"inject_tool_artifacts": False}, {"task_continuity_enabled": True}, {"skills_container_path": "/other-skills"}, {"skill_file_read_tool_names": ["custom_read"]}])
 def test_durable_context_behavior_changes_assembly_identity(kwargs):
     from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
 

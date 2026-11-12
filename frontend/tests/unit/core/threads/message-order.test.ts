@@ -6,6 +6,7 @@ import {
   buildVisibleHistoryMessages,
   mergeRenderedMessageLedger,
   mergeMessages,
+  reconcileThreadHistoryRows,
   resolveThreadTransientHistoryBridge,
   resolveTransientHistoryBridge,
 } from "@/core/threads/hooks";
@@ -74,7 +75,36 @@ function idsOf(messages: Message[]): (string | undefined)[] {
   return messages.map((message) => message.id);
 }
 
-test("messageIdentity collapses X and X__user and keys tools by tool_call_id", () => {
+test("a pending checkpoint copy cannot replace the same Run's completed task result", () => {
+  const completed = withKwargs(
+    {
+      ...msg("result-1", "tool", "Completed"),
+      tool_call_id: "reused",
+    } as Message,
+    { run_id: "run-1", subagent_status: "completed" },
+  );
+  const pending = withKwargs(
+    {
+      ...msg("result-1", "tool", "Pending"),
+      tool_call_id: "reused",
+    } as Message,
+    { run_id: "run-1", subagent_pending: true },
+  );
+  expect(dedupeMessagesByIdentity([completed, pending])).toEqual([completed]);
+  // Provider call IDs may be reused by later Runs. Keep their pending result.
+  const later = withKwargs({ ...pending, id: "result-2" }, { run_id: "run-2" });
+  expect(dedupeMessagesByIdentity([completed, later])).toEqual([
+    completed,
+    later,
+  ]);
+  const sameRun = withKwargs(later, { run_id: "run-1" });
+  expect(dedupeMessagesByIdentity([completed, sameRun])).toEqual([
+    completed,
+    sameRun,
+  ]);
+});
+
+test("messageIdentity collapses X and X__user and keys tools by message id", () => {
   expect(messageIdentity(msg("req-1", "human", "q"))).toBe("message:req-1");
   expect(messageIdentity(msg("req-1__user", "human", "q"))).toBe(
     "message:req-1",
@@ -91,7 +121,7 @@ test("messageIdentity collapses X and X__user and keys tools by tool_call_id", (
       content: "result",
       tool_call_id: "call-1",
     } as Message),
-  ).toBe("tool:call-1");
+  ).toBe("message:tool-own-id");
 });
 
 test("trustedMessageSeq accepts only positive safe integers", () => {
@@ -164,16 +194,16 @@ test("hidden control copy never overwrites the visible human or its position", (
   expect(merged[0]!.additional_kwargs?.[MESSAGE_SEQ_KEY]).toBe(5);
 });
 
-test("tool results dedupe by tool_call_id and keep the known position", () => {
+test("copies of one tool result dedupe by message id and keep the known position", () => {
   const historyTool = {
-    id: "tool-old-row",
+    id: "tool-result",
     type: "tool",
     content: "partial",
     tool_call_id: "call-1",
     additional_kwargs: { [MESSAGE_SEQ_KEY]: 6 },
   } as Message;
   const liveTool = {
-    id: "tool-new-row",
+    id: "tool-result",
     type: "tool",
     content: "complete",
     tool_call_id: "call-1",
@@ -190,6 +220,55 @@ test("tool results dedupe by tool_call_id and keep the known position", () => {
   expect(tool.content).toBe("complete");
   expect(tool.tool_call_id).toBe("call-1");
   expect(tool.additional_kwargs?.[MESSAGE_SEQ_KEY]).toBe(6);
+});
+
+test.each(["run-a", "run-b"])(
+  "reused tool-call ids preserve both results and positions (second run %s)",
+  (secondRunId) => {
+    const first = msg("tool-first", "tool", "first result", 3, {
+      tool_call_id: "call_0",
+    });
+    const second = msg("tool-second", "tool", "second result", 6, {
+      tool_call_id: "call_0",
+    });
+    const history = buildVisibleHistoryMessages(
+      [
+        row("run-a", 2, msg("assistant-first", "ai", "search one")),
+        row("run-a", 3, first),
+        row(secondRunId, 5, msg("assistant-second", "ai", "search two")),
+        row(secondRunId, 6, second),
+        row(secondRunId, 7, { ...second, content: "complete second result" }),
+      ],
+      new Set(),
+    );
+    const live = [
+      msg("assistant-second", "ai", "search two"),
+      msg("tool-second", "tool", "replayed second result", undefined, {
+        tool_call_id: "call_0",
+      }),
+    ];
+
+    const results = mergeMessages(history, live, []).filter(
+      (message) => message.type === "tool",
+    );
+    expect(idsOf(results)).toEqual(["tool-first", "tool-second"]);
+    expect(results.map((message) => message.content)).toEqual([
+      "first result",
+      "replayed second result",
+    ]);
+    expect(seqsOf(results)).toEqual([3, 6]);
+  },
+);
+
+test("legacy tool results without message ids are not merged by provider id", () => {
+  const first = {
+    type: "tool",
+    tool_call_id: "call_0",
+    content: "first",
+  } as Message;
+  const second = { ...first, content: "second" } as Message;
+  expect(messageIdentity(first)).toBeUndefined();
+  expect(dedupeMessagesByIdentity([first, second])).toEqual([first, second]);
 });
 
 test("invalid seq values never overwrite a trusted position or break the merge", () => {
@@ -543,3 +622,117 @@ test.each(["before", "after"] as const)(
     expect(idsOf(mergeMessages(resolved, [], []))).toEqual(idsOf(previous));
   },
 );
+
+test("reconcile anchors a re-persisted message at its earliest seq", () => {
+  // Same run, same message id, re-persisted under a later journal seq while
+  // the older row only survives in the retained snapshot.
+  const previousRows = [row("r1", 95, msg("m1", "ai", "partial"))];
+  const currentRows = [row("r1", 130, msg("m1", "ai", "final"))];
+
+  const reconciled = reconcileThreadHistoryRows(
+    previousRows,
+    currentRows,
+    false,
+  );
+
+  expect(reconciled).toHaveLength(1);
+  // earliest-seq-wins: the re-persisted update must not push the message
+  // towards the tail of the thread.
+  expect(reconciled[0]!.seq).toBe(95);
+  // content converges to the newest copy.
+  expect(reconciled[0]!.content).toBe(currentRows[0]!.content);
+
+  const visible = buildVisibleHistoryMessages(reconciled, new Set());
+  expect(visible).toHaveLength(1);
+  expect(visible[0]!.additional_kwargs?.[MESSAGE_SEQ_KEY]).toBe(95);
+  expect(visible[0]!.content).toBe("final");
+});
+
+test("reconcile still converges content for same-seq refreshed copies", () => {
+  const previousRows = [row("r1", 95, msg("m1", "ai", "partial"))];
+  const currentRows = [row("r1", 95, msg("m1", "ai", "final"))];
+
+  const reconciled = reconcileThreadHistoryRows(
+    previousRows,
+    currentRows,
+    false,
+  );
+
+  expect(reconciled).toHaveLength(1);
+  expect(reconciled[0]!.seq).toBe(95);
+  expect(reconciled[0]!.content).toBe(currentRows[0]!.content);
+});
+
+test.each([false, true])(
+  "reconcile prefers the earliest visible row over a hidden control copy (complete=%s)",
+  (isAuthoritativeComplete) => {
+    const hidden = row(
+      "r1",
+      90,
+      withKwargs(msg("req-1", "system", "reminder"), {
+        hide_from_ui: true,
+      }),
+    );
+    const middle = row("r1", 95, msg("m1", "ai", "earlier answer"));
+    const visible = row("r1", 100, msg("req-1__user", "human", "question"));
+    const refreshed = row(
+      "r1",
+      130,
+      msg("req-1__user", "human", "updated question"),
+    );
+    const previousRows = [hidden, middle, visible];
+
+    const reconciled = reconcileThreadHistoryRows(
+      previousRows,
+      [...previousRows, refreshed],
+      isAuthoritativeComplete,
+    );
+
+    const human = reconciled.find((entry) => entry.content.type === "human")!;
+    expect(human.seq).toBe(100);
+    expect(human.content).toBe(refreshed.content);
+    const messages = buildVisibleHistoryMessages(reconciled, new Set());
+    expect(idsOf(messages)).toEqual(["m1", "req-1__user"]);
+    expect(seqsOf(messages)).toEqual([95, 100]);
+  },
+);
+
+test("reconcile falls back to the earliest hidden row when no visible copy exists", () => {
+  const hidden = (content: string) =>
+    withKwargs(msg("control", "system", content), { hide_from_ui: true });
+  const previous = row("r1", 90, hidden("original reminder"));
+  const refreshed = row("r1", 130, hidden("updated reminder"));
+
+  const reconciled = reconcileThreadHistoryRows([previous], [refreshed], false);
+
+  expect(reconciled).toHaveLength(1);
+  expect(reconciled[0]!.seq).toBe(90);
+  expect(reconciled[0]!.content).toBe(refreshed.content);
+  expect(reconciled[0]!.content.additional_kwargs?.hide_from_ui).toBe(true);
+});
+
+test("reconcile sorts re-anchored rows and preserves a stable retained snapshot", () => {
+  const original = row("r1", 95, msg("a1", "ai", "partial"));
+  const middle = row("r1", 100, msg("m1", "ai", "middle"));
+  const refreshed = row("r1", 130, msg("a1", "ai", "final"));
+  const currentRows = [middle, refreshed];
+
+  const reconciled = reconcileThreadHistoryRows(
+    [original, middle],
+    currentRows,
+    false,
+  );
+
+  expect(reconciled.map((entry) => entry.seq)).toEqual([95, 100]);
+  expect(reconciled[0]!.content).toBe(refreshed.content);
+  expect(reconciled[1]).toBe(middle);
+  expect(
+    buildVisibleHistoryMessages(reconciled, new Set()).map(
+      (entry) => entry.content,
+    ),
+  ).toEqual(["final", "middle"]);
+  // Compare the sorted rows before taking the stable-output shortcut.
+  expect(reconcileThreadHistoryRows(reconciled, currentRows, false)).toBe(
+    reconciled,
+  );
+});

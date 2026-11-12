@@ -2,6 +2,7 @@
 
 import copy
 from collections import OrderedDict
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -155,6 +156,29 @@ class TestHashToolCalls:
 
         assert _hash_tool_calls([forward_call]) == _hash_tool_calls([reversed_call])
 
+    def test_non_finite_read_file_line_bound_does_not_crash(self):
+        """A model-emitted ``1e999`` parses to ``float('inf')`` via ``json.loads``.
+
+        ``int(float('inf'))`` raises ``OverflowError``, which the line-bound
+        coercion must treat as an unusable value — falling back to the
+        open-ended read key — instead of crashing ``after_model`` and the run.
+        """
+        inf_call = {
+            "name": "read_file",
+            "args": {"path": "/tmp/demo.py", "start_line": float("inf")},
+        }
+        open_ended_call = {"name": "read_file", "args": {"path": "/tmp/demo.py"}}
+
+        assert _hash_tool_calls([inf_call]) == _hash_tool_calls([open_ended_call])
+
+    def test_non_finite_end_line_does_not_crash(self):
+        inf_call = {
+            "name": "read_file",
+            "args": {"path": "/tmp/demo.py", "end_line": float("inf")},
+        }
+
+        assert isinstance(_hash_tool_calls([inf_call]), str)
+
     def test_stringified_non_dict_args_do_not_crash(self):
         non_dict_json_call = {"name": "bash", "args": '"echo hello"'}
         plain_string_call = {"name": "bash", "args": "echo hello"}
@@ -196,6 +220,177 @@ class TestHashToolCalls:
         assert _hash_tool_calls([a]) != _hash_tool_calls([b])
 
 
+class TestReadFileRangeKey:
+    """``read_file`` keys must separate paging progress from re-reading.
+
+    Line ranges used to be quantized into 200-line buckets, which erased the
+    offset inside a bucket: every read shorter than 200 lines collapsed onto its
+    neighbours, so paging one file in 40-line chunks looked like five identical
+    calls and tripped the hard stop — on reads ``read_file``'s own truncation
+    notice tells the model to make.
+    """
+
+    @staticmethod
+    def _read_call(path="/w/app.py", **range_args):
+        return {"name": "read_file", "id": "call_read", "args": {"path": path, **range_args}}
+
+    def test_adjacent_pages_are_distinct_calls(self):
+        pages = [self._read_call(start_line=start, end_line=start + 39) for start in (1, 41, 81, 121, 161)]
+
+        hashes = {_hash_tool_calls([page]) for page in pages}
+
+        assert len(hashes) == len(pages)
+
+    def test_paging_through_a_file_does_not_hard_stop(self):
+        """Regression: five sequential 40-line reads used to force a final answer."""
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5)
+        runtime = _make_runtime()
+
+        for start in range(1, 401, 40):
+            decision = mw._apply(_make_state(tool_calls=[self._read_call(start_line=start, end_line=start + 39)]), runtime)
+            assert decision is None, f"read of lines {start}-{start + 39} was treated as a loop"
+        assert mw.consume_stop_reason("test-run") is None
+
+    def test_repeating_one_range_still_hard_stops(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5)
+        runtime = _make_runtime()
+        call = [self._read_call(start_line=1, end_line=40)]
+
+        for _ in range(4):
+            assert mw._apply(_make_state(tool_calls=call), runtime) is None
+        hard_stop = mw._apply(_make_state(tool_calls=call), runtime)
+
+        assert hard_stop is not None
+        assert hard_stop["messages"][0].tool_calls == []
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_rereading_the_same_page_counts_even_between_new_pages(self):
+        """Interleaving fresh pages must not hide a repeated read: the window counts by key."""
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=3)
+        runtime = _make_runtime()
+        repeated = [self._read_call(start_line=1, end_line=40)]
+
+        assert mw._apply(_make_state(tool_calls=repeated), runtime) is None
+        assert mw._apply(_make_state(tool_calls=[self._read_call(start_line=41, end_line=80)]), runtime) is None
+        assert mw._apply(_make_state(tool_calls=repeated), runtime) is None
+        assert mw._apply(_make_state(tool_calls=[self._read_call(start_line=81, end_line=120)]), runtime) is None
+
+        assert mw._apply(_make_state(tool_calls=repeated), runtime) is not None
+
+    def test_omitted_end_line_matches_a_bare_read_of_the_same_file(self):
+        """Both read to the last line, so they are one read written two ways."""
+        open_ended = self._read_call(start_line=1)
+        bare = self._read_call()
+
+        assert _hash_tool_calls([open_ended]) == _hash_tool_calls([bare])
+
+    def test_omitted_end_line_is_not_a_single_line_read(self):
+        open_ended = self._read_call(start_line=10)
+        single_line = self._read_call(start_line=10, end_line=10)
+
+        assert _hash_tool_calls([open_ended]) != _hash_tool_calls([single_line])
+
+    def test_line_bounds_are_clamped_to_the_first_line(self):
+        assert _hash_tool_calls([self._read_call(start_line=0, end_line=40)]) == _hash_tool_calls([self._read_call(start_line=1, end_line=40)])
+
+    def test_unparsable_end_line_reads_as_open_ended(self):
+        """The tool rejects such a call anyway; the key must stay stable, not crash."""
+        assert _hash_tool_calls([self._read_call(start_line=5, end_line="oops")]) == _hash_tool_calls([self._read_call(start_line=5)])
+
+    def test_different_paths_stay_distinct(self):
+        assert _hash_tool_calls([self._read_call(path="/w/a.py", start_line=1, end_line=40)]) != _hash_tool_calls([self._read_call(path="/w/b.py", start_line=1, end_line=40)])
+
+
+class TestGenericToolKey:
+    """Tools without a dedicated key rule must keep every argument that changes the call.
+
+    Keying only the first salient field (``path``/``url``/``query``/...) collapsed
+    distinct calls onto one key: paging a URL or a search, or rewriting one
+    skill file with new content, hard-stopped on its fifth *distinct* call.
+    Only a sandbox tool's UI narration (``description``) may vary without
+    making a call new.
+    """
+
+    @staticmethod
+    def _call(tool_name, args):
+        return {"name": tool_name, "id": f"call_{tool_name}", "args": args}
+
+    @pytest.mark.parametrize(
+        ("name", "first", "second"),
+        [
+            ("fetch", {"url": "https://example.com/doc", "start_index": 0}, {"url": "https://example.com/doc", "start_index": 5000}),
+            ("search_issues", {"query": "is:open label:bug", "page": 1}, {"query": "is:open label:bug", "page": 2}),
+            ("list_uploaded_files", {"query": "report"}, {"query": "report", "cursor": "next-page"}),
+            ("skill_manage", {"action": "write_file", "name": "etl", "path": "scripts/run.py", "content": "v1"}, {"action": "write_file", "name": "etl", "path": "scripts/run.py", "content": "v2"}),
+            ("grep", {"path": "/w", "pattern": "foo", "case_sensitive": False}, {"path": "/w", "pattern": "foo", "case_sensitive": True}),
+        ],
+    )
+    def test_non_salient_args_affect_hash(self, name, first, second):
+        assert _hash_tool_calls([self._call(name, first)]) != _hash_tool_calls([self._call(name, second)])
+
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("bash", {"command": "make test"}),
+            ("ls", {"path": "/w"}),
+            ("glob", {"path": "/w", "pattern": "*.py"}),
+            ("grep", {"path": "/w", "pattern": "foo"}),
+        ],
+    )
+    def test_sandbox_ui_narration_does_not_affect_hash(self, name, args):
+        """Regression guard for #1905: rewording the narration must not dodge detection."""
+        first = self._call(name, {**args, "description": "run it"})
+        second = self._call(name, {**args, "description": "run it once more"})
+
+        assert _hash_tool_calls([first]) == _hash_tool_calls([second])
+
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("update_agent", {}),
+            ("setup_agent", {"soul": "You are helpful."}),
+            ("create_issue", {"title": "Crash on start"}),
+        ],
+    )
+    def test_description_payload_affects_hash(self, name, args):
+        """``description`` is the operation's payload outside the sandbox narration tools."""
+        first = self._call(name, {**args, "description": "Reviews pull requests."})
+        second = self._call(name, {**args, "description": "Reviews pull requests and triages issues."})
+
+        assert _hash_tool_calls([first]) != _hash_tool_calls([second])
+
+    def test_description_only_agent_updates_do_not_hard_stop(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5)
+        runtime = _make_runtime()
+
+        for version in range(6):
+            call = self._call("update_agent", {"description": f"Assistant v{version}"})
+            assert mw._apply(_make_state(tool_calls=[call]), runtime) is None, f"update to v{version} was treated as a loop"
+        assert mw.consume_stop_reason("test-run") is None
+
+    def test_paging_a_url_does_not_hard_stop(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5)
+        runtime = _make_runtime()
+
+        for start in range(0, 50_000, 5_000):
+            call = self._call("fetch", {"url": "https://example.com/doc", "max_length": 5_000, "start_index": start})
+            assert mw._apply(_make_state(tool_calls=[call]), runtime) is None, f"page at start_index={start} was treated as a loop"
+        assert mw.consume_stop_reason("test-run") is None
+
+    def test_repeating_one_page_still_hard_stops(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5)
+        runtime = _make_runtime()
+        call = [self._call("fetch", {"url": "https://example.com/doc", "start_index": 5_000})]
+
+        for _ in range(4):
+            assert mw._apply(_make_state(tool_calls=call), runtime) is None
+        hard_stop = mw._apply(_make_state(tool_calls=call), runtime)
+
+        assert hard_stop is not None
+        assert hard_stop["messages"][0].tool_calls == []
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+
 class TestLoopDetection:
     def test_no_tool_calls_returns_none(self):
         mw = LoopDetectionMiddleware()
@@ -213,6 +408,24 @@ class TestLoopDetection:
         for _ in range(2):
             result = mw._apply(_make_state(tool_calls=call), runtime)
             assert result is None
+
+    def test_non_finite_line_bound_does_not_break_detection(self):
+        """``after_model`` must survive a read_file call whose JSON args carry
+        ``start_line: 1e999`` (parsed to ``float('inf')``): the middleware keeps
+        tracking the call instead of raising ``OverflowError`` out of the hook.
+        """
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5)
+        runtime = _make_runtime()
+        call = [{"name": "read_file", "id": "call_inf", "args": {"path": "/tmp/demo.py", "start_line": float("inf")}}]
+
+        for _ in range(2):
+            result = mw._apply(_make_state(tool_calls=call), runtime)
+            assert result is None
+
+        result = mw._apply(_make_state(tool_calls=call), runtime)
+        assert result is None
+        assert mw._pending_warnings[_pending_key()]
+        assert "LOOP DETECTED" in mw._pending_warnings[_pending_key()][0]
 
     def test_warn_at_threshold_queues_but_does_not_mutate_state(self):
         """At warn threshold, ``after_model`` enqueues but returns None.
@@ -941,7 +1154,6 @@ class TestLoopDetectionRunEvents:
         recorder = MagicMock()
         runtime = _make_runtime()
         runtime.context["__run_loop_detection_recorder"] = recorder
-        runtime.context["is_subagent"] = True
         runtime.context["agent_id"] = "general-purpose"
         assert "__run_journal" not in runtime.context
         mw = LoopDetectionMiddleware(
@@ -959,6 +1171,26 @@ class TestLoopDetectionRunEvents:
         assert recorder.record_middleware.call_args.kwargs["action"] == "warn"
         assert recorder.record_middleware.call_args.kwargs["changes"]["is_subagent"] is True
         assert recorder.record_middleware.call_args.kwargs["changes"]["agent_id"] == "general-purpose"
+
+    def test_lead_attribution_ignores_caller_supplied_subagent_fields(self):
+        journal = MagicMock()
+        runtime = self._runtime_with_journal(journal)
+        runtime.context["is_subagent"] = True
+        runtime.context["agent_id"] = "forged-agent"
+        mw = LoopDetectionMiddleware(
+            warn_threshold=2,
+            hard_limit=10,
+            tool_freq_warn=100,
+            tool_freq_hard_limit=200,
+        )
+        call = [_bash_call("ls")]
+
+        assert mw._apply(_make_state(tool_calls=call), runtime) is None
+        assert mw._apply(_make_state(tool_calls=call), runtime) is None
+
+        changes = journal.record_middleware.call_args.kwargs["changes"]
+        assert changes["is_subagent"] is False
+        assert changes["agent_id"] is None
 
     def test_identical_call_hard_stop_records_event(self):
         journal = MagicMock()
@@ -1192,6 +1424,64 @@ class TestLoopDetectionAgentGraphIntegration:
             _scope_key("cached-thread", "run-2"),
         }
 
+    def test_loop_warning_survives_a_retried_model_call_in_real_agent_graph(self):
+        """LLMErrorHandlingMiddleware retries a failed call by running the inner wraps again; the retry must still carry the warning."""
+        from deerflow.agents.middlewares.llm_error_handling_middleware import LLMErrorHandlingMiddleware
+        from deerflow.config.app_config import AppConfig, LlmCallConfig
+        from deerflow.config.sandbox_config import SandboxConfig
+
+        class ProviderUnavailable(Exception):
+            def __init__(self) -> None:
+                super().__init__("503 Service Unavailable")
+                self.status_code = 503
+                self.response = SimpleNamespace(status_code=503, headers={})
+
+        class FailsOnceOnWarning(_CapturingFakeMessagesListChatModel):
+            _failed: bool = PrivateAttr(default=False)
+
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+                if not self._failed and any(isinstance(message, HumanMessage) and message.name == "loop_warning" for message in messages):
+                    self._failed = True
+                    self._seen_messages.append(list(messages))
+                    raise ProviderUnavailable()
+                return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+        @as_tool
+        def bash(command: str) -> str:
+            """Run a fake shell command."""
+            return f"ran: {command}"
+
+        repeated_calls = [[{"name": "bash", "id": f"call_ls_{i}", "args": {"command": "ls"}}] for i in range(3)]
+        model = FailsOnceOnWarning(
+            responses=[
+                AIMessage(content="", tool_calls=repeated_calls[0]),
+                AIMessage(content="", tool_calls=repeated_calls[1]),
+                AIMessage(content="", tool_calls=repeated_calls[2]),
+                AIMessage(content="final answer"),
+            ],
+        )
+        app_config = AppConfig(
+            sandbox=SandboxConfig(use="test"),
+            llm_call=LlmCallConfig(retry_max_attempts=3, retry_base_delay_ms=0, retry_cap_delay_ms=0),
+        )
+        graph = create_agent(
+            model=model,
+            tools=[bash],
+            middleware=[LLMErrorHandlingMiddleware(app_config=app_config), LoopDetectionMiddleware(warn_threshold=3, hard_limit=10)],
+        )
+
+        result = graph.invoke(
+            {"messages": [("user", "inspect the directory")]},
+            context={"thread_id": "retry-thread", "run_id": "retry-run"},
+            config={"recursion_limit": 20},
+        )
+
+        # Three tool-calling requests, then the failed attempt and its retry.
+        assert len(model.seen_messages) == 5
+        has_warning = [any(isinstance(message, HumanMessage) and message.name == "loop_warning" for message in messages) for messages in model.seen_messages]
+        assert has_warning == [False, False, False, True, True]
+        assert result["messages"][-1].content == "final answer"
+
     def test_loop_warning_is_transient_in_real_agent_graph(self):
         """after_model queues the warning; wrap_model_call injects it request-only."""
 
@@ -1361,6 +1651,24 @@ class TestHardStopWithListContent:
         assert len(msg.content) == 3
         assert msg.content[2]["type"] == "text"
         assert _HARD_STOP_MSG in msg.content[2]["text"]
+
+    def test_hard_stop_drops_provider_tool_use_blocks(self):
+        """A stripped call's Anthropic tool_use block must not outlive it in content."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=4)
+        runtime = _make_runtime()
+        call = [_bash_call("ls")]
+        list_content = [
+            {"type": "text", "text": "I'll run ls"},
+            {"type": "tool_use", "id": "call_ls", "name": "bash", "input": {"command": "ls"}},
+        ]
+
+        for _ in range(3):
+            mw._apply(_make_state(tool_calls=call, content=list_content), runtime)
+        result = mw._apply(_make_state(tool_calls=call, content=list_content), runtime)
+
+        msg = result["messages"][0]
+        assert [block["type"] for block in msg.content] == ["text", "text"]
+        assert _HARD_STOP_MSG in msg.content[-1]["text"]
 
     def test_hard_stop_with_none_content(self):
         """Hard stop on None content should produce a plain string."""
@@ -2012,3 +2320,173 @@ class TestFromConfig:
         result = mw._apply(_make_state(tool_calls=[_bash_call(f"cmd_{hard}")]), runtime)
         assert result is not None
         assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+
+class TestWarningLetsAgentSaveResultsFirst:
+    """F67: a warn-level loop message must not make a subagent drop the
+    file it was asked to write. The warning asks for one last save through a
+    file-writing tool before the final answer; the hard stop is unchanged."""
+
+    @staticmethod
+    def _write_call(path="/mnt/user-data/workspace/out.md"):
+        return {"name": "write_file", "id": "call_write", "args": {"path": path, "content": "partial results"}}
+
+    @staticmethod
+    def _read_call(path):
+        return {"name": "read_file", "id": f"call_read_{path}", "args": {"path": path}}
+
+    def test_hash_warning_asks_to_save_before_final_answer(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=10)
+        runtime = _make_runtime()
+        for _ in range(3):
+            mw._apply(_make_state(tool_calls=[_bash_call("ls")]), runtime)
+        warning = mw._pending_warnings[_pending_key()][0]
+        assert "LOOP DETECTED" in warning
+        assert "Stop calling tools and produce your final answer now" not in warning
+        assert "write_file" in warning
+        assert warning.index("write what you have collected") < warning.index("produce your final answer")
+
+    def test_freq_warning_names_the_looping_tool_and_allows_saving(self):
+        mw = LoopDetectionMiddleware(tool_freq_warn=3, tool_freq_hard_limit=10)
+        runtime = _make_runtime()
+        for i in range(3):
+            mw._apply(_make_state(tool_calls=[self._read_call(f"/f_{i}")]), runtime)
+        warning = mw._pending_warnings[_pending_key()][0]
+        assert "Stop calling read_file" in warning
+        assert "Stop calling tools and produce your final answer now" not in warning
+        assert "write_file" in warning
+
+    def test_save_call_after_warning_is_not_stripped(self):
+        mw = LoopDetectionMiddleware(tool_freq_warn=3, tool_freq_hard_limit=10)
+        runtime = _make_runtime()
+        for i in range(3):
+            mw._apply(_make_state(tool_calls=[self._read_call(f"/f_{i}")]), runtime)
+        assert mw._pending_warnings[_pending_key()]
+        # The follow-up write is a different tool and a different call set:
+        # neither detection layer acts on it, so the write reaches the tools node.
+        assert mw._apply(_make_state(tool_calls=[self._write_call()]), runtime) is None
+
+    @pytest.mark.parametrize("layer", ["hash", "frequency"])
+    def test_warning_allows_a_bounded_read_before_write_recovery(self, layer):
+        mw = LoopDetectionMiddleware(warn_threshold=3 if layer == "hash" else 10, hard_limit=20, tool_freq_warn=3 if layer == "frequency" else 10, tool_freq_hard_limit=20)
+        runtime = _make_runtime()
+        for i in range(3):
+            mw._apply(_make_state(tool_calls=[_bash_call("ls" if layer == "hash" else f"cmd_{i}")]), runtime)
+        warning = mw._pending_warnings[_pending_key()][0]
+        assert "read-before-write" in warning
+        assert "read the target file" in warning
+        assert "retry the save once" in warning
+        assert warning.index("retry the save once") < warning.index("produce your final answer")
+
+    @pytest.mark.parametrize("layer", ["hash", "frequency"])
+    def test_looping_writer_requires_an_alternative_or_an_unsaved_result(self, layer):
+        mw = LoopDetectionMiddleware(warn_threshold=3 if layer == "hash" else 10, hard_limit=20, tool_freq_warn=3 if layer == "frequency" else 10, tool_freq_hard_limit=20)
+        runtime = _make_runtime()
+        for i in range(3):
+            mw._apply(_make_state(tool_calls=[self._write_call("/out.md" if layer == "hash" else f"/out_{i}.md")]), runtime)
+        warning = mw._pending_warnings[_pending_key()][0]
+        assert "unless it is the looping tool" in warning
+        assert "different available file-writing tool" in warning
+        assert "Do not use a tool that this warning tells you to stop" in warning
+        assert "include the collected results in your final answer" in warning
+        assert "file was not saved" in warning
+
+    @pytest.mark.parametrize("layer", ["hash", "frequency"])
+    def test_warning_asks_to_present_created_outputs_before_answering(self, layer):
+        # Told only to stop calling tools, agents skipped present_files for
+        # outputs they had already created, so the run failed its delivery check.
+        mw = LoopDetectionMiddleware(warn_threshold=3 if layer == "hash" else 10, hard_limit=20, tool_freq_warn=3 if layer == "frequency" else 10, tool_freq_hard_limit=20)
+        runtime = _make_runtime()
+        for i in range(3):
+            mw._apply(_make_state(tool_calls=[_bash_call("ls" if layer == "hash" else f"cmd_{i}")]), runtime)
+        warning = mw._pending_warnings[_pending_key()][0]
+        assert "If present_files is available" in warning
+        assert "already created in /mnt/user-data/outputs" in warning
+        present = warning.index("present_files call before answering, unless it is the looping tool")
+        assert warning.index("retry the save once") < present < warning.index("produce your final answer")
+
+    @pytest.mark.asyncio
+    async def test_warned_agent_can_recover_an_existing_file_save_through_the_real_gate(self, tmp_path):
+        from deerflow.agents.middlewares.read_before_write_middleware import ReadBeforeWriteMiddleware
+
+        output = tmp_path / "out.md"
+        output.write_text("previous attempt", encoding="utf-8")
+        executed = []
+
+        @as_tool
+        def bash(command: str) -> str:
+            """Return a deterministic research result without running a shell."""
+            return "partial results"
+
+        @as_tool
+        def read_file(path: str) -> str:
+            """Read the output from the previous attempt."""
+            content = Path(path).read_text(encoding="utf-8")
+            executed.append(("read", content))
+            return content
+
+        @as_tool
+        def write_file(path: str, content: str) -> str:
+            """Save the collected results."""
+            Path(path).write_text(content, encoding="utf-8")
+            executed.append(("write", content))
+            return "saved"
+
+        loop = LoopDetectionMiddleware(warn_threshold=3, hard_limit=10, tool_freq_warn=10, tool_freq_hard_limit=20)
+        gate = ReadBeforeWriteMiddleware(content_reader=lambda _runtime, path: Path(path).read_text(encoding="utf-8"))
+        calls = [dict(_bash_call("ls"), id=f"research_{i}") for i in range(3)]
+        calls.extend([dict(self._write_call(str(output)), id="blocked_save"), self._read_call(str(output)), dict(self._write_call(str(output)), id="final_save")])
+        model = _CapturingFakeMessagesListChatModel(responses=[*[AIMessage(content="", tool_calls=[call]) for call in calls], AIMessage(content="Saved partial results.")])
+        graph = create_agent(model=model, tools=[bash, read_file, write_file], middleware=[gate, loop])
+        result = await graph.ainvoke({"messages": [("user", f"Save your research to {output}.")]}, context={"thread_id": "save-thread", "run_id": "save-run"}, config={"recursion_limit": 30})
+
+        warnings = [message for message in model.seen_messages[3] if isinstance(message, HumanMessage) and message.name == "loop_warning"]
+        assert len(warnings) == 1 and "retry the save once" in warnings[0].content
+        blocked = next(message for message in result["messages"] if isinstance(message, ToolMessage) and message.tool_call_id == "blocked_save")
+        assert blocked.status == "error" and "deerflow_write_block" in blocked.additional_kwargs
+        read = next(message for message in result["messages"] if isinstance(message, ToolMessage) and message.name == "read_file")
+        assert read.additional_kwargs["deerflow_read_mark"]["path"] == str(output)
+        assert executed == [("read", "previous attempt"), ("write", "partial results")]
+        assert output.read_text(encoding="utf-8") == "partial results"
+        assert result["messages"][-1].content == "Saved partial results."
+        assert loop.consume_stop_reason("save-run") is None
+
+    @pytest.mark.asyncio
+    async def test_warned_agent_presents_created_outputs_before_answering(self):
+        presented = []
+
+        @as_tool
+        def bash(command: str) -> str:
+            """Build an output file without running a shell."""
+            return "built"
+
+        @as_tool
+        def present_files(filepaths: list[str]) -> str:
+            """Record the files presented to the user."""
+            presented.extend(filepaths)
+            return "presented"
+
+        loop = LoopDetectionMiddleware(warn_threshold=10, hard_limit=20, tool_freq_warn=3, tool_freq_hard_limit=10)
+        calls = [dict(_bash_call(f"python build_{i}.py"), id=f"build_{i}") for i in range(3)]
+        calls.append({"name": "present_files", "id": "present", "args": {"filepaths": ["/mnt/user-data/outputs/report.docx"]}})
+        model = _CapturingFakeMessagesListChatModel(responses=[*[AIMessage(content="", tool_calls=[call]) for call in calls], AIMessage(content="The report is ready.")])
+        graph = create_agent(model=model, tools=[bash, present_files], middleware=[loop])
+        result = await graph.ainvoke({"messages": [("user", "Build the report.")]}, context={"thread_id": "present-thread", "run_id": "present-run"}, config={"recursion_limit": 30})
+
+        warnings = [message for message in model.seen_messages[3] if isinstance(message, HumanMessage) and message.name == "loop_warning"]
+        assert len(warnings) == 1 and "present_files call before answering" in warnings[0].content
+        assert presented == ["/mnt/user-data/outputs/report.docx"]
+        assert result["messages"][-1].content == "The report is ready."
+        assert loop.consume_stop_reason("present-run") is None
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("_HARD_STOP_MSG", "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with results collected so far."),
+            ("_TOOL_FREQ_HARD_STOP_MSG", "[FORCED STOP] Tool {tool_name} called {count} times — exceeded the per-tool safety limit. Producing final answer with results collected so far."),
+        ],
+    )
+    def test_hard_stop_message_unchanged(self, name, expected):
+        message = getattr(loop_detection_module, name)
+        assert message == expected
+        assert loop_detection_module._WRAP_UP_INSTRUCTIONS not in message

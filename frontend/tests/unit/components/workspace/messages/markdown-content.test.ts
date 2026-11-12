@@ -1,3 +1,4 @@
+import type { Message } from "@langchain/langgraph-sdk";
 import { describe, expect, it } from "@rstest/core";
 import {
   createElement,
@@ -7,14 +8,15 @@ import {
 } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { KnowledgeSourcesProvider } from "@/components/workspace/citations/knowledge-source";
 import { MarkdownContent } from "@/components/workspace/messages/markdown-content";
+import { createMarkdownLinkComponent } from "@/components/workspace/messages/markdown-link";
 import { SqlExecutionProvider } from "@/components/workspace/sql-execution";
-import { I18nProvider } from "@/core/i18n/context";
+import { readKnowledgeSources } from "@/core/citations/sources";
+import { I18nContext } from "@/core/i18n/context";
+import { enUS } from "@/core/i18n/locales/en-US";
+import { zhCN } from "@/core/i18n/locales/zh-CN";
 
-const TestI18nProvider = I18nProvider as ComponentType<{
-  initialLocale: "en-US" | "zh-CN";
-  children?: ReactNode;
-}>;
 const TestSqlExecutionProvider = SqlExecutionProvider as ComponentType<{
   threadId: string;
   agentName?: string;
@@ -22,13 +24,138 @@ const TestSqlExecutionProvider = SqlExecutionProvider as ComponentType<{
   children?: ReactNode;
 }>;
 
+/**
+ * 测试用 i18n 包装组件。
+ *
+ * 直接注入 I18nContext，避免使用带副作用的 I18nProvider，
+ * 让 Markdown 与 SQL 执行测试共用同一套本地化包装。
+ */
+function TestI18nProvider({
+  initialLocale,
+  children,
+}: {
+  initialLocale: "en-US" | "zh-CN";
+  children?: ReactNode;
+}) {
+  return createElement(
+    I18nContext.Provider,
+    {
+      value: {
+        locale: initialLocale,
+        setLocale: () => undefined,
+        t: initialLocale === "zh-CN" ? zhCN : enUS,
+      },
+    },
+    children,
+  );
+}
+
+describe("shared knowledge citations through the Markdown pipeline", () => {
+  const id = "a".repeat(32);
+  const reference = `#knowledge-source-${id}`;
+  const source = {
+    id,
+    provider: "lightrag",
+    title: "Retrieved guide",
+    excerpt: "Real evidence",
+  };
+  const sources = readKnowledgeSources([
+    {
+      type: "tool",
+      content: `${reference}\nReal evidence`,
+      artifact: { knowledge_sources_version: 1, knowledge_sources: [source] },
+    },
+  ]);
+
+  it("keeps native RAGFlow snapshots readable through the same pipeline", () => {
+    const nativeId = `${id}-1`;
+    const message = {
+      type: "tool",
+      name: "knowledge_search",
+      content: "retrieved",
+      tool_call_id: "call",
+      artifact: {
+        knowledge_sources: {
+          version: 1,
+          sources: [
+            {
+              id: nativeId,
+              provider: "ragflow",
+              document_name: "Manual.pdf",
+              dataset_name: "Engineering",
+              text: "Limit: 42.",
+              truncated: false,
+              pages: [3],
+            },
+          ],
+        },
+      },
+    } as unknown as Message;
+    const html = renderToStaticMarkup(
+      createElement(
+        TestI18nProvider,
+        { initialLocale: "en-US" },
+        // Required children prop for the provider's createElement-based SSR.
+        // eslint-disable-next-line react/no-children-prop
+        createElement(KnowledgeSourcesProvider, {
+          messages: [message],
+          children: createElement(MarkdownContent, {
+            content: `[citation:Manual](#knowledge-${nativeId})`,
+            isLoading: false,
+          }),
+        }),
+      ),
+    );
+    expect(html).toContain("<button");
+    expect(html).toContain("Manual.pdf");
+    expect(html).not.toContain("unavailable");
+  });
+
+  it.each([reference, `#user-content-knowledge-source-${id}`])(
+    "resolves evidence after sanitization for %s",
+    (href) => {
+      const html = renderMarkdown(`[citation:Label](${href})`, false, {
+        a: createMarkdownLinkComponent(undefined, sources),
+      });
+      expect(html).toContain("<button");
+      expect(html).toContain(source.title);
+      expect(html).not.toContain("unavailable");
+      expect(html).not.toContain("href=");
+    },
+  );
+
+  it.each([reference, "#knowledge-source-invalid"])(
+    "keeps missing or malformed evidence inert for %s",
+    (href) => {
+      const html = renderMarkdown(`[citation:**Label**](${href})`, false);
+      expect(html).toContain("Label");
+      expect(html).not.toContain("<button");
+      expect(html).not.toContain("href=");
+      expect(html).not.toContain("unavailable");
+    },
+  );
+
+  it("retains sanitizer protection on unrelated anchors and unsafe URLs", () => {
+    const html = renderMarkdown(
+      "[Section](#section) [citation:Unsafe](javascript:alert%281%29)",
+      false,
+    );
+    expect(html).toContain('href="#user-content-section"');
+    expect(html).not.toContain('href="javascript:');
+  });
+});
+
 function renderMarkdown(
   content: string,
   isLoading: boolean,
   components?: Parameters<typeof MarkdownContent>[0]["components"],
 ) {
   return renderToStaticMarkup(
-    createElement(MarkdownContent, { content, isLoading, components }),
+    createElement(
+      TestI18nProvider,
+      { initialLocale: "en-US" },
+      createElement(MarkdownContent, { content, isLoading, components }),
+    ),
   );
 }
 

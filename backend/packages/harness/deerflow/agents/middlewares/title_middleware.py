@@ -14,8 +14,10 @@ from langgraph.constants import TAG_NOSTREAM
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares.dynamic_context_middleware import is_dynamic_context_reminder
+from deerflow.agents.middlewares.pii_redaction_middleware import redact_texts
 from deerflow.config.title_config import get_title_config
 from deerflow.models import create_chat_model
+from deerflow.utils.assembly_io import run_assembly
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, get_original_user_content_text
 
 if TYPE_CHECKING:
@@ -215,10 +217,13 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         user_msg = self._get_title_user_message(state)
         assistant_msg = self._strip_think_tags(self._normalize_content(assistant_msg_content))
 
+        # This model is invoked directly, outside the main model wrappers.
+        # Redact complete fields before truncation can split an identifier.
+        redacted_user, redacted_assistant = redact_texts([user_msg, assistant_msg], getattr(self._app_config, "pii_redaction", None))
         prompt = config.prompt_template.format(
             max_words=config.max_words,
-            user_msg=user_msg[:500],
-            assistant_msg=assistant_msg[:500],
+            user_msg=redacted_user[:500],
+            assistant_msg=redacted_assistant[:500],
         )
         return prompt, user_msg
 
@@ -342,7 +347,11 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
             model_kwargs = {"thinking_enabled": False, "attach_tracing": False}
             if self._app_config is not None:
                 model_kwargs["app_config"] = self._app_config
-            model = create_chat_model(name=config.model_name, **model_kwargs)
+            # Provider construction can read local CLI credentials (Codex
+            # auth.json, Claude Code credential files). This hook runs on the
+            # Gateway event loop, so build the provider on the assembly pool
+            # (utils/AGENTS.md) instead of stalling every other request.
+            model = await run_assembly(create_chat_model, name=config.model_name, **model_kwargs)
             invoke_config = self._get_runnable_config()
 
             from deerflow_extension_api import SystemOperationKind

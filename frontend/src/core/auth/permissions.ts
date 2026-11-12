@@ -7,6 +7,8 @@ import type { User } from "./types";
 export const PERMISSIONS = {
   THREADS_DELETE: "threads:delete",
   RUNS_CANCEL: "runs:cancel",
+  RUNS_CREATE: "runs:create",
+  RUNS_READ: "runs:read",
 } as const;
 
 /**

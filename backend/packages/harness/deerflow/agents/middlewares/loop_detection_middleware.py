@@ -68,7 +68,6 @@ import threading
 import uuid
 from collections import Counter, OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, override
 
@@ -79,7 +78,11 @@ from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
-from deerflow.agents.middlewares.audit_context import LOOP_DETECTION_RECORDER_CONTEXT_KEY
+from deerflow.agents.middlewares.audit_context import (
+    LOOP_DETECTION_RECORDER_CONTEXT_KEY,
+    resolve_audit_recorder,
+)
+from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
 from deerflow.runtime.events.catalog import MIDDLEWARE_LOOP_DETECTION_TAG
 
 if TYPE_CHECKING:
@@ -95,8 +98,27 @@ _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU limit for tracked thread/run scopes
 _DEFAULT_TOOL_FREQ_WARN = 30  # warn after 30 calls to the same tool type
 _DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # force-stop after 50 calls to the same tool type
 _MAX_PENDING_WARNINGS_PER_RUN = 4
+# Stands in for ``read_file``'s omitted ``end_line`` in a call key: the read
+# runs to the last line, which is not the same window as any numbered bound.
+_OPEN_ENDED_READ = "end"
+# Sandbox tools on the generic key path whose ``description`` is only the UI
+# explanation of the call. Elsewhere ``description`` can be the operation's
+# payload (``update_agent``/``setup_agent`` persist it; MCP tools such as
+# ``create_issue`` send it), so it stays in the key.
+_UI_NARRATION_TOOLS = frozenset({"bash", "ls", "glob", "grep"})
 
 type _RunScopeKey = tuple[str, str | None]
+
+# Deeply nested args cannot be serialized for a key; they collapse to one opaque key.
+_UNSERIALIZABLE_ARGS = "<unserializable>"
+
+
+def _stable_args_key(value: object) -> str | None:
+    """Serialize opaque args for a stable key, or None past the recursion limit."""
+    try:
+        return json.dumps(value, sort_keys=True, default=str)
+    except (TypeError, ValueError, RecursionError):
+        return None
 
 
 def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
@@ -112,42 +134,71 @@ def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
-        except (TypeError, ValueError, json.JSONDecodeError):
+        except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             return {}, raw_args
 
         if isinstance(parsed, dict):
             return parsed, None
-        return {}, json.dumps(parsed, sort_keys=True, default=str)
+        return {}, _stable_args_key(parsed)
 
     if raw_args is None:
         return {}, None
 
-    return {}, json.dumps(raw_args, sort_keys=True, default=str)
+    return {}, _stable_args_key(raw_args)
+
+
+def _coerce_line_number(value: object) -> int | None:
+    """Parse one ``read_file`` line bound, or ``None`` when absent or unusable."""
+    try:
+        line = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: a model-emitted JSON number such as ``1e999`` parses to
+        # a float('inf') that ``int()`` rejects. Treat it like any other
+        # unusable bound so key derivation cannot crash the after_model hook.
+        return None
+    return max(line, 1)
+
+
+def _normalized_read_range(args: dict) -> tuple[int, int | None]:
+    """Normalize ``read_file``'s line range into one comparable window.
+
+    Omitting ``end_line`` reads through the last line, so it normalizes to
+    ``None`` (open-ended) rather than collapsing onto ``start_line``: that keeps
+    ``read_file(path)`` and ``read_file(path, start_line=1)`` — the same read,
+    written two ways — on a single key. A reversed range is ordered, so one
+    window written either way also produces a single key.
+
+    The window is otherwise kept exact. Quantizing it into 200-line buckets (the
+    original heuristic) collapsed every read shorter than a bucket onto its
+    neighbours, so an agent paging a file in 40-line chunks tripped the hard
+    stop on its fifth *distinct* read — while ``read_file``'s own truncation
+    notice tells the model to page with ``start_line``/``end_line``. Bucketing
+    cannot separate progress from repetition in general: equality keys can only
+    approximate range overlap, and the approximation was erasing the offset that
+    distinguishes the two. An exact window still catches the loop this layer
+    exists for — the same read emitted over and over — and a loop that jitters
+    its bounds is what Layer 2's per-tool frequency window covers.
+    """
+    start_line = _coerce_line_number(args.get("start_line"))
+    end_line = _coerce_line_number(args.get("end_line"))
+    if start_line is None:
+        start_line = 1
+    if end_line is not None and end_line < start_line:
+        start_line, end_line = end_line, start_line
+    return start_line, end_line
 
 
 def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
-    """Derive a stable key from salient args without overfitting to noise."""
+    """Derive a stable key from the args that change what a call does."""
     if name == "read_file" and fallback_key is None:
         path = args.get("path") or ""
-        start_line = args.get("start_line")
-        end_line = args.get("end_line")
-
-        bucket_size = 200
-        try:
-            start_line = int(start_line) if start_line is not None else 1
-        except (TypeError, ValueError):
-            start_line = 1
-        try:
-            end_line = int(end_line) if end_line is not None else start_line
-        except (TypeError, ValueError):
-            end_line = start_line
-
-        start_line, end_line = sorted((start_line, end_line))
-        bucket_start = max(start_line, 1)
-        bucket_end = max(end_line, 1)
-        bucket_start = (bucket_start - 1) // bucket_size
-        bucket_end = (bucket_end - 1) // bucket_size
-        return f"{path}:{bucket_start}-{bucket_end}"
+        if not isinstance(path, str):
+            # Formatting a nested structure into the key calls repr(), which
+            # recurses past the limit for the same payloads _stable_args_key
+            # already treats as opaque.
+            path = _stable_args_key(path) or _UNSERIALIZABLE_ARGS
+        start_line, end_line = _normalized_read_range(args)
+        return f"{path}:{start_line}-{end_line if end_line is not None else _OPEN_ENDED_READ}"
 
     # write_file / str_replace are content-sensitive: same path may be updated
     # with different payloads during iteration. Using only salient fields (path)
@@ -155,17 +206,20 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
     if name in {"write_file", "str_replace"}:
         if fallback_key is not None:
             return fallback_key
-        return json.dumps(args, sort_keys=True, default=str)
-
-    salient_fields = ("path", "url", "query", "command", "pattern", "glob", "cmd")
-    stable_args = {field: args[field] for field in salient_fields if args.get(field) is not None}
-    if stable_args:
-        return json.dumps(stable_args, sort_keys=True, default=str)
+        return _stable_args_key(args) or _UNSERIALIZABLE_ARGS
 
     if fallback_key is not None:
         return fallback_key
 
-    return json.dumps(args, sort_keys=True, default=str)
+    # Every other argument can change what the call does: keying only a salient
+    # field (``path``/``url``/``query``...) collapsed paging a URL or a search
+    # (``start_index``, ``page``, ``cursor``) and rewriting one skill file onto a
+    # single key, so the fifth *distinct* call hard-stopped the run. A sandbox
+    # tool's UI narration is dropped, so rewording it cannot make a repeated
+    # call look new (#1905).
+    if name in _UI_NARRATION_TOOLS:
+        args = {field: value for field, value in args.items() if field != "description"}
+    return _stable_args_key(args) or _UNSERIALIZABLE_ARGS
 
 
 def _hash_tool_calls(tool_calls: list[dict]) -> str:
@@ -189,11 +243,32 @@ def _hash_tool_calls(tool_calls: list[dict]) -> str:
     return hashlib.md5(blob.encode()).hexdigest()[:12]
 
 
-_WARNING_MSG = "[LOOP DETECTED] You are repeating the same tool calls. Stop calling tools and produce your final answer now. If you cannot complete the task, summarize what you accomplished so far."
-
-_TOOL_FREQ_WARNING_MSG = (
-    "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. Stop calling tools and produce your final answer now. If you cannot complete the task, summarize what you accomplished so far."
+# Warn-level messages ask the agent to wrap up, but must not make it drop work
+# it was asked to persist: a subagent whose task names an output file would
+# otherwise stop *all* tool calls, including the write that delivers its
+# result, and finish as "completed" with nothing on disk. So the wrap-up
+# allows a bounded save/read/retry before the final answer, without reusing
+# a looping writer or bypassing the read-before-write gate. It also names
+# present_files: an agent told only to stop calling tools skipped presenting
+# outputs it had already created, so the run failed its delivery check. The
+# hard-stop path below is unchanged (it strips tool calls).
+_WRAP_UP_INSTRUCTIONS = (
+    "If your task asks you to save results to a file, first write what you have collected so far to that file "
+    "with a file-writing tool (for example write_file, unless it is the looping tool). "
+    "If the writer is itself looping, use a different available file-writing tool. "
+    "If a save is blocked by a read-before-write check, read the target file and retry the save once. "
+    "Do not use a tool that this warning tells you to stop, or repeat a failed save loop. "
+    "If no permitted save path is available or the retry fails, include the collected results in your final answer "
+    "and state that the file was not saved. "
+    "If present_files is available, present the files you already created in /mnt/user-data/outputs "
+    "with one present_files call before answering, unless it is the looping tool. "
+    "Then stop calling tools and produce your final answer. "
+    "If you cannot complete the task, summarize what you accomplished so far."
 )
+
+_WARNING_MSG = "[LOOP DETECTED] You are repeating the same tool calls. Stop repeating them and wrap up now. " + _WRAP_UP_INSTRUCTIONS
+
+_TOOL_FREQ_WARNING_MSG = "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. Stop calling {tool_name} and wrap up now. " + _WRAP_UP_INSTRUCTIONS
 
 _HARD_STOP_MSG = "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with results collected so far."
 
@@ -705,39 +780,16 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # Fallback: coerce unexpected types to str to avoid TypeError
         return str(content) + f"\n\n{text}"
 
-    @staticmethod
-    def _build_hard_stop_update(last_msg, content: str | list) -> dict:
-        """Clear tool-call metadata so forced-stop messages serialize as plain assistant text."""
-        update = {
-            "tool_calls": [],
-            "content": content,
-        }
-
-        additional_kwargs = dict(getattr(last_msg, "additional_kwargs", {}) or {})
-        for key in ("tool_calls", "function_call"):
-            additional_kwargs.pop(key, None)
-        update["additional_kwargs"] = additional_kwargs
-
-        response_metadata = deepcopy(getattr(last_msg, "response_metadata", {}) or {})
-        if response_metadata.get("finish_reason") == "tool_calls":
-            response_metadata["finish_reason"] = "stop"
-        update["response_metadata"] = response_metadata
-
-        return update
-
     def _record_audit_event(
         self,
         decision: _LoopDecision,
         runtime: Runtime,
     ) -> None:
         """Persist a loop-detection transition without sensitive tool data."""
-        context = getattr(runtime, "context", None)
-        is_subagent = isinstance(context, dict) and context.get("is_subagent") is True
-        recorder = context.get(LOOP_DETECTION_RECORDER_CONTEXT_KEY) if isinstance(context, dict) else None
-        if recorder is None and isinstance(context, dict):
-            # Lead-agent runs expose the ordinary RunJournal. Native task-tool
-            # subagents receive only the narrow, loop-safe recorder key above.
-            recorder = context.get("__run_journal")
+        recorder, is_subagent, agent_id = resolve_audit_recorder(
+            getattr(runtime, "context", None),
+            recorder_key=LOOP_DETECTION_RECORDER_CONTEXT_KEY,
+        )
         if recorder is None:
             return
 
@@ -749,7 +801,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 action=decision.action,
                 changes={
                     "is_subagent": is_subagent,
-                    "agent_id": context.get("agent_id") if is_subagent else None,
+                    "agent_id": agent_id,
                     "detection_layer": decision.detection_layer,
                     "tool_names": list(decision.tool_names),
                     "count": decision.count,
@@ -791,14 +843,15 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             ctx = getattr(runtime, "context", None)
             if isinstance(ctx, dict):
                 ctx["stop_reason"] = "loop_capped"
-            # Strip tool_calls from the last AIMessage to force text output.
-            # Once tool_calls are stripped, the AIMessage no longer requires
-            # matching ToolMessage responses, so mutating it in place here
-            # is safe for OpenAI/Moonshot pairing validators.
+            # Strip tool calls from every provider surface of the last
+            # AIMessage (structured, raw, and content blocks) to force text
+            # output. With no call left on any surface, the AIMessage no
+            # longer requires matching ToolMessage responses, so replacing it
+            # here is safe for strict provider pairing validators.
             messages = state.get("messages", [])
             last_msg = messages[-1]
             content = self._append_text(last_msg.content, warning or _HARD_STOP_MSG)
-            stripped_msg = last_msg.model_copy(update=self._build_hard_stop_update(last_msg, content))
+            stripped_msg = clone_ai_message_with_tool_calls(last_msg, [], content=content)
             return {"messages": [stripped_msg]}
 
         if decision.action == "warn":
@@ -866,8 +919,26 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             self._pending_warning_touch_order.pop(pending_key, None)
         return warnings
 
-    def _augment_request(self, request: ModelRequest) -> ModelRequest:
-        """Append queued loop warnings (if any) to the outgoing message list.
+    def _restore_pending_warnings(self, runtime: Runtime, warnings: list[str]) -> None:
+        """Requeue warnings taken for a model call that raised.
+
+        LLMErrorHandlingMiddleware sits outside this middleware and retries a
+        failed call by running this wrap again, so the retry must still find
+        the warning. It would not be queued again: it is already marked warned.
+        """
+        if not warnings:
+            return
+        pending_key = self._pending_key(runtime)
+        with self._lock:
+            queued = self._pending_warnings[pending_key]
+            queued[:0] = [warning for warning in warnings if warning not in queued]
+            # Keep the restored warnings at the front; trim what came after them.
+            del queued[_MAX_PENDING_WARNINGS_PER_RUN:]
+            self._touch_pending_warning_key_locked(pending_key)
+            self._prune_pending_warning_state_locked(protected_key=pending_key)
+
+    def _inject_warnings(self, request: ModelRequest, warnings: list[str]) -> ModelRequest:
+        """Append *warnings* to the outgoing message list.
 
         The warning is placed *after* every existing message, including the
         ToolMessage responses to the previous AIMessage(tool_calls). This
@@ -876,7 +947,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         restriction (we use HumanMessage), and never mutates an existing
         AIMessage.
         """
-        warnings = self._drain_pending_warnings(request.runtime)
         if not warnings:
             return request
         new_messages = [
@@ -891,7 +961,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
-        return handler(self._augment_request(request))
+        warnings = self._drain_pending_warnings(request.runtime)
+        try:
+            return handler(self._inject_warnings(request, warnings))
+        except Exception:
+            self._restore_pending_warnings(request.runtime, warnings)
+            raise
 
     @override
     async def awrap_model_call(
@@ -899,7 +974,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
-        return await handler(self._augment_request(request))
+        warnings = self._drain_pending_warnings(request.runtime)
+        try:
+            return await handler(self._inject_warnings(request, warnings))
+        except Exception:
+            self._restore_pending_warnings(request.runtime, warnings)
+            raise
 
     def reset(self, thread_id: str | None = None) -> None:
         """Clear tracking state. If thread_id given, clear only that thread."""

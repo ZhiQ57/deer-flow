@@ -9,9 +9,11 @@ import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
-from email.utils import parsedate_to_datetime
+from dataclasses import dataclass
 from typing import Any, override
 
+import httpx
+import openai
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import (
@@ -22,61 +24,51 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphBubbleUp
 
+from deerflow.agents.middlewares.model_response import append_visible_text, finish_reason, has_tool_call_intent, has_visible_content, last_ai_message
 from deerflow.config.app_config import AppConfig
+from deerflow.models.request_admission import AdmissionError
+from deerflow.models.response_errors import EmptyModelResponseError
 from deerflow.utils.custom_events import aemit_custom_event, emit_custom_event
+from deerflow.utils.retry_after import bounded_retry_after_ms, parse_retry_after_date_ms
 
 logger = logging.getLogger(__name__)
 
-_RETRIABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
-_BUSY_PATTERNS = (
-    "server busy",
-    "temporarily unavailable",
-    "try again later",
-    "please retry",
-    "please try again",
-    "overloaded",
-    "high demand",
-    "rate limit",
-    "负载较高",
-    "服务繁忙",
-    "稍后重试",
-    "请稍后重试",
-)
-_QUOTA_PATTERNS = (
-    "insufficient_quota",
-    "quota",
-    "billing",
-    "credit",
-    "payment",
-    "余额不足",
-    "超出限额",
-    "额度不足",
-    "欠费",
-)
-_AUTH_PATTERNS = (
-    "authentication",
-    "unauthorized",
-    "invalid api key",
-    "invalid_api_key",
-    "permission",
-    "forbidden",
-    "access denied",
-    "无权",
-    "未授权",
-)
+_EMPTY_RESPONSE_RETRY_CONTEXT_KEY = "__empty_response_retry_consumed"
+_EMPTY_RESPONSE_RETRY_CONSUMED = object()
+_NON_CIRCUIT_FAILURE_REASONS = {"burst_rate", "empty_response"}
 
-# Provider burst-rate (``limit_burst_rate``) signals. This is a *rate-of-change*
-# limit, not a quota limit: the provider throttles when request RPM ramps up too
-# steeply (e.g. the 08:30 morning peak going 0 -> full throttle in seconds).
-# Matched against both the error message and the error ``code``/``type``.
-_BURST_PATTERNS = (
-    "limit_burst_rate",
-    "rate increased too quickly",
-    "burst rate",
-    "请求速率增长过快",
-    "突发速率",
-)
 
+@dataclass(slots=True)
+class _CircuitAdmission:
+    generation: int = -1
+
+
+def _raise_for_empty_response(response: ModelCallResult) -> None:
+    """在响应写入图状态前把零内容 stop 转换为可重试错误。"""
+    message = last_ai_message(response)
+    if message is None:
+        raise EmptyModelResponseError()
+    if has_visible_content(message) or has_tool_call_intent(message):
+        return
+    reason = finish_reason(message)
+    if reason in (None, "", "stop", "end_turn"):
+        raise EmptyModelResponseError(response_message=message)
+
+
+def _consume_empty_response_retry(request: ModelRequest) -> bool:
+    """Consume the one empty-response retry budget stored in run context."""
+    runtime = getattr(request, "runtime", None)
+    context = getattr(runtime, "context", None)
+    if not isinstance(context, dict):
+        # Direct middleware calls without runtime context retain one retry per call.
+        return True
+    if context.get(_EMPTY_RESPONSE_RETRY_CONTEXT_KEY) is _EMPTY_RESPONSE_RETRY_CONSUMED:
+        return False
+    context[_EMPTY_RESPONSE_RETRY_CONTEXT_KEY] = _EMPTY_RESPONSE_RETRY_CONSUMED
+    return True
+
+
+_RETRIABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 # Per-exception retry budget overrides.
 #
 # Some transient errors are retriable in principle but expensive to retry at
@@ -94,7 +86,9 @@ _BURST_PATTERNS = (
 # value of 2 means "1 first attempt + 1 retry" (the CR-requested
 # "keep one retry" behavior).
 _RETRY_BUDGET_OVERRIDES: dict[str, int] = {
+    "EmptyModelResponseError": 2,
     "StreamChunkTimeoutError": 2,
+    "ReadTimeout": 2,
 }
 
 # Per-reason retry budget overrides, applied in addition to the per-exception
@@ -109,21 +103,9 @@ _REASON_RETRY_BUDGETS: dict[str, int] = {
     "burst_rate": 2,
 }
 
-# Exception class names that indicate the upstream stream-chunk watchdog
-# fired because the model stalled mid-flight. These deserve a more specific
-# user-facing message than the generic "temporarily unavailable" copy,
-# because the typical root cause is a long tool-call serialization stalling
-# the upstream stream — and the most actionable advice we can give the user
-# is "ask for a shorter / split output" rather than "wait and retry".
-# Generic connection drops (httpx RemoteProtocolError / ReadError) are
-# intentionally excluded: they routinely fire on transient network blips
-# with normal payloads, where the "split the work" guidance is misleading.
-_STREAM_DROP_EXCEPTIONS: frozenset[str] = frozenset(
-    {
-        "StreamChunkTimeoutError",
-    }
-)
-
+# Lower-cased message of the ``ValueError`` langchain_core raises when a
+# streamed response (HTTP 200) yields no generation chunk at all.
+_EMPTY_STREAM_MARKER = "no generations found in stream."
 
 # Process-global LLM call concurrency cap. ONE limiter is shared across every
 # ``LLMErrorHandlingMiddleware`` instance and every call path: the lead agent
@@ -407,10 +389,29 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         # Circuit Breaker state
         self._circuit_lock = threading.Lock()
         self._circuit_failure_count = 0
+        # Recovery timing uses a monotonic clock, not wall time: ``_circuit_open_until``
+        # is a *duration* deadline (now + recovery_timeout_sec), and a wall-clock
+        # backward step (NTP correction, VM resume, manual change) while the circuit
+        # is open would hold the fast-fail window open far past the configured
+        # timeout — shedding every LLM call until the clock caught up — while a
+        # forward jump would end it early. ``time.monotonic`` never moves backward
+        # and matches the rest of the harness's timeout/deadline convention. The
+        # reference is instance-held so tests can inject a deterministic clock.
+        # ``0.0`` is below any monotonic reading, so the initial closed state never
+        # reads as a pending open window.
+        self._circuit_clock = time.monotonic
         self._circuit_open_until = 0.0
         self._circuit_state = "closed"
+        self._circuit_generation = 0
         self._circuit_probe_in_flight = False
         self._circuit_probe_token: object | None = None
+
+    def release_policy_parameters(self) -> dict[str, object]:
+        return {
+            "empty_response_retry_limit": 1,
+            "empty_response_retry_scope": "run",
+            "error_classification": "structured_evidence_v1",
+        }
 
     def _max_attempts_for(self, exc: BaseException, reason: str = "transient") -> int:
         """Return the effective max attempt count for this exception.
@@ -426,6 +427,9 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         class_override = _RETRY_BUDGET_OVERRIDES.get(type(exc).__name__)
         if class_override is not None:
             candidates.append(class_override)
+        # Connection/timeout types already establish a transient transport failure.
+        if isinstance(exc, openai.APIError) and not isinstance(exc, openai.APIConnectionError) and not _has_status_or_error_code(exc):
+            candidates.append(2)
         reason_override = _REASON_RETRY_BUDGETS.get(reason)
         if reason_override is not None:
             candidates.append(reason_override)
@@ -434,11 +438,12 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
     def _check_circuit(self, *, probe_token: object | None = None) -> bool:
         """Returns True if circuit is OPEN (fast fail), False otherwise."""
         with self._circuit_lock:
-            now = time.time()
+            now = self._circuit_clock()
 
             if self._circuit_state == "open":
                 if now < self._circuit_open_until:
                     return True
+                self._circuit_generation += 1
                 self._circuit_state = "half_open"
                 self._circuit_probe_in_flight = False
                 self._circuit_probe_token = None
@@ -448,24 +453,44 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     return True
                 self._circuit_probe_in_flight = True
                 self._circuit_probe_token = probe_token
+                if isinstance(probe_token, _CircuitAdmission):
+                    probe_token.generation = self._circuit_generation
                 return False
 
+            if isinstance(probe_token, _CircuitAdmission):
+                probe_token.generation = self._circuit_generation
             return False
 
-    def _record_success(self) -> None:
+    def _owns_current_circuit_generation(self, admission: _CircuitAdmission | None) -> bool:
+        if admission is None:
+            return True
+        if admission.generation != self._circuit_generation:
+            return False
+        if self._circuit_state == "half_open":
+            return self._circuit_probe_token is admission
+        return self._circuit_state == "closed"
+
+    def _record_success(self, *, admission: _CircuitAdmission | None = None) -> None:
         with self._circuit_lock:
+            if not self._owns_current_circuit_generation(admission):
+                return
             if self._circuit_state != "closed" or self._circuit_failure_count > 0:
                 logger.info("Circuit breaker reset (Closed). LLM service recovered.")
+            if self._circuit_state == "half_open":
+                self._circuit_generation += 1
             self._circuit_failure_count = 0
             self._circuit_open_until = 0.0
             self._circuit_state = "closed"
             self._circuit_probe_in_flight = False
             self._circuit_probe_token = None
 
-    def _record_failure(self) -> None:
+    def _record_failure(self, *, admission: _CircuitAdmission | None = None) -> None:
         with self._circuit_lock:
+            if not self._owns_current_circuit_generation(admission):
+                return
             if self._circuit_state == "half_open":
-                self._circuit_open_until = time.time() + self.circuit_recovery_timeout_sec
+                self._circuit_open_until = self._circuit_clock() + self.circuit_recovery_timeout_sec
+                self._circuit_generation += 1
                 self._circuit_state = "open"
                 self._circuit_probe_in_flight = False
                 self._circuit_probe_token = None
@@ -477,8 +502,9 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
 
             self._circuit_failure_count += 1
             if self._circuit_failure_count >= self.circuit_failure_threshold:
-                self._circuit_open_until = time.time() + self.circuit_recovery_timeout_sec
+                self._circuit_open_until = self._circuit_clock() + self.circuit_recovery_timeout_sec
                 if self._circuit_state != "open":
+                    self._circuit_generation += 1
                     self._circuit_state = "open"
                     self._circuit_probe_in_flight = False
                     self._circuit_probe_token = None
@@ -488,65 +514,60 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                         self.circuit_recovery_timeout_sec,
                     )
 
-    def _release_half_open_probe(self, *, probe_token: object | None = None) -> None:
+    def _release_half_open_probe(self, *, admission: _CircuitAdmission | None = None) -> None:
         """Release the in-flight half-open probe without recording a failure.
 
         Used when something other than a classified success/failure consumes the probe (a
         GraphBubbleUp control-flow signal, or a non-retriable error), so the circuit can admit
-        the next probe instead of fast-failing forever. Cancellation supplies an
-        admission token so an older call cannot release a different call's probe.
+        the next probe instead of fast-failing forever. The admission identity prevents an
+        older call from releasing a different call's probe.
         """
         with self._circuit_lock:
-            if probe_token is not None and self._circuit_probe_token is not probe_token:
+            if not self._owns_current_circuit_generation(admission):
                 return
             if self._circuit_state == "half_open":
+                self._circuit_generation += 1
                 self._circuit_probe_in_flight = False
                 self._circuit_probe_token = None
 
     def _classify_error(self, exc: BaseException) -> tuple[bool, str]:
-        detail = _extract_error_detail(exc)
-        lowered = detail.lower()
-        error_code = _extract_error_code(exc)
-        status_code = _extract_status_code(exc)
-
-        if _matches_any(lowered, _QUOTA_PATTERNS) or _matches_any(str(error_code).lower(), _QUOTA_PATTERNS):
-            return False, "quota"
-        if _matches_any(lowered, _AUTH_PATTERNS):
+        if isinstance(exc, AdmissionError):
+            return False, "admission"
+        if isinstance(exc, EmptyModelResponseError):
+            return True, "empty_response"
+        status = _extract_status_code(exc)
+        if status is None:
+            status = _extract_in_band_status(exc, include_type=False)
+        code = _extract_error_code(exc)
+        code = code.strip().casefold() if isinstance(code, str) else None
+        if status in {401, 403}:
             return False, "auth"
-        # Burst-rate (limit_burst_rate) 429 is retriable but needs its own
-        # policy: a tight retry budget and a longer backoff base (see
-        # _REASON_RETRY_BUDGETS / _build_retry_delay_ms). Detected before the
-        # generic 429->transient mapping so it isn't lumped in with ordinary
-        # transient errors.
-        if _matches_any(lowered, _BURST_PATTERNS) or _matches_any(str(error_code).lower(), _BURST_PATTERNS):
-            return True, "burst_rate"
-
-        exc_name = exc.__class__.__name__
-        if exc_name in {
-            "APITimeoutError",
-            "APIConnectionError",
-            "InternalServerError",
-            "ReadError",  # httpx.ReadError: connection dropped mid-stream
-            "RemoteProtocolError",  # httpx: server closed connection unexpectedly
-            "StreamChunkTimeoutError",  # langchain-openai: chunk gap exceeded stream_chunk_timeout
-        }:
+        # Exact provider codes refine a rate-limit response, never override a
+        # contradictory HTTP status. Prose is retained as diagnostic data only.
+        if status in {None, 429}:
+            if code in {"insufficient_quota", "quota_exceeded", "billing_hard_limit_reached"}:
+                return False, "quota"
+            if code == "limit_burst_rate":
+                return True, "burst_rate"
+            if code in {"rate_limit_exceeded", "rate_limit_error"}:
+                return True, "transient"
+        if status is None:
+            status = _extract_in_band_status(exc)
+        if status is not None:
+            return (True, "transient") if status in _RETRIABLE_STATUS_CODES or 500 <= status <= 599 else (False, "generic")
+        if code in {"invalid_api_key", "authentication_error", "permission_denied"}:
+            return False, "auth"
+        if isinstance(exc, (TimeoutError, ConnectionError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError, openai.APIConnectionError)):
             return True, "transient"
-        # Upstream sometimes returns ``200 OK`` with an empty
-        # ``generations`` list (observed against Volces "coding" /
-        # ark.cn-beijing.volces.com). ``langchain_core.language_models.
-        # chat_models.ainvoke`` then crashes with
-        # ``IndexError: list index out of range`` at
-        # ``llm_result.generations[0][0].message``. That isn't really a
-        # client bug — it's a transient upstream-payload glitch — so we
-        # route it through the same retry/backoff path as other transient
-        # provider failures rather than failing the whole run.
-        if isinstance(exc, IndexError):
+        # This exact LangChain adapter sentinel is a protocol failure, unlike
+        # arbitrary IndexError or text mentioning an empty response.
+        if isinstance(exc, ValueError) and str(exc).strip().casefold() == _EMPTY_STREAM_MARKER:
             return True, "transient"
-        if status_code in _RETRIABLE_STATUS_CODES:
+        # OpenAI can report a failure inside an HTTP-200 stream without a
+        # status or structured error code. Exception type is the only evidence
+        # available in that case, so allow one reconnect and then surface it.
+        if isinstance(exc, openai.APIError) and not _has_status_or_error_code(exc):
             return True, "transient"
-        if _matches_any(lowered, _BUSY_PATTERNS):
-            return True, "busy"
-
         return False, "generic"
 
     def _bounded_model_call_sync(
@@ -601,7 +622,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
     def _build_retry_delay_ms(self, prev_delay_ms: int | None, exc: BaseException, reason: str = "transient") -> int:
         """Compute the next retry delay (ms) using decorrelated jitter.
 
-        An explicit ``Retry-After`` from the provider is honored as-is (no
+        A finite ``Retry-After`` up to 24 hours is honored as-is (no
         jitter) - the server told us exactly when to come back, and for a
         burst-rate 429 this is strongly preferred over any computed delay.
         Otherwise AWS-style "decorrelated jitter" is applied:
@@ -657,6 +678,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         reason_text = {
             "busy": "provider is busy",
             "burst_rate": "provider is throttling request burst rate",
+            "empty_response": "provider returned an empty response",
         }.get(reason, "provider request failed temporarily")
         # ``max_attempts`` is the *effective* budget for this call (from
         # ``_max_attempts_for``), not the configured ceiling: a burst-rate call
@@ -675,16 +697,25 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         error_type: str,
         reason: str,
         detail: str,
+        response_message: AIMessage | None = None,
     ) -> AIMessage:
-        return AIMessage(
-            content=content,
-            additional_kwargs={
+        additional_kwargs = dict(response_message.additional_kwargs or {}) if response_message is not None else {}
+        additional_kwargs.update(
+            {
                 "deerflow_error_fallback": True,
                 "error_type": error_type,
                 "error_reason": reason,
                 "error_detail": detail,
-            },
+            }
         )
+        if response_message is not None:
+            return response_message.model_copy(
+                update={
+                    "content": append_visible_text(response_message, content),
+                    "additional_kwargs": additional_kwargs,
+                }
+            )
+        return AIMessage(content=content, additional_kwargs=additional_kwargs)
 
     def _build_user_message(self, exc: BaseException, reason: str) -> str:
         detail = _extract_error_detail(exc)
@@ -694,21 +725,11 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             return "The configured LLM provider rejected the request because authentication or access is invalid. Please check the provider credentials and try again."
         if reason == "burst_rate":
             return "The configured LLM provider is temporarily throttling requests because the request rate increased too quickly (burst-rate limit). Please wait a moment and try again."
+        if reason == "empty_response":
+            return "The configured LLM provider returned an empty response after one automatic retry. Please continue the conversation or use a different model."
         if reason in {"busy", "transient"}:
-            # Stream-drop failures (chunk-gap timeout, peer-closed connection,
-            # raw read error) almost always point at a single oversized
-            # tool-call payload — the model spent so long serializing JSON
-            # arguments that the upstream provider buffered and the stream
-            # gap exceeded `stream_chunk_timeout`. Surfacing this distinct
-            # cause lets the user split or shorten their next request
-            # instead of helplessly retrying the same prompt.
-            if type(exc).__name__ in _STREAM_DROP_EXCEPTIONS:
-                return (
-                    "The model's streaming response was interrupted before it could "
-                    "finish. This usually happens when a single response or tool call "
-                    "is very large — please ask the assistant to split the work into "
-                    "smaller steps, or shorten the requested output, and try again."
-                )
+            if isinstance(exc, (TimeoutError, httpx.ReadError, httpx.RemoteProtocolError)):
+                return "The model's streaming response was interrupted before it could finish. The cause is unknown from this error. Please try again; if it persists, inspect the provider and connection diagnostics."
             return "The configured LLM provider is temporarily unavailable after multiple retries. Please wait a moment and continue the conversation."
         return f"LLM request failed: {detail}"
 
@@ -718,6 +739,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             error_type=type(exc).__name__,
             reason=reason,
             detail=_extract_error_detail(exc),
+            response_message=exc.response_message if isinstance(exc, EmptyModelResponseError) else None,
         )
 
     def _build_retry_event(
@@ -788,7 +810,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
-        if self._check_circuit():
+        admission = _CircuitAdmission()
+        if self._check_circuit(probe_token=admission):
             return self._build_error_fallback_message(
                 self._build_circuit_breaker_message(),
                 error_type="CircuitBreakerOpen",
@@ -801,16 +824,20 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         while True:
             try:
                 response = self._bounded_model_call_sync(request, handler)
-                self._record_success()
+                _raise_for_empty_response(response)
+                self._record_success(admission=admission)
                 return response
             except GraphBubbleUp:
                 # Preserve LangGraph control-flow signals (interrupt/pause/resume).
-                self._release_half_open_probe()
+                self._release_half_open_probe(admission=admission)
                 raise
             except Exception as exc:
                 retriable, reason = self._classify_error(exc)
                 max_attempts = self._max_attempts_for(exc, reason)
-                if retriable and attempt < max_attempts:
+                should_retry = retriable and attempt < max_attempts
+                if should_retry and reason == "empty_response":
+                    should_retry = _consume_empty_response_retry(request)
+                if should_retry:
                     wait_ms = self._build_retry_delay_ms(prev_delay_ms, exc, reason)
                     prev_delay_ms = wait_ms
                     logger.warning(
@@ -820,7 +847,11 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                         wait_ms,
                         _extract_error_detail(exc),
                     )
-                    self._emit_retry_event(attempt, wait_ms, reason, max_attempts=max_attempts)
+                    try:
+                        self._emit_retry_event(attempt, wait_ms, reason, max_attempts=max_attempts)
+                    except GraphBubbleUp:
+                        self._release_half_open_probe(admission=admission)
+                        raise
                     time.sleep(wait_ms / 1000)
                     attempt += 1
                     continue
@@ -830,15 +861,11 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     _extract_error_detail(exc),
                     exc_info=exc,
                 )
-                if retriable and reason != "burst_rate":
-                    self._record_failure()
+                if retriable and reason not in _NON_CIRCUIT_FAILURE_REASONS:
+                    self._record_failure(admission=admission)
                 else:
-                    # Non-retriable, OR burst_rate (a transient provider
-                    # slope-throttle, not "provider down"): release the half-open
-                    # probe without recording a failure so the circuit doesn't
-                    # trip and fast-fail ALL calls for the recovery window - the
-                    # exact self-inflicted outage #4290 is trying to prevent.
-                    self._release_half_open_probe()
+                    # These outcomes do not show that the provider is broadly unavailable.
+                    self._release_half_open_probe(admission=admission)
                 return self._build_user_fallback_message(exc, reason)
 
     @override
@@ -847,8 +874,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
-        probe_token = object()
-        if self._check_circuit(probe_token=probe_token):
+        admission = _CircuitAdmission()
+        if self._check_circuit(probe_token=admission):
             return self._build_error_fallback_message(
                 self._build_circuit_breaker_message(),
                 error_type="CircuitBreakerOpen",
@@ -862,16 +889,20 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             while True:
                 try:
                     response = await self._bounded_model_call(request, handler)
-                    self._record_success()
+                    _raise_for_empty_response(response)
+                    self._record_success(admission=admission)
                     return response
                 except GraphBubbleUp:
                     # Preserve LangGraph control-flow signals (interrupt/pause/resume).
-                    self._release_half_open_probe()
+                    self._release_half_open_probe(admission=admission)
                     raise
                 except Exception as exc:
                     retriable, reason = self._classify_error(exc)
                     max_attempts = self._max_attempts_for(exc, reason)
-                    if retriable and attempt < max_attempts:
+                    should_retry = retriable and attempt < max_attempts
+                    if should_retry and reason == "empty_response":
+                        should_retry = _consume_empty_response_retry(request)
+                    if should_retry:
                         wait_ms = self._build_retry_delay_ms(prev_delay_ms, exc, reason)
                         prev_delay_ms = wait_ms
                         logger.warning(
@@ -881,7 +912,11 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                             wait_ms,
                             _extract_error_detail(exc),
                         )
-                        await self._aemit_retry_event(attempt, wait_ms, reason, max_attempts=max_attempts)
+                        try:
+                            await self._aemit_retry_event(attempt, wait_ms, reason, max_attempts=max_attempts)
+                        except GraphBubbleUp:
+                            self._release_half_open_probe(admission=admission)
+                            raise
                         await asyncio.sleep(wait_ms / 1000)
                         attempt += 1
                         continue
@@ -891,25 +926,17 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                         _extract_error_detail(exc),
                         exc_info=exc,
                     )
-                    if retriable and reason != "burst_rate":
-                        self._record_failure()
+                    if retriable and reason not in _NON_CIRCUIT_FAILURE_REASONS:
+                        self._record_failure(admission=admission)
                     else:
-                        # Non-retriable, OR burst_rate (a transient provider
-                        # slope-throttle, not "provider down"): release the half-open
-                        # probe without recording a failure so the circuit doesn't
-                        # trip and fast-fail ALL calls for the recovery window - the
-                        # exact self-inflicted outage #4290 is trying to prevent.
-                        self._release_half_open_probe()
+                        # These outcomes do not show that the provider is broadly unavailable.
+                        self._release_half_open_probe(admission=admission)
                     return self._build_user_fallback_message(exc, reason)
         except asyncio.CancelledError:
             # Cancellation can arrive during admission, the provider call, retry
             # event delivery, or backoff. It is not a provider failure.
-            self._release_half_open_probe(probe_token=probe_token)
+            self._release_half_open_probe(admission=admission)
             raise
-
-
-def _matches_any(detail: str, patterns: tuple[str, ...]) -> bool:
-    return any(pattern in detail for pattern in patterns)
 
 
 def _extract_error_code(exc: BaseException) -> Any:
@@ -920,6 +947,10 @@ def _extract_error_code(exc: BaseException) -> Any:
 
     body = getattr(exc, "body", None)
     if isinstance(body, dict):
+        for key in ("code", "type"):
+            value = body.get(key)
+            if value not in (None, ""):
+                return value
         error = body.get("error")
         if isinstance(error, dict):
             for key in ("code", "type"):
@@ -932,11 +963,74 @@ def _extract_error_code(exc: BaseException) -> Any:
 def _extract_status_code(exc: BaseException) -> int | None:
     for attr in ("status_code", "status"):
         value = getattr(exc, attr, None)
-        if isinstance(value, int):
+        if isinstance(value, int) and not isinstance(value, bool):
             return value
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
-    return status if isinstance(status, int) else None
+    return status if isinstance(status, int) and not isinstance(status, bool) else None
+
+
+def _extract_in_band_status(exc: BaseException, *, include_type: bool = True) -> int | None:
+    """Read only explicit numeric fields or the provider's server_error type."""
+    body = getattr(exc, "body", None)
+    body = body if isinstance(body, dict) else {}
+    error = body.get("error")
+    error = error if isinstance(error, dict) else {}
+    for value in (
+        getattr(exc, "code", None),
+        body.get("code"),
+        error.get("code"),
+        body.get("status"),
+        body.get("status_code"),
+        error.get("status"),
+        error.get("status_code"),
+    ):
+        status = _as_http_status(value)
+        if status is not None:
+            return status
+    if include_type:
+        for value in (getattr(exc, "type", None), body.get("type"), error.get("type")):
+            if isinstance(value, str) and value.strip().lower() == "server_error":
+                return 500
+    return None
+
+
+def _has_status_or_error_code(exc: BaseException) -> bool:
+    """Return whether an exception carries a usable status or explicit code."""
+    status = _extract_status_code(exc)
+    if status is None:
+        status = _extract_in_band_status(exc, include_type=False)
+    if status is not None:
+        return True
+
+    for attr in ("code", "error_code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, str) and value.strip():
+            return True
+
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return False
+    candidates = [body]
+    error = body.get("error")
+    if isinstance(error, dict):
+        candidates.append(error)
+    for candidate in candidates:
+        for key in ("code", "error_code"):
+            value = candidate.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
+    return False
+
+
+def _as_http_status(value: Any) -> int | None:
+    """Return ``value`` as an HTTP status if it is an int or a three-digit string in 400-599."""
+    if isinstance(value, str):
+        text = value.strip()
+        value = int(text) if len(text) == 3 and text.isascii() and text.isdigit() else None
+    if isinstance(value, int) and not isinstance(value, bool) and 400 <= value <= 599:
+        return value
+    return None
 
 
 def _extract_retry_after_ms(exc: BaseException) -> int | None:
@@ -958,14 +1052,9 @@ def _extract_retry_after_ms(exc: BaseException) -> int | None:
 
     try:
         multiplier = 1 if "ms" in header_name.lower() else 1000
-        return max(0, int(float(raw) * multiplier))
-    except (TypeError, ValueError):
-        try:
-            target = parsedate_to_datetime(str(raw))
-            delta = target.timestamp() - time.time()
-            return max(0, int(delta * 1000))
-        except (TypeError, ValueError, OverflowError):
-            return None
+        return bounded_retry_after_ms(float(raw) * multiplier)
+    except (TypeError, ValueError, OverflowError):
+        return parse_retry_after_date_ms(str(raw), now=time.time())
 
 
 def _extract_error_detail(exc: BaseException) -> str:

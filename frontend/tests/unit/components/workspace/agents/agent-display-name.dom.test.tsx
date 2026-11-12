@@ -17,11 +17,26 @@ const { mutateAsync } = rs.hoisted(() => ({
   mutateAsync: rs.fn().mockResolvedValue({}),
 }));
 rs.mock("@/core/agents", () => ({
+  useAgentToolGroups: () => ({
+    toolGroups: ["web", "file:read"],
+    isLoading: false,
+    error: null,
+  }),
   useUpdateAgent: () => ({ mutateAsync, isPending: false }),
+}));
+rs.mock("@/core/features", () => ({
+  useKnowledgeBaseEnabled: () => ({ scopeSelectionEnabled: false }),
 }));
 rs.mock("@/core/models/hooks", () => ({ useModels: () => ({ models: [] }) }));
 rs.mock("@/core/subagents", () => ({
   useSubagents: () => ({ subagents: [] }),
+}));
+rs.mock("@/core/capabilities/hooks", () => ({
+  useCapabilityInstallations: () => ({
+    data: { items: [], can_manage: false },
+    isLoading: false,
+    isError: false,
+  }),
 }));
 rs.mock("@/core/i18n/hooks", () => ({ useI18n: () => ({ t: enUS }) }));
 rs.mock("sonner", () => ({ toast: { success: rs.fn(), error: rs.fn() } }));
@@ -111,5 +126,142 @@ describe("custom agent display names", () => {
         }),
       ),
     );
+  });
+});
+
+describe("capability selection update isolation", () => {
+  it("omits untouched selections after a concurrent agent refresh", async () => {
+    const opened = {
+      ...agent,
+      mcp_plugins: ["old-plugin"],
+      skills: ["old-skill"],
+    };
+    const { rerender } = render(
+      <AgentSettingsDialog agent={opened} open onOpenChange={rs.fn()} />,
+    );
+    rerender(
+      <AgentSettingsDialog
+        agent={{
+          ...opened,
+          mcp_plugins: ["new-plugin"],
+          skills: ["new-skill"],
+        }}
+        open
+        onOpenChange={rs.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Rename only" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const { request } = mutateAsync.mock.calls[0]![0] as {
+      request: Record<string, unknown>;
+    };
+    expect(request).not.toHaveProperty("mcp_plugins");
+    expect(request).not.toHaveProperty("skills");
+    expect(request.display_name).toBe("Rename only");
+  });
+
+  it.each([
+    ["mcp_plugins", 0, null, []],
+    ["skills", 1, null, []],
+    ["mcp_plugins", 0, [], null],
+    ["skills", 1, [], null],
+  ] as const)(
+    "saves an intentional %s change at index %s from %s to %s only",
+    async (field, index, initial, selected) => {
+      render(
+        <AgentSettingsDialog
+          agent={{ ...agent, [field]: initial }}
+          open
+          onOpenChange={rs.fn()}
+        />,
+      );
+      fireEvent.click(screen.getAllByLabelText("Use all enabled")[index]!);
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+      const { request } = mutateAsync.mock.calls[0]![0] as {
+        request: Record<string, unknown>;
+      };
+      expect(request[field]).toEqual(selected);
+      expect(request).not.toHaveProperty(
+        field === "skills" ? "mcp_plugins" : "skills",
+      );
+    },
+  );
+
+  it("omits a selection that was changed and restored", async () => {
+    render(<AgentSettingsDialog agent={agent} open onOpenChange={rs.fn()} />);
+    const all = screen.getAllByLabelText("Use all enabled")[0]!;
+    fireEvent.click(all);
+    fireEvent.click(all);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const { request } = mutateAsync.mock.calls[0]![0] as {
+      request: Record<string, unknown>;
+    };
+    expect(request).not.toHaveProperty("mcp_plugins");
+    expect(request).not.toHaveProperty("skills");
+  });
+});
+
+describe("custom agent tool groups", () => {
+  it("saves an explicit tool-group allowlist", async () => {
+    render(<AgentSettingsDialog agent={agent} open onOpenChange={rs.fn()} />);
+
+    fireEvent.click(screen.getByLabelText("Use every configured tool group"));
+    fireEvent.click(screen.getByLabelText("web"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const { request } = mutateAsync.mock.calls[0]![0] as {
+      request: Record<string, unknown>;
+    };
+    expect(request.tool_groups).toEqual(["web"]);
+  });
+
+  it("keeps unavailable selected groups visible so they can be removed", async () => {
+    render(
+      <AgentSettingsDialog
+        agent={{ ...agent, tool_groups: ["legacy-tools"] }}
+        open
+        onOpenChange={rs.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("legacy-tools (unavailable)"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const { request } = mutateAsync.mock.calls[0]![0] as {
+      request: Record<string, unknown>;
+    };
+    expect(request.tool_groups).toEqual([]);
+  });
+
+  it("omits untouched tool groups after a concurrent agent refresh", async () => {
+    const opened = { ...agent, tool_groups: ["web"] };
+    const { rerender } = render(
+      <AgentSettingsDialog agent={opened} open onOpenChange={rs.fn()} />,
+    );
+    rerender(
+      <AgentSettingsDialog
+        agent={{ ...opened, tool_groups: ["file:read"] }}
+        open
+        onOpenChange={rs.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Rename only" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const { request } = mutateAsync.mock.calls[0]![0] as {
+      request: Record<string, unknown>;
+    };
+    expect(request).not.toHaveProperty("tool_groups");
   });
 });

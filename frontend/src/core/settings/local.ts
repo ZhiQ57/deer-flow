@@ -1,3 +1,5 @@
+import type { ReasoningEffortValue } from "@/core/models/reasoning";
+
 import type { TokenUsageInlineMode } from "../messages/usage-model";
 import type { AgentThreadContext } from "../threads";
 
@@ -82,8 +84,9 @@ export interface LocalSettings {
     | "reasoning_effort"
   > & {
     model_name?: string | undefined;
+    tool_approval_mode?: "ask" | "auto" | "full";
     mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
-    reasoning_effort?: "minimal" | "low" | "medium" | "high";
+    reasoning_effort?: ReasoningEffortValue;
   };
 }
 

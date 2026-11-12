@@ -10,6 +10,11 @@ This provider preserves ``reasoning`` on:
 - non-streaming responses
 - streaming deltas
 - multi-turn request payloads
+
+Deployments that still emit the older ``reasoning_content`` wire field are
+covered too: when ``reasoning`` is absent or null the provider falls back to
+``reasoning_content``, so either spelling is echoed back under the single
+``reasoning`` key. A payload carrying both keeps ``reasoning``.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ import json
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
 import openai
@@ -26,19 +31,23 @@ from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
+    BaseMessage,
     BaseMessageChunk,
     ChatMessageChunk,
     FunctionMessageChunk,
     HumanMessageChunk,
+    MessageLikeRepresentation,
     SystemMessageChunk,
     ToolMessageChunk,
+    convert_to_messages,
 )
 from langchain_core.messages.ai import UsageMetadata, subtract_usage
 from langchain_core.messages.tool import tool_call_chunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import _create_usage_metadata
 from pydantic import Field, PrivateAttr
+
+from deerflow.models.openai_response import GuardedChatOpenAI
 
 _CUMULATIVE_USAGE_TRACKER_CAPACITY = 1024
 _CUMULATIVE_USAGE_TRACKER_IDLE_SECONDS = 60 * 60
@@ -67,7 +76,8 @@ def _normalize_vllm_chat_template_kwargs(payload: dict[str, Any]) -> None:
     normalized_chat_template_kwargs = dict(chat_template_kwargs)
     normalized_chat_template_kwargs.setdefault("enable_thinking", normalized_chat_template_kwargs["thinking"])
     normalized_chat_template_kwargs.pop("thinking", None)
-    extra_body["chat_template_kwargs"] = normalized_chat_template_kwargs
+    # LangChain may reuse the caller's or model's extra_body mapping across requests.
+    payload["extra_body"] = {**extra_body, "chat_template_kwargs": normalized_chat_template_kwargs}
 
 
 def _reasoning_to_text(reasoning: Any) -> str:
@@ -99,6 +109,30 @@ def _reasoning_to_text(reasoning: Any) -> str:
         return str(reasoning)
 
 
+def _pick_reasoning(fields: Mapping[str, Any]) -> Any:
+    """Prefer non-null ``reasoning`` (including empty strings) over the legacy field."""
+    reasoning = fields.get("reasoning")
+    return fields.get("reasoning_content") if reasoning is None else reasoning
+
+
+def count_tokens_with_replayed_reasoning(
+    messages: Iterable[MessageLikeRepresentation],
+    *,
+    token_counter: Callable[[Iterable[MessageLikeRepresentation]], int],
+) -> int:
+    counted: list[BaseMessage] = []
+    for message in convert_to_messages(messages):
+        if isinstance(message, AIMessage):
+            reasoning = _pick_reasoning(message.additional_kwargs)
+            text = _reasoning_to_text(reasoning) if reasoning is not None else ""
+            if text:
+                content = message.content + text if isinstance(message.content, str) else [*message.content, text]
+                message = message.model_copy(update={"content": content})
+                # Count replayed reasoning on a copy.
+        counted.append(message)
+    return token_counter(counted)
+
+
 def _convert_delta_to_message_chunk_with_reasoning(_dict: Mapping[str, Any], default_class: type[BaseMessageChunk]) -> BaseMessageChunk:
     """Convert a streaming delta to a LangChain message chunk while preserving reasoning."""
     id_ = _dict.get("id")
@@ -112,7 +146,7 @@ def _convert_delta_to_message_chunk_with_reasoning(_dict: Mapping[str, Any], def
             function_call["name"] = ""
         additional_kwargs["function_call"] = function_call
 
-    reasoning = _dict.get("reasoning")
+    reasoning = _pick_reasoning(_dict)
     if reasoning is not None:
         additional_kwargs["reasoning"] = reasoning
         reasoning_text = _reasoning_to_text(reasoning)
@@ -157,9 +191,7 @@ def _convert_delta_to_message_chunk_with_reasoning(_dict: Mapping[str, Any], def
 
 def _restore_reasoning_field(payload_msg: dict[str, Any], orig_msg: AIMessage) -> None:
     """Re-inject vLLM reasoning onto outgoing assistant messages."""
-    reasoning = orig_msg.additional_kwargs.get("reasoning")
-    if reasoning is None:
-        reasoning = orig_msg.additional_kwargs.get("reasoning_content")
+    reasoning = _pick_reasoning(orig_msg.additional_kwargs)
     if reasoning is not None:
         payload_msg["reasoning"] = reasoning
 
@@ -177,7 +209,7 @@ def _get_completion_id(chunk: Mapping[str, Any]) -> str | None:
     return None
 
 
-class VllmChatModel(ChatOpenAI):
+class VllmChatModel(GuardedChatOpenAI):
     """ChatOpenAI variant that preserves vLLM reasoning fields across turns."""
 
     model_config = {"arbitrary_types_allowed": True}
@@ -192,6 +224,9 @@ class VllmChatModel(ChatOpenAI):
     @property
     def _llm_type(self) -> str:
         return "vllm-openai-compatible"
+
+    def replays_reasoning(self) -> bool:
+        return not self._use_responses_api(self._default_params)  # Chat Completions only.
 
     def _usage_delta(self, completion_id: str, usage: UsageMetadata, *, terminal: bool) -> UsageMetadata:
         """Convert a completion's cumulative usage snapshot into a delta."""
@@ -253,7 +288,7 @@ class VllmChatModel(ChatOpenAI):
             message = generation.message
             if not isinstance(message, AIMessage):
                 continue
-            reasoning = choice.get("message", {}).get("reasoning")
+            reasoning = _pick_reasoning(choice.get("message") or {})
             if reasoning is None:
                 continue
             message.additional_kwargs["reasoning"] = reasoning
